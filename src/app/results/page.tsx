@@ -189,35 +189,22 @@ function ResultsContent() {
     setZoomLevel(100);
   };
 
-  // Real-time counter-scaling for modal header during native double-finger pinch zoom
-  const [visualScale, setVisualScale] = useState(1);
-  const [visualTop, setVisualTop] = useState(0);
-  const [visualLeft, setVisualLeft] = useState(0);
-  const [visualWidth, setVisualWidth] = useState(0);
-
+  // Native double-finger pinch zoom listener for smooth isolated PDF scaling
   useEffect(() => {
-    if (typeof window === 'undefined' || !window.visualViewport) return;
-
-    const onVisualViewport = () => {
-      const vv = window.visualViewport;
-      if (!vv) return;
-      setVisualScale(vv.scale || 1);
-      setVisualTop(vv.offsetTop || 0);
-      setVisualLeft(vv.offsetLeft || 0);
-      setVisualWidth(vv.width || window.innerWidth);
+    (window as any).onNativePinchZoom = (scaleFactor: number) => {
+      setZoomLevel((prev) => {
+        if (scaleFactor > 1.01) {
+          return Math.min(250, prev + Math.round((scaleFactor - 1) * 60));
+        } else if (scaleFactor < 0.99) {
+          return Math.max(100, prev - Math.round((1 - scaleFactor) * 60));
+        }
+        return prev;
+      });
     };
-
-    window.visualViewport.addEventListener('resize', onVisualViewport);
-    window.visualViewport.addEventListener('scroll', onVisualViewport);
-    onVisualViewport();
-
     return () => {
-      if (window.visualViewport) {
-        window.visualViewport.removeEventListener('resize', onVisualViewport);
-        window.visualViewport.removeEventListener('scroll', onVisualViewport);
-      }
+      delete (window as any).onNativePinchZoom;
     };
-  }, [activeDoc]);
+  }, []);
 
   // Local device storage cache for already-opened PDFs (instant offline reopening)
   const [cachedPdfIds, setCachedPdfIds] = useState<Set<string>>(() => {
@@ -682,7 +669,7 @@ function ResultsContent() {
   }
 
   return (
-    <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f3effb] relative flex flex-col items-center overflow-y-auto overscroll-y-none select-none selection:bg-purple-200">
+    <div className="h-[100dvh] max-h-[100dvh] w-full max-w-[100vw] bg-[#f3effb] relative flex flex-col items-center overflow-x-hidden overflow-y-auto overscroll-none overscroll-y-none select-none selection:bg-purple-200">
       
       {/* Background Soft Blobs */}
       <div className="absolute top-[-80px] left-[-80px] w-96 h-96 bg-[#e8dcfa]/60 rounded-full blur-3xl pointer-events-none" />
@@ -706,18 +693,18 @@ function ResultsContent() {
             </Link>
           </div>
 
-          {/* Active Filter Badges: In 1 Single Line (No awkward wrapping into second line) */}
-          <div className="flex items-center gap-1.5 sm:gap-2 text-[11px] sm:text-xs overflow-x-auto no-scrollbar flex-nowrap py-0.5">
-            <span className="bg-white border border-slate-200/90 px-2.5 sm:px-3 py-1 rounded-full text-slate-700 font-semibold shadow-xs shrink-0 whitespace-nowrap">
+          {/* Active Filter Badges: In 1 Single Line (Strictly in one row, no wrapping into 2nd line) */}
+          <div className="flex items-center gap-1.5 sm:gap-2 text-[10.5px] sm:text-xs flex-nowrap overflow-x-auto no-scrollbar py-0.5 w-full">
+            <span className="bg-white border border-slate-200/90 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-slate-700 font-semibold shadow-xs shrink-0 whitespace-nowrap">
               📅 {year}
             </span>
-            <span className="bg-white border border-slate-200/90 px-2.5 sm:px-3 py-1 rounded-full text-slate-700 font-semibold shadow-xs shrink-0 whitespace-nowrap">
+            <span className="bg-white border border-slate-200/90 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-slate-700 font-semibold shadow-xs shrink-0 whitespace-nowrap">
               📚 {branch}
             </span>
-            <span className="bg-white border border-slate-200/90 px-2.5 sm:px-3 py-1 rounded-full text-slate-700 font-semibold shadow-xs shrink-0 whitespace-nowrap">
+            <span className="bg-white border border-slate-200/90 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-slate-700 font-semibold shadow-xs shrink-0 whitespace-nowrap">
               🎓 {semester}
             </span>
-            <span className={`px-2.5 sm:px-3 py-1 rounded-full font-bold shadow-xs shrink-0 whitespace-nowrap ${
+            <span className={`px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full font-bold shadow-xs shrink-0 whitespace-nowrap ${
               type === 'Notes' 
                 ? 'bg-blue-600 text-white' 
                 : type === 'PYQ'
@@ -1026,23 +1013,8 @@ function ResultsContent() {
         <div className="fixed inset-0 z-50 bg-white sm:bg-slate-900/80 sm:backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200">
           <div className="bg-white w-full h-[100dvh] sm:h-[90vh] max-w-5xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-100 shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
             
-            {/* Modal Top Bar: 100% STATIC, COUNTER-SCALED IN REAL-TIME DURING PINCH ZOOM */}
-            <div 
-              style={
-                visualScale > 1.05
-                  ? {
-                      position: 'fixed',
-                      top: `${visualTop}px`,
-                      left: `${visualLeft}px`,
-                      width: `${visualWidth * visualScale}px`,
-                      transform: `scale(${1 / visualScale})`,
-                      transformOrigin: 'top left',
-                      zIndex: 60,
-                    }
-                  : undefined
-              }
-              className="pt-[max(env(safe-area-inset-top),3.25rem)] pb-3 px-3.5 sm:py-3.5 sm:px-6 border-b border-slate-200/90 flex items-center justify-between bg-white gap-2 shrink-0 shadow-sm z-30 select-none"
-            >
+            {/* Modal Top Bar: 100% ROCK-SOLID STATIC, ZERO GLITCH OR SHIFT */}
+            <div className="pt-[max(env(safe-area-inset-top),3.25rem)] pb-3 px-3.5 sm:py-3.5 sm:px-6 border-b border-slate-200/90 flex items-center justify-between bg-white gap-2 shrink-0 shadow-xs z-30 select-none">
               <div className="space-y-0.5 min-w-0 flex-1">
                 <div className="flex items-center space-x-1.5 min-w-0">
                   <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 rounded shrink-0 ${

@@ -39,6 +39,7 @@ public class MainActivity extends AppCompatActivity {
     private WebChromeClient.CustomViewCallback customViewCallback;
     private ValueCallback<Uri[]> fileUploadCallback;
     private long lastBackPressTime = 0;
+    private android.view.ScaleGestureDetector scaleGestureDetector;
 
     private final ActivityResultLauncher<Intent> fileChooserLauncher =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
@@ -73,6 +74,18 @@ public class MainActivity extends AppCompatActivity {
         // Configure WebSettings for optimal performance and PDF view support
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+
+        // Native double-finger pinch zoom gesture detector for isolated PDF zoom
+        scaleGestureDetector = new android.view.ScaleGestureDetector(this, new android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override
+            public boolean onScale(android.view.ScaleGestureDetector detector) {
+                float factor = detector.getScaleFactor();
+                if (Math.abs(factor - 1.0f) > 0.015f) {
+                    webView.evaluateJavascript("if (window.onNativePinchZoom) { window.onNativePinchZoom(" + factor + "); }", null);
+                }
+                return true;
+            }
+        });
 
         WebSettings webSettings = webView.getSettings();
         webSettings.setJavaScriptEnabled(true);
@@ -324,6 +337,14 @@ public class MainActivity extends AppCompatActivity {
         } else {
             webView.restoreState(savedInstanceState);
         }
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(android.view.MotionEvent ev) {
+        if (scaleGestureDetector != null && ev.getPointerCount() == 2) {
+            scaleGestureDetector.onTouchEvent(ev);
+        }
+        return super.dispatchTouchEvent(ev);
     }
 
     @Override
