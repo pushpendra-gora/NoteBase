@@ -336,7 +336,7 @@ function ResultsContent() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f3effb] relative flex flex-col items-center p-3.5 sm:p-8 overflow-x-hidden selection:bg-purple-200">
+    <div className="min-h-screen bg-[#f3effb] relative flex flex-col items-center pt-[max(env(safe-area-inset-top),2.25rem)] pb-6 px-3.5 sm:p-8 overflow-x-hidden selection:bg-purple-200">
       
       {/* Background Soft Blobs */}
       <div className="absolute top-[-80px] left-[-80px] w-96 h-96 bg-[#e8dcfa]/60 rounded-full blur-3xl pointer-events-none" />
@@ -581,23 +581,21 @@ function ResultsContent() {
                       </div>
 
                       <div className="space-y-1 min-w-0 flex-1">
-                        <h4 className="text-sm sm:text-base font-bold text-slate-900 group-hover:text-indigo-600 transition-colors truncate">
-                          {doc.title}
-                        </h4>
+                        <div className="flex items-center space-x-2 min-w-0">
+                          <h4 className="text-sm sm:text-base font-bold text-slate-900 group-hover:text-indigo-600 transition-colors truncate">
+                            {doc.title}
+                          </h4>
+                          {cachedPdfIds.has(doc.id) && (
+                            <span 
+                              className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 inline-block ring-2 ring-emerald-200" 
+                              title="Cached on Device" 
+                            />
+                          )}
+                        </div>
 
                         <p className="text-[11px] sm:text-xs text-slate-500 font-medium flex items-center gap-x-1.5 gap-y-1 flex-wrap">
                           <strong className="text-slate-700 font-semibold">{doc.owner || 'Department Faculty'}</strong>
                           <span>• {doc.pages} Pages • {doc.size}</span>
-                          {cachedPdfIds.has(doc.id) ? (
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 inline-flex items-center space-x-1">
-                              <span>⚡</span>
-                              <span>Cached on Device</span>
-                            </span>
-                          ) : doc.file_url ? (
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
-                              ☁️ Cloud PDF
-                            </span>
-                          ) : null}
                         </p>
                       </div>
                     </div>
@@ -653,8 +651,8 @@ function ResultsContent() {
         <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200">
           <div className="bg-white w-full h-[100dvh] sm:h-[90vh] max-w-5xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-100 shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
             
-            {/* Modal Top Bar (Mobile-first compact header) */}
-            <div className="px-3 sm:px-6 py-2.5 sm:py-3.5 border-b border-slate-100 flex items-center justify-between bg-white gap-2 shrink-0">
+            {/* Modal Top Bar (Mobile-first compact header with safe notch padding) */}
+            <div className="pt-[max(env(safe-area-inset-top),2.5rem)] pb-3 px-3.5 sm:py-3.5 sm:px-6 border-b border-slate-100 flex items-center justify-between bg-white gap-2 shrink-0">
               <div className="space-y-0.5 min-w-0 flex-1">
                 <div className="flex items-center space-x-1.5 min-w-0">
                   <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 rounded shrink-0 ${
@@ -668,10 +666,10 @@ function ResultsContent() {
                     {activeDoc.year} • {activeDoc.branch} • {activeDoc.semester}
                   </span>
                   {cachedPdfIds.has(activeDoc.id) && (
-                    <span className="inline-flex items-center space-x-1 text-[9px] sm:text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
-                      <span>⚡</span>
-                      <span>Cached on Device</span>
-                    </span>
+                    <span 
+                      className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 inline-block ring-2 ring-emerald-200" 
+                      title="Cached on Device" 
+                    />
                   )}
                 </div>
                 <h3 className="text-xs sm:text-base font-bold text-slate-900 truncate">
