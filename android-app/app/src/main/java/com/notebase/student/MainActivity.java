@@ -109,9 +109,17 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // Cache configuration for fast offline-first loading:
-        // Caches HTML, JS, CSS, and opened PDF files in local app storage so subsequent opens are instant even without network
+        // When online, use LOAD_DEFAULT so latest UI updates & fixes load immediately from Vercel.
+        // When offline, fall back to LOAD_CACHE_ELSE_NETWORK so saved PDFs & curriculum are accessible without network!
         try {
-            webSettings.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+            android.net.NetworkInfo activeNetwork = cm != null ? cm.getActiveNetworkInfo() : null;
+            boolean isOnline = activeNetwork != null && activeNetwork.isConnected();
+            if (isOnline) {
+                webSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
+            } else {
+                webSettings.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
+            }
         } catch (Exception e) {
             webSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
         }
@@ -203,6 +211,11 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 super.onReceivedError(view, request, error);
+                if (request != null && request.isForMainFrame()) {
+                    try {
+                        webSettings.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
+                    } catch (Exception ignored) {}
+                }
             }
         });
 

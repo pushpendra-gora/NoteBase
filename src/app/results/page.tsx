@@ -82,6 +82,7 @@ function ResultsContent() {
       } catch {}
     }
     setZoomLevel(100);
+    setPanPosition({ x: 0, y: 0 });
     setActiveDoc(doc);
   };
 
@@ -182,6 +183,9 @@ function ResultsContent() {
   const initialTouchDistRef = useRef(0);
   const initialTouchZoomRef = useRef(100);
   const zoomLevelFloatRef = useRef(100);
+  const lastTouchPosRef = useRef({ x: 0, y: 0 });
+  const lastTapTimeRef = useRef(0);
+  const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
 
   const getTouchesDistance = (e: React.TouchEvent) => {
     if (e.touches.length < 2) return 0;
@@ -195,6 +199,23 @@ function ResultsContent() {
       isPinchingRef.current = true;
       initialTouchDistRef.current = getTouchesDistance(e);
       initialTouchZoomRef.current = zoomLevelFloatRef.current;
+    } else if (e.touches.length === 1) {
+      isPinchingRef.current = false;
+      lastTouchPosRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+
+      // Double-tap to zoom toggle (Instagram/Maps style)
+      const now = Date.now();
+      if (now - lastTapTimeRef.current < 300) {
+        setZoomLevel((prev) => {
+          const next = prev === 100 ? 175 : 100;
+          zoomLevelFloatRef.current = next;
+          if (next === 100) setPanPosition({ x: 0, y: 0 });
+          return next;
+        });
+        lastTapTimeRef.current = 0;
+      } else {
+        lastTapTimeRef.current = now;
+      }
     }
   };
 
@@ -205,11 +226,25 @@ function ResultsContent() {
       const target = Math.min(300, Math.max(100, Math.round(initialTouchZoomRef.current * ratio)));
       zoomLevelFloatRef.current = target;
       setZoomLevel(target);
+      if (target === 100) {
+        setPanPosition({ x: 0, y: 0 });
+      }
+    } else if (!isPinchingRef.current && e.touches.length === 1) {
+      const deltaX = e.touches[0].clientX - lastTouchPosRef.current.x;
+      const deltaY = e.touches[0].clientY - lastTouchPosRef.current.y;
+      lastTouchPosRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+
+      setPanPosition((prev) => ({
+        x: zoomLevel > 100 ? prev.x + deltaX : 0,
+        y: prev.y + deltaY,
+      }));
     }
   };
 
-  const handlePdfTouchEnd = () => {
-    isPinchingRef.current = false;
+  const handlePdfTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) {
+      isPinchingRef.current = false;
+    }
   };
 
   const handlePdfZoomIn = () => {
@@ -242,7 +277,11 @@ function ResultsContent() {
       const target = zoomLevelFloatRef.current * scaleFactor;
       const clamped = Math.min(300, Math.max(100, target));
       zoomLevelFloatRef.current = clamped;
-      setZoomLevel(Math.round(clamped));
+      const rounded = Math.round(clamped);
+      setZoomLevel(rounded);
+      if (rounded === 100) {
+        setPanPosition({ x: 0, y: 0 });
+      }
     };
     return () => {
       delete (window as any).onNativePinchZoom;
@@ -1173,11 +1212,11 @@ function ResultsContent() {
           onTouchEnd={handlePdfTouchEnd}
           className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-2.5 sm:p-5 md:p-8 animate-in fade-in duration-200 select-none overflow-hidden"
         >
-          {/* Framed Container: Continuous Solid 4-Sided Border (Never moves on zoom) */}
-          <div className="w-full h-full max-w-5xl rounded-2xl sm:rounded-3xl border-4 sm:border-[5px] border-indigo-600 bg-white shadow-2xl overflow-hidden flex flex-col relative z-10">
+          {/* Framed Container: Continuous Solid 4-Sided Neutral Slate Border (No blue) */}
+          <div className="w-full h-full max-w-5xl rounded-2xl sm:rounded-3xl border-2 sm:border-[3px] border-slate-700 bg-white shadow-2xl overflow-hidden flex flex-col relative z-10">
             
             {/* Header: Part of the Framed Border (100% Static & Immovable) */}
-            <div className="bg-slate-50 border-b-2 border-indigo-100 px-3.5 py-2.5 sm:px-6 sm:py-3.5 flex items-center justify-between shrink-0 z-30 select-none">
+            <div className="bg-slate-50 border-b border-slate-200 px-3.5 py-2.5 sm:px-6 sm:py-3.5 flex items-center justify-between shrink-0 z-30 select-none">
               <div className="space-y-0.5 min-w-0 flex-1">
                 <div className="flex items-center space-x-1.5 min-w-0">
                   <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 rounded shrink-0 ${
@@ -1207,7 +1246,7 @@ function ResultsContent() {
                   <button
                     type="button"
                     onClick={() => handleDownload(activeDoc)}
-                    className="inline-flex items-center space-x-1.5 px-3 sm:px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition-all shadow-sm cursor-pointer"
+                    className="inline-flex items-center space-x-1.5 px-3 sm:px-4 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-all shadow-sm cursor-pointer"
                     title="Download PDF"
                   >
                     <Download className="w-3.5 h-3.5" />
@@ -1227,15 +1266,13 @@ function ResultsContent() {
             {/* REAL PDF EMBEDDED VIEWER (Strictly contained inside the 4-sided border) */}
             <div 
               ref={pdfContainerRef}
-              onTouchStart={handlePdfTouchStart}
-              onTouchMove={handlePdfTouchMove}
-              onTouchEnd={handlePdfTouchEnd}
-              className="flex-1 w-full bg-slate-100 relative overflow-hidden flex flex-col"
+              className="flex-1 w-full bg-slate-100 relative overflow-hidden flex flex-col select-none"
+              style={{ touchAction: 'none' }}
             >
               {(activeDoc.file_url || (activeDoc.file_path && activeDoc.file_path.startsWith('gdrive://'))) ? (
                 <>
                   {isIframeLoading && (
-                    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white space-y-3">
+                    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white space-y-3 pointer-events-none">
                       <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shadow-sm">
                         <Loader2 className="w-5 h-5 sm:w-6 sm:h-6 animate-spin" />
                       </div>
@@ -1245,51 +1282,48 @@ function ResultsContent() {
                       </div>
                     </div>
                   )}
+
+                  {/* Scaled PDF Document Container */}
                   <div 
                     style={{
-                      width: zoomLevel > 100 ? `${zoomLevel}%` : '100%',
-                      height: zoomLevel > 100 ? `${zoomLevel}%` : '100%',
-                      minWidth: '100%',
-                      minHeight: '100%',
-                      position: 'relative',
+                      width: '100%',
+                      height: '100%',
+                      transform: `scale(${zoomLevel / 100}) translate(${panPosition.x}px, ${panPosition.y}px)`,
+                      transformOrigin: 'center center',
+                      transition: isPinchingRef.current ? 'none' : 'transform 0.08s ease-out',
                     }}
-                    className="flex-1 w-full h-full"
+                    className="flex-1 w-full h-full flex flex-col"
                   >
-                    <div
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: zoomLevel > 100 ? `${10000 / zoomLevel}%` : '100%',
-                        height: zoomLevel > 100 ? `${10000 / zoomLevel}%` : '100%',
-                        transform: zoomLevel > 100 ? `scale(${zoomLevel / 100})` : 'none',
-                        transformOrigin: 'top left',
-                        transition: isPinchingRef.current ? 'none' : 'transform 0.1s ease-out',
+                    <iframe
+                      src={getPdfEmbedUrl(activeDoc.file_url || activeDoc.file_path)}
+                      title={activeDoc.title}
+                      loading="eager"
+                      onLoad={() => {
+                        setIsIframeLoading(false);
+                        if (activeDoc && typeof window !== 'undefined') {
+                          setCachedPdfIds((prev) => {
+                            const next = new Set(prev);
+                            next.add(activeDoc.id);
+                            try {
+                              localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
+                            } catch {}
+                            return next;
+                          });
+                        }
                       }}
-                      className="w-full h-full flex flex-col"
-                    >
-                      <iframe
-                        src={getPdfEmbedUrl(activeDoc.file_url || activeDoc.file_path)}
-                        title={activeDoc.title}
-                        loading="eager"
-                        onLoad={() => {
-                          setIsIframeLoading(false);
-                          if (activeDoc && typeof window !== 'undefined') {
-                            setCachedPdfIds((prev) => {
-                              const next = new Set(prev);
-                              next.add(activeDoc.id);
-                              try {
-                                localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
-                              } catch {}
-                              return next;
-                            });
-                          }
-                        }}
-                        className="w-full h-full flex-1 border-0 bg-white"
-                        allow="autoplay; fullscreen; clipboard-read; clipboard-write"
-                      />
-                    </div>
+                      className="w-full h-full flex-1 border-0 bg-white"
+                      allow="autoplay; fullscreen; clipboard-read; clipboard-write"
+                    />
                   </div>
+
+                  {/* Transparent Multi-Touch Gesture Capture Layer (Intercepts 2-finger pinch directly over PDF) */}
+                  <div 
+                    onTouchStart={handlePdfTouchStart}
+                    onTouchMove={handlePdfTouchMove}
+                    onTouchEnd={handlePdfTouchEnd}
+                    className="absolute inset-0 z-20 cursor-grab active:cursor-grabbing"
+                    style={{ touchAction: 'none' }}
+                  />
                 </>
               ) : (
                 <div className="flex-1 p-6 sm:p-16 flex flex-col items-center justify-center text-center space-y-4 bg-slate-50">
