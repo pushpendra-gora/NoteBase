@@ -146,19 +146,40 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
 
+                // Launch official YouTube app directly when video is clicked or requested
+                if (url.startsWith("vnd.youtube:") || url.contains("youtube.com/watch") || url.contains("youtu.be/")) {
+                    try {
+                        Intent ytIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                        ytIntent.setPackage("com.google.android.youtube");
+                        startActivity(ytIntent);
+                        return true;
+                    } catch (Exception e) {
+                        try {
+                            String target = url;
+                            if (url.startsWith("vnd.youtube:")) {
+                                target = "https://www.youtube.com/watch?v=" + url.replace("vnd.youtube:", "");
+                            }
+                            Intent fallback = new Intent(Intent.ACTION_VIEW, Uri.parse(target));
+                            startActivity(fallback);
+                            return true;
+                        } catch (Exception ignored) {}
+                    }
+                }
+
                 if (url.startsWith("intent:")) {
                     try {
                         Intent intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME);
                         if (intent != null) {
-                            String fallbackUrl = intent.getStringExtra("browser_fallback_url");
-                            if (fallbackUrl != null) {
-                                webView.loadUrl(fallbackUrl);
-                                return true;
-                            }
                             try {
                                 startActivity(intent);
-                            } catch (Exception ignored) {}
-                            return true;
+                                return true;
+                            } catch (Exception e) {
+                                String fallbackUrl = intent.getStringExtra("browser_fallback_url");
+                                if (fallbackUrl != null) {
+                                    webView.loadUrl(fallbackUrl);
+                                    return true;
+                                }
+                            }
                         }
                     } catch (Exception ignored) {}
                     return true;

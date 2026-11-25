@@ -247,11 +247,21 @@ function ResultsContent() {
   }, []);
 
   // Supabase cloud subjects
-  const [cloudSubjects, setCloudSubjects] = useState<SubjectMeta[]>([]);
+  const [cloudSubjects, setCloudSubjects] = useState<SubjectMeta[]>(() => {
+    if (typeof window !== 'undefined' && year && branch && semester) {
+      try {
+        const saved = localStorage.getItem(`notebase_cloud_subjs_${year}_${branch}_${semester}`);
+        if (saved) return JSON.parse(saved);
+      } catch {}
+    }
+    return [];
+  });
   const [isLoadingSubjects, setIsLoadingSubjects] = useState<boolean>(() => {
     if (typeof window !== 'undefined' && year && branch && semester) {
       const local = getSubjectsFor(year, branch, semester);
       if (local && local.length > 0) return false;
+      const cached = localStorage.getItem(`notebase_cloud_subjs_${year}_${branch}_${semester}`);
+      if (cached) return false;
     }
     return true;
   });
@@ -265,7 +275,8 @@ function ResultsContent() {
     }
 
     const local = getSubjectsFor(year, branch, semester);
-    if (!local || local.length === 0) {
+    const hasCached = cloudSubjects.length > 0 || (local && local.length > 0);
+    if (!hasCached) {
       setIsLoadingSubjects(true);
     }
 
@@ -274,6 +285,9 @@ function ResultsContent() {
         if (isMounted) {
           if (cloudSubjs && cloudSubjs.length > 0) {
             setCloudSubjects(cloudSubjs);
+            try {
+              localStorage.setItem(`notebase_cloud_subjs_${year}_${branch}_${semester}`, JSON.stringify(cloudSubjs));
+            } catch {}
             saveSubjectsFor(year, branch, semester, cloudSubjs);
             setSubjectsVersion((v) => v + 1);
           }
@@ -608,6 +622,36 @@ function ResultsContent() {
     }
 
     return trimmed;
+  };
+
+  const handleOpenInYouTubeApp = (link?: string) => {
+    if (!link) return;
+    const trimmed = link.trim();
+    let videoId = '';
+    const watchMatch = trimmed.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+    const shortMatch = trimmed.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
+    const embedMatch = trimmed.match(/embed\/([a-zA-Z0-9_-]{11})/);
+
+    if (watchMatch && watchMatch[1]) videoId = watchMatch[1];
+    else if (shortMatch && shortMatch[1]) videoId = shortMatch[1];
+    else if (embedMatch && embedMatch[1]) videoId = embedMatch[1];
+
+    if (videoId) {
+      // In Android devices, intent: scheme opens the native YouTube app immediately
+      const intentUrl = `intent://www.youtube.com/watch?v=${videoId}#Intent;package=com.google.android.youtube;scheme=https;end`;
+      const webUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+      try {
+        window.location.href = intentUrl;
+      } catch {
+        window.open(webUrl, '_blank');
+      }
+      setTimeout(() => {
+        window.open(webUrl, '_blank');
+      }, 500);
+    } else {
+      window.open(link, '_blank');
+    }
   };
 
   const handleDownload = (doc: NoteDocument) => {
@@ -1191,6 +1235,40 @@ function ResultsContent() {
               )}
             </div>
 
+            {/* Floating Quick Zoom Controller (Easy one-hand thumb access on mobile) */}
+            <div className="absolute bottom-5 right-4 z-40 flex items-center bg-slate-900/90 text-white backdrop-blur-md rounded-2xl px-2 py-1 shadow-2xl border border-white/15 space-x-1.5 text-xs select-none">
+              <button
+                type="button"
+                onClick={handlePdfZoomOut}
+                disabled={zoomLevel <= 100}
+                className="w-7 h-7 rounded-xl bg-white/10 hover:bg-white/20 active:bg-white/30 disabled:opacity-30 flex items-center justify-center font-bold text-sm cursor-pointer"
+                title="Zoom Out"
+              >
+                -
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = zoomLevel === 100 ? 160 : 100;
+                  setZoomLevel(next);
+                  zoomLevelFloatRef.current = next;
+                }}
+                className="font-bold text-[11px] min-w-[40px] text-center px-1 text-slate-200 hover:text-white"
+                title="Tap to toggle Zoom (100% / 160%)"
+              >
+                {zoomLevel}%
+              </button>
+              <button
+                type="button"
+                onClick={handlePdfZoomIn}
+                disabled={zoomLevel >= 300}
+                className="w-7 h-7 rounded-xl bg-white/10 hover:bg-white/20 active:bg-white/30 disabled:opacity-30 flex items-center justify-center font-bold text-sm cursor-pointer"
+                title="Zoom In"
+              >
+                +
+              </button>
+            </div>
+
           </div>
         </div>
       )}
@@ -1276,20 +1354,22 @@ function ResultsContent() {
 
               <div className="flex items-center space-x-2 shrink-0">
                 {activeLecture.link && (
-                  <a
-                    href={activeLecture.link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium transition-colors cursor-pointer"
+                  <button
+                    type="button"
+                    onClick={() => handleOpenInYouTubeApp(activeLecture.link)}
+                    className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl bg-[#cc0000] hover:bg-[#b00] active:scale-95 text-white text-xs font-bold transition-all shadow-md shadow-red-950/40 cursor-pointer"
+                    title="Open directly in YouTube App"
                   >
-                    <span>External Link</span>
-                    <ExternalLink className="w-3 h-3 ml-0.5" />
-                  </a>
+                    <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+                      <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+                    </svg>
+                    <span>Open in YouTube App</span>
+                  </button>
                 )}
                 <button
                   type="button"
                   onClick={closeLectureModal}
-                  className="px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-semibold transition-colors cursor-pointer"
+                  className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer"
                 >
                   Close Player
                 </button>
