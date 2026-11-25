@@ -83,18 +83,42 @@ function ResultsContent() {
 
   // Supabase cloud subjects
   const [cloudSubjects, setCloudSubjects] = useState<SubjectMeta[]>([]);
+  const [isLoadingSubjects, setIsLoadingSubjects] = useState<boolean>(() => {
+    if (typeof window !== 'undefined' && year && branch && semester) {
+      const local = getSubjectsFor(year, branch, semester);
+      if (local && local.length > 0) return false;
+    }
+    return true;
+  });
 
   // Fetch subjects from Supabase cloud on mount if configured
   useEffect(() => {
     let isMounted = true;
-    if (year && branch && semester && isSupabaseConfigured()) {
+    if (!year || !branch || !semester) {
+      setIsLoadingSubjects(false);
+      return;
+    }
+
+    const local = getSubjectsFor(year, branch, semester);
+    if (!local || local.length === 0) {
+      setIsLoadingSubjects(true);
+    }
+
+    if (isSupabaseConfigured()) {
       fetchSubjectsFromSupabase(year, branch, semester).then((cloudSubjs) => {
-        if (isMounted && cloudSubjs && cloudSubjs.length > 0) {
-          setCloudSubjects(cloudSubjs);
-          saveSubjectsFor(year, branch, semester, cloudSubjs);
-          setSubjectsVersion((v) => v + 1);
+        if (isMounted) {
+          if (cloudSubjs && cloudSubjs.length > 0) {
+            setCloudSubjects(cloudSubjs);
+            saveSubjectsFor(year, branch, semester, cloudSubjs);
+            setSubjectsVersion((v) => v + 1);
+          }
+          setIsLoadingSubjects(false);
         }
-      }).catch(() => {});
+      }).catch(() => {
+        if (isMounted) setIsLoadingSubjects(false);
+      });
+    } else {
+      setIsLoadingSubjects(false);
     }
     return () => {
       isMounted = false;
@@ -119,8 +143,15 @@ function ResultsContent() {
   // Lecture items (from LocalStorage and Supabase Cloud)
   const [localLectures, setLocalLectures] = useState<LectureItem[]>([]);
   const [cloudLectures, setCloudLectures] = useState<LectureItem[]>([]);
+  const [isLoadingLectures, setIsLoadingLectures] = useState<boolean>(() => type === 'Lectures');
 
   useEffect(() => {
+    let isMounted = true;
+    if (type !== 'Lectures') {
+      setIsLoadingLectures(false);
+      return;
+    }
+
     // 1. LocalStorage
     const loadLocalLectures = () => {
       try {
@@ -139,27 +170,36 @@ function ResultsContent() {
 
     // 2. Supabase Cloud
     if (year && branch && isSupabaseConfigured()) {
+      setIsLoadingLectures(true);
       fetchLecturesFromSupabase(year, branch).then((cloudData) => {
-        if (cloudData && cloudData.length > 0) {
-          setCloudLectures(
-            cloudData.map((l) => ({
-              id: l.id,
-              title: l.title,
-              subject: l.subject,
-              semester: l.semester,
-              faculty: l.faculty,
-              link: l.link,
-              date: l.date
-            }))
-          );
+        if (isMounted) {
+          if (cloudData && cloudData.length > 0) {
+            setCloudLectures(
+              cloudData.map((l) => ({
+                id: l.id,
+                title: l.title,
+                subject: l.subject,
+                semester: l.semester,
+                faculty: l.faculty,
+                link: l.link,
+                date: l.date
+              }))
+            );
+          }
+          setIsLoadingLectures(false);
         }
-      }).catch(() => {});
+      }).catch(() => {
+        if (isMounted) setIsLoadingLectures(false);
+      });
+    } else {
+      setIsLoadingLectures(false);
     }
 
     return () => {
+      isMounted = false;
       window.removeEventListener('storage', loadLocalLectures);
     };
-  }, [year, branch, semester]);
+  }, [year, branch, semester, type]);
 
   // Active selected subject (defaults to the first subject in list)
   const activeSubject = useMemo(() => {
@@ -268,6 +308,15 @@ function ResultsContent() {
     if (!activeSubject) return [];
     return subjectDocsCache[activeSubject] || [];
   }, [subjectDocsCache, activeSubject]);
+
+  // Check if documents for the active subject are currently being loaded/checked
+  const isDocLoadingForActive = useMemo(() => {
+    if (type === 'Lectures') return false;
+    if (isLoadingSubjects) return true;
+    if (!activeSubject) return false;
+    if (isLoadingSubjectDocs) return true;
+    return subjectDocsCache[activeSubject] === undefined;
+  }, [type, isLoadingSubjects, activeSubject, isLoadingSubjectDocs, subjectDocsCache]);
 
   // Helper to convert Google Drive or direct link to embeddable preview iframe URL
   const getPdfEmbedUrl = (url?: string): string => {
@@ -400,7 +449,7 @@ function ResultsContent() {
                   Select Subject
                 </h2>
                 <p className="text-xs text-slate-500 truncate">
-                  {subjectsList.length} subjects found for {semester} ({branch})
+                  {isLoadingSubjects ? 'Checking curriculum subjects...' : `${subjectsList.length} subjects found for ${semester} (${branch})`}
                 </p>
               </div>
             </div>
@@ -411,7 +460,12 @@ function ResultsContent() {
           </div>
 
           {/* Subject Cards / Buttons Grid */}
-          {subjectsList.length > 0 ? (
+          {isLoadingSubjects ? (
+            <div className="py-8 px-4 text-center rounded-2xl bg-slate-50/70 border border-slate-100 flex flex-col items-center justify-center space-y-2">
+              <Loader2 className="w-5 h-5 text-indigo-600 animate-spin" />
+              <p className="text-xs font-semibold text-slate-600">Loading curriculum subjects for {branch}...</p>
+            </div>
+          ) : subjectsList.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 sm:gap-3">
               {/* Individual Subjects */}
               {subjectsList.map((subj) => {
@@ -458,7 +512,21 @@ function ResultsContent() {
         </div>
 
         {/* 2. MAIN CONTENT SECTION: VIDEO LECTURES OR PDF DOCUMENTS */}
-        {subjectsList.length === 0 ? (
+        {isLoadingSubjects ? (
+          <div className="bg-white rounded-3xl border border-slate-100 p-10 sm:p-14 text-center shadow-sm space-y-3.5">
+            <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto shadow-sm">
+              <Loader2 className="w-6 h-6 animate-spin text-indigo-600" />
+            </div>
+            <div className="space-y-1">
+              <h4 className="text-sm sm:text-base font-bold text-slate-800">
+                Checking Available Notes & Materials...
+              </h4>
+              <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                Please wait a moment while we retrieve verified curriculum documents for {branch}.
+              </p>
+            </div>
+          </div>
+        ) : subjectsList.length === 0 ? (
           <div className="bg-white rounded-3xl border border-slate-100 p-12 text-center shadow-sm space-y-3">
             <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
               <BookOpen className="w-6 h-6" />
@@ -487,7 +555,19 @@ function ResultsContent() {
 
             {/* Video Lectures Cards List */}
             <div className="space-y-3">
-              {displayedLectures.length > 0 ? (
+              {isLoadingLectures ? (
+                <div className="bg-white rounded-3xl border border-slate-100 p-8 sm:p-12 text-center shadow-sm space-y-3">
+                  <div className="w-12 h-12 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center mx-auto">
+                    <Loader2 className="w-6 h-6 animate-spin text-purple-600" />
+                  </div>
+                  <h4 className="text-sm sm:text-base font-bold text-slate-800">
+                    Checking Video Lectures for {activeSubject}...
+                  </h4>
+                  <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                    Connecting to verified lecture library...
+                  </p>
+                </div>
+              ) : displayedLectures.length > 0 ? (
                 displayedLectures.map((lec) => (
                   <div
                     key={lec.id}
@@ -560,7 +640,7 @@ function ResultsContent() {
 
             {/* Documents Cards List */}
             <div className="space-y-3">
-              {isLoadingSubjectDocs ? (
+              {isDocLoadingForActive ? (
                 <div className="bg-white rounded-3xl border border-slate-100 p-8 sm:p-12 text-center shadow-sm space-y-3">
                   <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
                     <Loader2 className="w-6 h-6 animate-spin" />
@@ -568,8 +648,8 @@ function ResultsContent() {
                   <h4 className="text-sm sm:text-base font-bold text-slate-800">
                     Loading {activeSubject} PDFs...
                   </h4>
-                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                    Fetching metadata exclusively for {activeSubject} to keep loading fast.
+                  <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                    Fetching study notes and PYQs for {activeSubject}...
                   </p>
                 </div>
               ) : displayedDocuments.length > 0 ? (

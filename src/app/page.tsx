@@ -11,7 +11,8 @@ import {
   FileText,
   Search,
   RotateCcw,
-  Video
+  Video,
+  Loader2
 } from 'lucide-react';
 import { 
   FIRST_YEAR_GROUPS, 
@@ -28,6 +29,7 @@ export default function NoteBaseHome() {
   const [selectedBranch, setSelectedBranch] = useState<BranchOption | null>(null);
   const [selectedSemester, setSelectedSemester] = useState<SemesterOption | null>(null);
   const [selectedType, setSelectedType] = useState<'Notes' | 'PYQ' | 'Lectures' | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
 
   // Dropdown open states
   const [yearOpen, setYearOpen] = useState(false);
@@ -123,6 +125,7 @@ export default function NoteBaseHome() {
     if (!allFiltersSelected || !selectedYear || !selectedBranch || !selectedSemester || !selectedType) {
       return;
     }
+    setIsSearching(true);
     const query = new URLSearchParams({
       year: selectedYear,
       branch: selectedBranch,
@@ -443,10 +446,20 @@ export default function NoteBaseHome() {
               <button
                 type="button"
                 onClick={handleSearch}
-                className="inline-flex items-center space-x-1.5 px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-semibold text-xs sm:text-sm shadow-sm hover:shadow hover:-translate-y-0.5 transition-all duration-150 animate-in fade-in zoom-in-95 cursor-pointer ml-auto"
+                disabled={isSearching}
+                className="inline-flex items-center space-x-1.5 px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-semibold text-xs sm:text-sm shadow-sm hover:shadow hover:-translate-y-0.5 transition-all duration-150 animate-in fade-in zoom-in-95 cursor-pointer ml-auto disabled:opacity-80"
               >
-                <Search className="w-4 h-4 text-indigo-400" />
-                <span>Search</span>
+                {isSearching ? (
+                  <>
+                    <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />
+                    <span>Searching...</span>
+                  </>
+                ) : (
+                  <>
+                    <Search className="w-4 h-4 text-indigo-400" />
+                    <span>Search</span>
+                  </>
+                )}
               </button>
             )}
           </div>
