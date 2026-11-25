@@ -28,7 +28,7 @@ android-app/build/
 android-app/app/build/
 android-app/local.properties
 *.apk
-*.png
+/android-screen.png
 
 # Debug & OS logs
 npm-debug.log*
