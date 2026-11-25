@@ -602,9 +602,23 @@ function DashboardContent() {
         ]
       };
 
-      // 2. Insert record into Supabase database table `documents`
-      if (isSupabaseConfigured()) {
-        await insertDocumentToSupabase(noteDoc);
+      // 2. Insert record into Supabase database via server API & direct client
+      try {
+        const docRes = await fetch('/api/documents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(noteDoc),
+        });
+        const docData = await docRes.json();
+        if (!docRes.ok || !docData.success) {
+          if (isSupabaseConfigured()) {
+            await insertDocumentToSupabase(noteDoc);
+          }
+        }
+      } catch {
+        if (isSupabaseConfigured()) {
+          await insertDocumentToSupabase(noteDoc);
+        }
       }
 
       // 3. Fallback / local persistence
@@ -642,8 +656,14 @@ function DashboardContent() {
         setFiles((prev) => prev.filter((f) => f.id !== id));
         deleteCustomUploadedDocument(id);
 
-        if (isSupabaseConfigured() && fileToDelete) {
-          await deleteDocumentFromSupabase(id, fileToDelete.file_path, fileToDelete.type);
+        try {
+          await fetch(`/api/documents?id=${encodeURIComponent(id)}&type=${fileToDelete?.type || ''}`, {
+            method: 'DELETE',
+          });
+        } catch {
+          if (isSupabaseConfigured() && fileToDelete) {
+            await deleteDocumentFromSupabase(id, fileToDelete.file_path, fileToDelete.type);
+          }
         }
         showToast(`🗑️ "${name}" removed from repository.`);
       }

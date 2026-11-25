@@ -1,0 +1,223 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getSupabaseClient } from '@/lib/supabase';
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * GET /api/coordinators
+ * Fetches all coordinators directly from Supabase
+ */
+export async function GET() {
+  try {
+    const client = getSupabaseClient();
+    if (!client) {
+      return NextResponse.json(
+        { success: false, error: 'Supabase client is not configured on the server. Please check environment variables (NEXT_PUBLIC_SUPABASE_URL & NEXT_PUBLIC_SUPABASE_ANON_KEY).' },
+        { status: 503 }
+      );
+    }
+
+    const { data, error } = await client
+      .from('coordinators')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching coordinators from Supabase:', error);
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      coordinators: data || [],
+    });
+  } catch (err: any) {
+    console.error('API /api/coordinators GET error:', err);
+    return NextResponse.json(
+      { success: false, error: err?.message || 'Internal server error while fetching coordinators.' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * POST /api/coordinators
+ * Inserts or upserts a coordinator in Supabase
+ */
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { id, name, branch, year, password, initials, status } = body;
+
+    if (!name || !name.trim()) {
+      return NextResponse.json(
+        { success: false, error: 'Coordinator Name is required.' },
+        { status: 400 }
+      );
+    }
+    if (!branch || !year) {
+      return NextResponse.json(
+        { success: false, error: 'Branch and Year are required.' },
+        { status: 400 }
+      );
+    }
+    if (!password || !password.trim()) {
+      return NextResponse.json(
+        { success: false, error: 'Password is required.' },
+        { status: 400 }
+      );
+    }
+
+    const client = getSupabaseClient();
+    if (!client) {
+      return NextResponse.json(
+        { success: false, error: 'Supabase database is not connected. Please verify NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY on Vercel.' },
+        { status: 503 }
+      );
+    }
+
+    const cleanInitials = initials || name.trim().split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2) || 'CO';
+    const targetId = id || `coord-${Date.now()}`;
+
+    const record = {
+      id: targetId,
+      name: name.trim(),
+      branch: branch.trim(),
+      year: year.trim(),
+      password: password.trim(),
+      initials: cleanInitials,
+      status: status || 'Active',
+      created_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await client
+      .from('coordinators')
+      .upsert(record)
+      .select();
+
+    if (error) {
+      console.error('Supabase error inserting coordinator:', error);
+      return NextResponse.json(
+        { success: false, error: `Supabase database error: ${error.message} (Hint: ensure public.coordinators table is created in SQL Editor)` },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      coordinator: record,
+      data,
+    });
+  } catch (err: any) {
+    console.error('API /api/coordinators POST error:', err);
+    return NextResponse.json(
+      { success: false, error: err?.message || 'Internal server error while saving coordinator to Supabase.' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * PUT /api/coordinators
+ * Updates an existing coordinator in Supabase
+ */
+export async function PUT(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { id, name, branch, year, password, initials, status } = body;
+
+    if (!id) {
+      return NextResponse.json(
+        { success: false, error: 'Coordinator ID is required for update.' },
+        { status: 400 }
+      );
+    }
+
+    const client = getSupabaseClient();
+    if (!client) {
+      return NextResponse.json(
+        { success: false, error: 'Supabase client is not connected.' },
+        { status: 503 }
+      );
+    }
+
+    const updatePayload: any = {};
+    if (name) updatePayload.name = name.trim();
+    if (branch) updatePayload.branch = branch.trim();
+    if (year) updatePayload.year = year.trim();
+    if (password) updatePayload.password = password.trim();
+    if (initials) updatePayload.initials = initials;
+    if (status) updatePayload.status = status;
+
+    const { error } = await client
+      .from('coordinators')
+      .update(updatePayload)
+      .eq('id', id);
+
+    if (error) {
+      console.error('Supabase error updating coordinator:', error);
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ success: true, updated: updatePayload });
+  } catch (err: any) {
+    console.error('API /api/coordinators PUT error:', err);
+    return NextResponse.json(
+      { success: false, error: err?.message || 'Internal server error while updating coordinator.' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * DELETE /api/coordinators
+ * Deletes a coordinator from Supabase
+ */
+export async function DELETE(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get('id');
+
+    if (!id) {
+      return NextResponse.json(
+        { success: false, error: 'Coordinator ID is required.' },
+        { status: 400 }
+      );
+    }
+
+    const client = getSupabaseClient();
+    if (!client) {
+      return NextResponse.json(
+        { success: false, error: 'Supabase client is not connected.' },
+        { status: 503 }
+      );
+    }
+
+    const { error } = await client
+      .from('coordinators')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('Supabase error deleting coordinator:', error);
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ success: true, deletedId: id });
+  } catch (err: any) {
+    console.error('API /api/coordinators DELETE error:', err);
+    return NextResponse.json(
+      { success: false, error: err?.message || 'Internal server error while deleting coordinator.' },
+      { status: 500 }
+    );
+  }
+}

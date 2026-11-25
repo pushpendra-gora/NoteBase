@@ -149,6 +149,13 @@ export default function AdminPage() {
   const [editAdminSubjTitle, setEditAdminSubjTitle] = useState('');
   const [editAdminSubjCode, setEditAdminSubjCode] = useState('');
 
+  // Real Supabase Server Health & Connection State
+  const [supabaseHealth, setSupabaseHealth] = useState<{
+    checked: boolean;
+    connected: boolean;
+    error: string | null;
+  }>({ checked: false, connected: false, error: null });
+
   // Global Delete Confirmation Modal State
   const [deleteConfirm, setDeleteConfirm] = useState<{
     title: string;
@@ -278,6 +285,24 @@ export default function AdminPage() {
         }
       })
       .catch(() => {});
+
+    // Check real Supabase server health & table availability
+    fetch('/api/status')
+      .then((res) => res.json())
+      .then((data) => {
+        setSupabaseHealth({
+          checked: true,
+          connected: Boolean(data.connected),
+          error: data.error || null,
+        });
+      })
+      .catch((err) => {
+        setSupabaseHealth({
+          checked: true,
+          connected: false,
+          error: err?.message || 'Could not reach server status API.',
+        });
+      });
   }, []);
 
   // Sequential Cascading Filters (Year -> Branch -> Semester -> Subject)
@@ -312,16 +337,26 @@ export default function AdminPage() {
     return getStoredCoordinators();
   });
 
-  // Sync latest coordinators from Supabase if configured
+  // Sync latest coordinators from Supabase via server API
   useEffect(() => {
-    if (isSupabaseConfigured()) {
-      fetchCoordinatorsFromSupabase().then((data) => {
-        if (data && data.length > 0) {
-          setCoordinators(data);
-          saveStoredCoordinators(data);
+    fetch('/api/coordinators')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && data.coordinators && data.coordinators.length > 0) {
+          setCoordinators(data.coordinators);
+          saveStoredCoordinators(data.coordinators);
+        }
+      })
+      .catch(() => {
+        if (isSupabaseConfigured()) {
+          fetchCoordinatorsFromSupabase().then((data) => {
+            if (data && data.length > 0) {
+              setCoordinators(data);
+              saveStoredCoordinators(data);
+            }
+          });
         }
       });
-    }
   }, []);
 
   // Interactive Modals and Popups State
@@ -928,8 +963,23 @@ export default function AdminPage() {
         ]
       };
 
-      if (isSupabaseConfigured()) {
-        await insertDocumentToSupabase(noteDoc);
+      // Save document to Supabase via server API & client fallback
+      try {
+        const docRes = await fetch('/api/documents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(noteDoc),
+        });
+        const docData = await docRes.json();
+        if (!docRes.ok || !docData.success) {
+          if (isSupabaseConfigured()) {
+            await insertDocumentToSupabase(noteDoc);
+          }
+        }
+      } catch {
+        if (isSupabaseConfigured()) {
+          await insertDocumentToSupabase(noteDoc);
+        }
       }
       saveCustomUploadedDocument(noteDoc);
 
@@ -1008,10 +1058,16 @@ export default function AdminPage() {
         setSelectedMaterialIds(prev => prev.filter(item => item !== id));
         deleteCustomUploadedDocument(id);
 
-        if (isSupabaseConfigured() && target) {
-          if (target.type === 'Lectures') {
-            await deleteLectureFromSupabase(id);
+        try {
+          if (target?.type === 'Lectures') {
+            if (isSupabaseConfigured()) await deleteLectureFromSupabase(id);
           } else {
+            await fetch(`/api/documents?id=${encodeURIComponent(id)}&type=${target?.type || ''}`, {
+              method: 'DELETE',
+            });
+          }
+        } catch {
+          if (isSupabaseConfigured() && target) {
             const docType = target.type === 'PYQs' ? 'PYQ' : 'Notes';
             await deleteDocumentFromSupabase(id, undefined, docType);
           }
@@ -1102,15 +1158,32 @@ export default function AdminPage() {
         initials
       };
 
+      try {
+        const res = await fetch('/api/coordinators', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedItem),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          showToast(`⚠️ Supabase Error: ${data.error || 'Failed to update in cloud database'}`, 'error');
+          return;
+        }
+      } catch {
+        if (isSupabaseConfigured()) {
+          const ok = await updateCoordinatorInSupabase(updatedItem);
+          if (!ok) {
+            showToast('⚠️ Could not sync coordinator update to Supabase.', 'error');
+            return;
+          }
+        }
+      }
+
       const updatedList = coordinators.map(c => c.id === editingCoord.id ? updatedItem : c);
       setCoordinators(updatedList);
       saveStoredCoordinators(updatedList);
 
-      if (isSupabaseConfigured()) {
-        await updateCoordinatorInSupabase(updatedItem);
-      }
-
-      showToast(`Coordinator "${cleanName}" & password updated!`, 'success');
+      showToast(`Coordinator "${cleanName}" & password updated in Supabase!`, 'success');
     } else {
       const newCoord: CoordinatorItem = {
         id: `coord-${Date.now()}`,
@@ -1122,15 +1195,32 @@ export default function AdminPage() {
         initials
       };
 
+      try {
+        const res = await fetch('/api/coordinators', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newCoord),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          showToast(`⚠️ Supabase Error: ${data.error || 'Failed to save to cloud database'}`, 'error');
+          return;
+        }
+      } catch {
+        if (isSupabaseConfigured()) {
+          const ok = await insertCoordinatorToSupabase(newCoord);
+          if (!ok) {
+            showToast('⚠️ Could not save coordinator in Supabase.', 'error');
+            return;
+          }
+        }
+      }
+
       const updatedList = [newCoord, ...coordinators];
       setCoordinators(updatedList);
       saveStoredCoordinators(updatedList);
 
-      if (isSupabaseConfigured()) {
-        await insertCoordinatorToSupabase(newCoord);
-      }
-
-      showToast(`Coordinator "${cleanName}" added with login password!`, 'success');
+      showToast(`Coordinator "${cleanName}" saved directly to Supabase cloud!`, 'success');
     }
 
     setIsAddCoordOpen(false);
@@ -1149,14 +1239,25 @@ export default function AdminPage() {
       title: 'Delete Coordinator',
       message: `Are you sure you want to remove coordinator "${name}"? They will no longer be able to log in.`,
       onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/coordinators?id=${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+          });
+          const data = await res.json();
+          if (!res.ok || !data.success) {
+            showToast(`⚠️ Supabase Error: ${data.error || 'Failed to delete from cloud database'}`, 'error');
+            return;
+          }
+        } catch {
+          if (isSupabaseConfigured()) {
+            await deleteCoordinatorFromSupabase(id);
+          }
+        }
+
         const updatedList = coordinators.filter(c => c.id !== id);
         setCoordinators(updatedList);
         saveStoredCoordinators(updatedList);
-
-        if (isSupabaseConfigured()) {
-          await deleteCoordinatorFromSupabase(id);
-        }
-        showToast(`Coordinator "${name}" removed.`, 'success');
+        showToast(`Coordinator "${name}" removed from Supabase.`, 'success');
       }
     });
   };
@@ -1749,6 +1850,25 @@ export default function AdminPage() {
               </button>
 
             </section>
+
+            {/* Supabase Disconnected Alert Banner if tables or credentials have an issue */}
+            {supabaseHealth.checked && !supabaseHealth.connected && (
+              <div className="p-4 bg-red-50/90 border border-red-200 rounded-3xl flex items-start space-x-3 text-xs text-red-800 animate-in fade-in duration-150">
+                <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-bold text-red-900">
+                    Supabase Database is NOT Connected or Tables are Missing
+                  </p>
+                  <p className="text-red-700">
+                    {supabaseHealth.error || 'Please check environment variables (NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY).'}
+                  </p>
+                  <p className="text-[11px] text-red-600 font-medium">
+                    1. If you just set variables on Vercel, remember to click <strong>Deployments &gt; Redeploy</strong> on Vercel.<br />
+                    2. In Supabase Dashboard, open <strong>SQL Editor</strong> and run <code>supabase-schema.sql</code> to create all required tables.
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* Dashboard Main Content (Full Width Academic Overview) */}
             <div className="w-full bg-white rounded-3xl border border-slate-100/90 p-6 sm:p-8 shadow-[0_2px_14px_rgba(0,0,0,0.02)] space-y-6">
@@ -2777,19 +2897,33 @@ export default function AdminPage() {
               {/* Supabase Database Cloud */}
               <div className="bg-white rounded-3xl border border-slate-100/90 p-5 shadow-[0_2px_14px_rgba(0,0,0,0.02)] flex items-center justify-between">
                 <div className="flex items-center space-x-3.5">
-                  <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
+                    supabaseHealth.checked && !supabaseHealth.connected 
+                      ? 'bg-red-50 text-red-600' 
+                      : 'bg-emerald-50 text-emerald-600'
+                  }`}>
                     <Database className="w-6 h-6" />
                   </div>
                   <div>
                     <p className="text-xs text-slate-500 font-medium">Supabase Cloud</p>
                     <div className="flex items-baseline space-x-2 mt-0.5">
-                      <span className="text-base font-black text-emerald-700">
-                        {isSupabaseConfigured() ? 'Online' : 'Active (Local)'}
+                      <span className={`text-base font-black ${
+                        supabaseHealth.checked && !supabaseHealth.connected 
+                          ? 'text-red-600' 
+                          : 'text-emerald-700'
+                      }`}>
+                        {supabaseHealth.checked 
+                          ? (supabaseHealth.connected ? 'Online (Cloud)' : 'Disconnected') 
+                          : (isSupabaseConfigured() ? 'Online' : 'Checking...')}
                       </span>
                     </div>
                   </div>
                 </div>
-                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                <div className={`w-2.5 h-2.5 rounded-full ${
+                  supabaseHealth.checked && !supabaseHealth.connected 
+                    ? 'bg-red-500' 
+                    : 'bg-emerald-500 animate-pulse'
+                }`}></div>
               </div>
 
               {/* Google Drive Storage Status */}
@@ -2810,6 +2944,25 @@ export default function AdminPage() {
                 <div className={`w-2.5 h-2.5 rounded-full ${isGoogleDriveConfigured() ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}`}></div>
               </div>
             </section>
+
+            {/* Supabase Disconnected Alert Banner if tables or credentials have an issue */}
+            {supabaseHealth.checked && !supabaseHealth.connected && (
+              <div className="p-4 bg-red-50/90 border border-red-200 rounded-3xl flex items-start space-x-3 text-xs text-red-800 animate-in fade-in duration-150">
+                <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-bold text-red-900">
+                    Supabase Database is NOT Connected or Tables are Missing
+                  </p>
+                  <p className="text-red-700">
+                    {supabaseHealth.error || 'Please check environment variables (NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY).'}
+                  </p>
+                  <p className="text-[11px] text-red-600 font-medium">
+                    1. If you just set variables on Vercel, remember to click <strong>Deployments &gt; Redeploy</strong> on Vercel.<br />
+                    2. In Supabase Dashboard, open <strong>SQL Editor</strong> and run <code>supabase-schema.sql</code> to create all required tables.
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* =================================================================
                 MAIN FEATURE: GOOGLE DRIVE CLOUD STORAGE CONFIGURATION
