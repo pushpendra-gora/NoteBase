@@ -682,14 +682,14 @@ function ResultsContent() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f3effb] relative flex flex-col items-center pt-[max(env(safe-area-inset-top),3.75rem)] pb-6 px-3.5 sm:p-8 overflow-x-hidden selection:bg-purple-200">
+    <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f3effb] relative flex flex-col items-center overflow-y-auto overscroll-y-none select-none selection:bg-purple-200">
       
       {/* Background Soft Blobs */}
       <div className="absolute top-[-80px] left-[-80px] w-96 h-96 bg-[#e8dcfa]/60 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-[-100px] right-[-100px] w-[450px] h-[450px] bg-[#dfd4f6]/50 rounded-full blur-3xl pointer-events-none" />
 
       {/* Main Container */}
-      <div className="w-full max-w-4xl mx-auto space-y-5 sm:space-y-6 relative z-10 py-2 sm:py-4">
+      <div className="w-full max-w-4xl mx-auto space-y-4 sm:space-y-6 relative z-10 pt-[max(env(safe-area-inset-top),3.5rem)] pb-8 px-3.5 sm:px-8">
         
         {/* Top NoteBase Branding & Filter Badges Bar */}
         <div className="space-y-3 py-1 sm:py-2 px-1">
