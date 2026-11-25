@@ -47,7 +47,7 @@ function doPost(e) {
     if (data.folderId && data.folderId.trim() !== "") {
       folder = DriveApp.getFolderById(data.folderId.trim());
     } else {
-      var folderName = "College Notes App Uploads";
+      var folderName = "NoteBase Uploads";
       var folders = DriveApp.getFoldersByName(folderName);
       if (folders.hasNext()) {
         folder = folders.next();
@@ -195,24 +195,41 @@ export async function uploadPdfToGoogleDrive(
       folderId: targetFolderId || undefined,
     };
 
-    // Use our internal Next.js API route as a proxy to handle CORS and redirects cleanly
-    const response = await fetch('/api/upload-drive', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
+    // Direct upload from browser straight to Google Drive (Zero Vercel traffic)
+    // Sending with 'text/plain;charset=utf-8' prevents CORS preflight (OPTIONS)
+    // while Google Apps Script parses e.postData.contents as the raw JSON payload!
+    let response: Response;
+    try {
+      response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8',
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch (directError) {
+      console.warn('Direct upload to Google Apps Script encountered an issue, trying proxy fallback:', directError);
+      response = await fetch('/api/upload-drive', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+    }
 
     if (!response.ok) {
-      if (response.status === 413) {
-        throw new Error('File exceeds Vercel 4.5MB serverless limit. Please compress the PDF to under 3.5MB.');
-      }
       const errText = await response.text();
       throw new Error(`Upload failed with HTTP ${response.status}: ${errText}`);
     }
 
-    const result = await response.json();
+    const responseText = await response.text();
+    let result: any;
+    try {
+      result = JSON.parse(responseText);
+    } catch {
+      throw new Error(`Google Drive returned non-JSON response: ${responseText.slice(0, 200)}`);
+    }
 
     if (!result.success) {
       throw new Error(result.error || 'Google Drive upload returned unsuccessful status');
