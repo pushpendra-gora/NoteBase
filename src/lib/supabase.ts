@@ -1,8 +1,10 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 // Read default credentials from environment variables or browser storage
-const envUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const envKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const envUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '';
+const envKey = (typeof window === 'undefined' && process.env.SUPABASE_SERVICE_ROLE_KEY)
+  ? process.env.SUPABASE_SERVICE_ROLE_KEY
+  : (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '');
 
 export function getSupabaseCredentials() {
   if (typeof window !== 'undefined') {
