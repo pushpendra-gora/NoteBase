@@ -205,6 +205,9 @@ export async function uploadPdfToGoogleDrive(
     });
 
     if (!response.ok) {
+      if (response.status === 413) {
+        throw new Error('File exceeds Vercel 4.5MB serverless limit. Please compress the PDF to under 3.5MB.');
+      }
       const errText = await response.text();
       throw new Error(`Upload failed with HTTP ${response.status}: ${errText}`);
     }

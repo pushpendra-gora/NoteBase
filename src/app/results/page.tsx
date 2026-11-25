@@ -145,17 +145,19 @@ function ResultsContent() {
     if (year && branch && semester && type !== 'Lectures' && isSupabaseConfigured()) {
       const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
       fetchDocumentsFromSupabase(year, branch, semester, targetType).then((docs) => {
-        if (isMounted && docs && docs.length > 0) {
-          setSupabaseDocs(docs);
+        if (isMounted) {
+          setSupabaseDocs(docs || []);
         }
       }).catch((err) => {
         console.warn('Could not load Supabase documents:', err);
       });
+    } else if (type === 'Lectures') {
+      setSupabaseDocs([]);
     }
     return () => {
       isMounted = false;
     };
-  }, [year, branch, semester, subjectsVersion]);
+  }, [year, branch, semester, type, subjectsVersion]);
 
   const activeSubject = useMemo(() => {
     if (selectedSubject && subjectsList.some((s) => s.title === selectedSubject)) {
@@ -682,7 +684,7 @@ Note: Uploading and modifying documents is restricted to Branch Coordinators.
 
                 {/* Footer of PDF page */}
                 <div className="border-t border-slate-200 pt-3 flex items-center justify-between text-[11px] text-slate-400 font-mono">
-                  <span>NoteHub Academic Portal</span>
+                  <span>NoteBase Academic Portal</span>
                   <span>Page 1 of {activeDoc.pages}</span>
                 </div>
 

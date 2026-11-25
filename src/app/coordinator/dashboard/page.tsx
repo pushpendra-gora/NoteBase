@@ -600,7 +600,7 @@ function DashboardContent() {
         preview: [
           `Document prepared by: ${finalOwner}`,
           `Verified academic ${finalType} for ${finalSubject} (${finalSem}) in ${branchParam}.`,
-          uploadedFileUrl ? 'Official verified PDF hosted on Supabase Cloud Storage.' : 'Official department curriculum resource ready for viewing and download.'
+          uploadedFileUrl ? 'Official verified PDF hosted on NoteBase Cloud Repository.' : 'Official department curriculum resource ready for viewing and download.'
         ]
       };
 

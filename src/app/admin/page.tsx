@@ -80,7 +80,7 @@ import {
   updateAdminPasswordInSupabase
 } from '../../lib/supabaseService';
 import { isSupabaseConfigured, getSupabaseCredentials } from '../../lib/supabase';
-import { getStoredCoordinators, saveStoredCoordinators } from '../../lib/coordinatorService';
+import { getStoredCoordinators, saveStoredCoordinators, isBranchMatch } from '../../lib/coordinatorService';
 import {
   getGoogleDriveConfig,
   saveGoogleDriveConfig,
@@ -1062,6 +1062,17 @@ export default function AdminPage() {
     }
     if (!coordForm.password.trim()) {
       showToast('Please set a Login Password for this coordinator.', 'error');
+      return;
+    }
+
+    // Check if another coordinator already exists for the same Year & Branch
+    const duplicateCoord = coordinators.find((c) => {
+      if (editingCoord && c.id === editingCoord.id) return false;
+      return c.year === coordForm.year && isBranchMatch(c.branch, coordForm.branch);
+    });
+
+    if (duplicateCoord) {
+      showToast(`⚠️ Coordinator "${duplicateCoord.name}" is already registered for ${coordForm.year} • ${coordForm.branch}! Only 1 coordinator is allowed per Year & Branch.`, 'error');
       return;
     }
 
