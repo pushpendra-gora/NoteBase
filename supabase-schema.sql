@@ -1,6 +1,14 @@
 -- =====================================================================
--- NoteBase Supabase Database & Storage Setup SQL Schema
+-- NoteBase Supabase Production SQL Schema (Self-Healing & Idempotent)
 -- Run this in your Supabase Dashboard: SQL Editor -> New Query -> Run
+-- Safe to run multiple times without any errors or duplicate policy conflicts.
+-- =====================================================================
+
+-- Enable extensions
+create extension if not exists "pgcrypto";
+
+-- =====================================================================
+-- 1. TABLES DEFINITIONS
 -- =====================================================================
 
 -- 1A. NOTES TABLE (Stores Notes PDF metadata & Google Drive public links)
@@ -15,12 +23,21 @@ create table if not exists public.notes (
   pages integer default 20,
   size text default '3.5 MB',
   owner text default 'Department Faculty',
-  file_url text,           -- Google Drive public link
-  file_path text,          -- Google Drive file ID / path
+  file_url text,           -- Google Drive public shareable link
+  file_path text,          -- Google Drive file ID
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+-- Ensure all columns exist even if table was created previously with older schema
+alter table public.notes add column if not exists file_url text;
+alter table public.notes add column if not exists file_path text;
+alter table public.notes add column if not exists code text default 'DOC101';
+alter table public.notes add column if not exists pages integer default 20;
+alter table public.notes add column if not exists size text default '3.5 MB';
+alter table public.notes add column if not exists owner text default 'Department Faculty';
+
 create index if not exists idx_notes_lookup on public.notes(year, branch, semester, subject);
+
 
 -- 1B. PYQS TABLE (Stores PYQ PDF metadata & Google Drive public links)
 create table if not exists public.pyqs (
@@ -34,14 +51,22 @@ create table if not exists public.pyqs (
   pages integer default 20,
   size text default '3.5 MB',
   owner text default 'Department Faculty',
-  file_url text,           -- Google Drive public link
-  file_path text,          -- Google Drive file ID / path
+  file_url text,           -- Google Drive public shareable link
+  file_path text,          -- Google Drive file ID
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+alter table public.pyqs add column if not exists file_url text;
+alter table public.pyqs add column if not exists file_path text;
+alter table public.pyqs add column if not exists code text default 'PYQ101';
+alter table public.pyqs add column if not exists pages integer default 20;
+alter table public.pyqs add column if not exists size text default '3.5 MB';
+alter table public.pyqs add column if not exists owner text default 'Department Faculty';
+
 create index if not exists idx_pyqs_lookup on public.pyqs(year, branch, semester, subject);
 
--- (Optional legacy documents table kept for backward compatibility if needed)
+
+-- 1C. DOCUMENTS TABLE (Legacy fallback for backwards compatibility)
 create table if not exists public.documents (
   id text primary key,
   title text not null,
@@ -50,7 +75,7 @@ create table if not exists public.documents (
   year text not null,
   branch text not null,
   semester text not null,
-  type text not null check (type in ('Notes', 'PYQ')),
+  type text not null default 'Notes',
   pages integer default 20,
   size text default '3.5 MB',
   owner text default 'Department Faculty',
@@ -59,7 +84,11 @@ create table if not exists public.documents (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- 2. SUBJECTS TABLE (Stores branch/semester dynamic subjects)
+alter table public.documents add column if not exists file_url text;
+alter table public.documents add column if not exists file_path text;
+
+
+-- 2. SUBJECTS TABLE (Dynamic subjects managed by Admin & Coordinators)
 create table if not exists public.subjects (
   id uuid default gen_random_uuid() primary key,
   title text not null,
@@ -72,7 +101,8 @@ create table if not exists public.subjects (
 
 create index if not exists idx_subjects_lookup on public.subjects(year, branch, semester);
 
--- 3. LECTURES TABLE (Stores video classes, YouTube/Drive links)
+
+-- 3. LECTURES TABLE (Video classes, YouTube/Drive links)
 create table if not exists public.lectures (
   id text primary key,
   title text not null,
@@ -80,87 +110,21 @@ create table if not exists public.lectures (
   semester text not null,
   year text not null,
   branch text not null,
-  faculty text,
+  faculty text default 'Department Faculty',
   link text,
   video_file_url text,
   date text default current_date::text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+alter table public.lectures add column if not exists faculty text default 'Department Faculty';
+alter table public.lectures add column if not exists link text;
+alter table public.lectures add column if not exists video_file_url text;
+
 create index if not exists idx_lectures_lookup on public.lectures(year, branch, semester, subject);
 
--- 4. ROW LEVEL SECURITY (RLS) POLICIES
--- Allow public read/write access to notes, pyqs, documents, subjects, and lectures
-alter table public.notes enable row level security;
-alter table public.pyqs enable row level security;
-alter table public.documents enable row level security;
-alter table public.subjects enable row level security;
-alter table public.lectures enable row level security;
 
--- Notes Policies
-create policy "Allow public read for notes" on public.notes for select using (true);
-create policy "Allow insert for notes" on public.notes for insert with check (true);
-create policy "Allow update for notes" on public.notes for update using (true);
-create policy "Allow delete for notes" on public.notes for delete using (true);
-
--- PYQs Policies
-create policy "Allow public read for pyqs" on public.pyqs for select using (true);
-create policy "Allow insert for pyqs" on public.pyqs for insert with check (true);
-create policy "Allow update for pyqs" on public.pyqs for update using (true);
-create policy "Allow delete for pyqs" on public.pyqs for delete using (true);
-
--- Documents Policies
-create policy "Allow public read for documents"
-  on public.documents for select
-  using (true);
-
-create policy "Allow insert for documents"
-  on public.documents for insert
-  with check (true);
-
-create policy "Allow update for documents"
-  on public.documents for update
-  using (true);
-
-create policy "Allow delete for documents"
-  on public.documents for delete
-  using (true);
-
--- Subjects Policies
-create policy "Allow public read for subjects"
-  on public.subjects for select
-  using (true);
-
-create policy "Allow insert for subjects"
-  on public.subjects for insert
-  with check (true);
-
-create policy "Allow update for subjects"
-  on public.subjects for update
-  using (true);
-
-create policy "Allow delete for subjects"
-  on public.subjects for delete
-  using (true);
-
--- Lectures Policies
-create policy "Allow public read for lectures"
-  on public.lectures for select
-  using (true);
-
-create policy "Allow insert for lectures"
-  on public.lectures for insert
-  with check (true);
-
-create policy "Allow update for lectures"
-  on public.lectures for update
-  using (true);
-
-create policy "Allow delete for lectures"
-  on public.lectures for delete
-  using (true);
-
--- 5. COORDINATORS TABLE (Stores branch coordinators and their passwords)
+-- 4. COORDINATORS TABLE (Stores Coordinators, branch/year assignments, and login passwords)
 create table if not exists public.coordinators (
   id text primary key,
   name text not null,
@@ -172,48 +136,99 @@ create table if not exists public.coordinators (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+alter table public.coordinators add column if not exists password text not null default '';
+alter table public.coordinators add column if not exists initials text default '';
+alter table public.coordinators add column if not exists status text not null default 'Active';
+
 create index if not exists idx_coordinators_lookup on public.coordinators(year, branch);
 
-alter table public.coordinators enable row level security;
 
-create policy "Allow select for coordinators"
-  on public.coordinators for select
-  using (true);
-
-create policy "Allow insert for coordinators"
-  on public.coordinators for insert
-  with check (true);
-
-create policy "Allow update for coordinators"
-  on public.coordinators for update
-  using (true);
-
-create policy "Allow delete for coordinators"
-  on public.coordinators for delete
-  using (true);
-
--- 6. ADMIN CREDENTIALS TABLE (Stores Admin ID & Password)
+-- 5. ADMIN CREDENTIALS TABLE (Stores Admin ID & Password)
 create table if not exists public.admin_credentials (
-  id text primary key,             -- e.g. 'admin'
-  password text not null,          -- admin password
+  id text primary key,
+  password text not null,
   updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
-alter table public.admin_credentials enable row level security;
-
-create policy "Allow select for admin_credentials"
-  on public.admin_credentials for select
-  using (true);
-
-create policy "Allow insert for admin_credentials"
-  on public.admin_credentials for insert
-  with check (true);
-
-create policy "Allow update for admin_credentials"
-  on public.admin_credentials for update
-  using (true);
-
--- Insert default admin credentials if not already present
+-- Seed initial admin if empty
 insert into public.admin_credentials (id, password)
 values ('admin', 'admin123')
 on conflict (id) do nothing;
+
+
+-- =====================================================================
+-- 6. PERMISSIONS & ROW LEVEL SECURITY (RLS) POLICIES
+-- Clean, idempotent policies using FOR ALL to ensure SELECT, INSERT,
+-- UPDATE, and DELETE all work seamlessly without conflicts or locks.
+-- =====================================================================
+
+-- Enable RLS on all tables
+alter table public.notes enable row level security;
+alter table public.pyqs enable row level security;
+alter table public.documents enable row level security;
+alter table public.subjects enable row level security;
+alter table public.lectures enable row level security;
+alter table public.coordinators enable row level security;
+alter table public.admin_credentials enable row level security;
+
+-- Notes Policies (clean drop & recreate)
+drop policy if exists "Allow all for notes" on public.notes;
+drop policy if exists "Allow public read for notes" on public.notes;
+drop policy if exists "Allow insert for notes" on public.notes;
+drop policy if exists "Allow update for notes" on public.notes;
+drop policy if exists "Allow delete for notes" on public.notes;
+create policy "Allow all for notes" on public.notes for all using (true) with check (true);
+
+-- PYQs Policies (clean drop & recreate)
+drop policy if exists "Allow all for pyqs" on public.pyqs;
+drop policy if exists "Allow public read for pyqs" on public.pyqs;
+drop policy if exists "Allow insert for pyqs" on public.pyqs;
+drop policy if exists "Allow update for pyqs" on public.pyqs;
+drop policy if exists "Allow delete for pyqs" on public.pyqs;
+create policy "Allow all for pyqs" on public.pyqs for all using (true) with check (true);
+
+-- Documents Policies
+drop policy if exists "Allow all for documents" on public.documents;
+drop policy if exists "Allow public read for documents" on public.documents;
+drop policy if exists "Allow insert for documents" on public.documents;
+drop policy if exists "Allow update for documents" on public.documents;
+drop policy if exists "Allow delete for documents" on public.documents;
+create policy "Allow all for documents" on public.documents for all using (true) with check (true);
+
+-- Subjects Policies
+drop policy if exists "Allow all for subjects" on public.subjects;
+drop policy if exists "Allow public read for subjects" on public.subjects;
+drop policy if exists "Allow insert for subjects" on public.subjects;
+drop policy if exists "Allow update for subjects" on public.subjects;
+drop policy if exists "Allow delete for subjects" on public.subjects;
+create policy "Allow all for subjects" on public.subjects for all using (true) with check (true);
+
+-- Lectures Policies
+drop policy if exists "Allow all for lectures" on public.lectures;
+drop policy if exists "Allow public read for lectures" on public.lectures;
+drop policy if exists "Allow insert for lectures" on public.lectures;
+drop policy if exists "Allow update for lectures" on public.lectures;
+drop policy if exists "Allow delete for lectures" on public.lectures;
+create policy "Allow all for lectures" on public.lectures for all using (true) with check (true);
+
+-- Coordinators Policies
+drop policy if exists "Allow all for coordinators" on public.coordinators;
+drop policy if exists "Allow select for coordinators" on public.coordinators;
+drop policy if exists "Allow insert for coordinators" on public.coordinators;
+drop policy if exists "Allow update for coordinators" on public.coordinators;
+drop policy if exists "Allow delete for coordinators" on public.coordinators;
+create policy "Allow all for coordinators" on public.coordinators for all using (true) with check (true);
+
+-- Admin Credentials Policies
+drop policy if exists "Allow all for admin_credentials" on public.admin_credentials;
+drop policy if exists "Allow select for admin_credentials" on public.admin_credentials;
+drop policy if exists "Allow insert for admin_credentials" on public.admin_credentials;
+drop policy if exists "Allow update for admin_credentials" on public.admin_credentials;
+drop policy if exists "Allow delete for admin_credentials" on public.admin_credentials;
+create policy "Allow all for admin_credentials" on public.admin_credentials for all using (true) with check (true);
+
+-- Grant public API permissions to Supabase roles
+grant usage on schema public to anon, authenticated, service_role;
+grant all on all tables in schema public to anon, authenticated, service_role;
+grant all on all sequences in schema public to anon, authenticated, service_role;
+grant all on all routines in schema public to anon, authenticated, service_role;

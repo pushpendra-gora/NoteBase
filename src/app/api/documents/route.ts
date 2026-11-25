@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
       branch: branch.trim(),
       semester: semester.trim(),
       subject: subject.trim(),
-      code: code || 'DOC101',
+      code: code || (type === 'PYQ' ? 'PYQ101' : 'DOC101'),
       pages: typeof pages === 'number' ? pages : 20,
       size: size || '3.5 MB',
       owner: owner || 'Department Faculty',
@@ -111,10 +111,21 @@ export async function POST(req: NextRequest) {
       created_at: new Date().toISOString(),
     };
 
-    const { data, error } = await client
+    let { data, error } = await client
       .from(targetTable)
-      .upsert(payload)
+      .upsert(payload, { onConflict: 'id' })
       .select();
+
+    if (error) {
+      const insertFallback = await client
+        .from(targetTable)
+        .insert(payload)
+        .select();
+      if (!insertFallback.error) {
+        data = insertFallback.data;
+        error = null;
+      }
+    }
 
     if (error) {
       console.error(`Error saving document to ${targetTable}:`, error);
