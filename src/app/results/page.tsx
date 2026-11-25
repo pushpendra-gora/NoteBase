@@ -1062,18 +1062,19 @@ function ResultsContent() {
 
       </div>
 
-      {/* 3. FULL REAL PDF VIEWER MODAL (Mobile-Optimized Clean Experience) */}
+      {/* 3. FULL REAL PDF VIEWER MODAL (Solid 4-Sided Border Frame with Static Header) */}
       {activeDoc && (
         <div 
           onTouchStart={handlePdfTouchStart}
           onTouchMove={handlePdfTouchMove}
           onTouchEnd={handlePdfTouchEnd}
-          className="fixed inset-0 z-50 bg-white sm:bg-slate-900/80 sm:backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200"
+          className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-2.5 sm:p-5 md:p-8 animate-in fade-in duration-200 select-none overflow-hidden"
         >
-          <div className="bg-white w-full h-[100dvh] sm:h-[90vh] max-w-5xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-100 shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
+          {/* Framed Container: Continuous Solid 4-Sided Border (Never moves on zoom) */}
+          <div className="w-full h-full max-w-5xl rounded-2xl sm:rounded-3xl border-4 sm:border-[5px] border-indigo-600 bg-white shadow-2xl overflow-hidden flex flex-col relative z-10">
             
-            {/* Modal Top Bar: 100% ROCK-SOLID STATIC, ZERO GLITCH OR SHIFT */}
-            <div className="pt-[max(env(safe-area-inset-top),3.25rem)] pb-3 px-3.5 sm:py-3.5 sm:px-6 border-b border-slate-200/90 flex items-center justify-between bg-white gap-2 shrink-0 shadow-xs z-30 select-none">
+            {/* Header: Part of the Framed Border (100% Static & Immovable) */}
+            <div className="bg-slate-50 border-b-2 border-indigo-100 px-3.5 py-2.5 sm:px-6 sm:py-3.5 flex items-center justify-between shrink-0 z-30 select-none">
               <div className="space-y-0.5 min-w-0 flex-1">
                 <div className="flex items-center space-x-1.5 min-w-0">
                   <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 rounded shrink-0 ${
@@ -1098,42 +1099,12 @@ function ResultsContent() {
                 </h3>
               </div>
 
-              {/* Dedicated PDF Zoom Controls: Zooms Only the Document Without Touching Top Bar */}
-              <div className="flex items-center space-x-1 shrink-0 bg-slate-100/90 p-1 rounded-2xl border border-slate-200/80">
-                <button
-                  type="button"
-                  onClick={handlePdfZoomOut}
-                  disabled={zoomLevel <= 100}
-                  className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-white disabled:opacity-40 text-slate-700 hover:text-indigo-600 flex items-center justify-center shadow-xs transition-all cursor-pointer"
-                  title="Zoom Out PDF"
-                >
-                  <ZoomOut className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePdfZoomReset}
-                  className="px-1.5 sm:px-2 py-1 text-[10px] sm:text-xs font-bold text-slate-700 hover:text-indigo-600 transition-colors cursor-pointer min-w-[36px] text-center"
-                  title="Reset Zoom to 100%"
-                >
-                  {zoomLevel}%
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePdfZoomIn}
-                  disabled={zoomLevel >= 250}
-                  className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-white disabled:opacity-40 text-slate-700 hover:text-indigo-600 flex items-center justify-center shadow-xs transition-all cursor-pointer"
-                  title="Zoom In PDF"
-                >
-                  <ZoomIn className="w-3.5 h-3.5" />
-                </button>
-              </div>
-
               <div className="flex items-center space-x-2 shrink-0">
                 {activeDoc.file_url && (
                   <button
                     type="button"
                     onClick={() => handleDownload(activeDoc)}
-                    className="inline-flex items-center space-x-1.5 px-3 sm:px-4 py-1.5 rounded-xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs font-semibold transition-all shadow-sm cursor-pointer"
+                    className="inline-flex items-center space-x-1.5 px-3 sm:px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition-all shadow-sm cursor-pointer"
                     title="Download PDF"
                   >
                     <Download className="w-3.5 h-3.5" />
@@ -1142,7 +1113,7 @@ function ResultsContent() {
                 )}
                 <button
                   onClick={closeDocModal}
-                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-200/80 hover:bg-slate-300 text-slate-700 flex items-center justify-center transition-colors cursor-pointer shrink-0"
                   aria-label="Close Preview"
                 >
                   <X className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -1150,14 +1121,13 @@ function ResultsContent() {
               </div>
             </div>
 
-            {/* REAL PDF EMBEDDED VIEWER (Only inner document zooms on pinch or controls) */}
+            {/* REAL PDF EMBEDDED VIEWER (Strictly contained inside the 4-sided border) */}
             <div 
               ref={pdfContainerRef}
               onTouchStart={handlePdfTouchStart}
               onTouchMove={handlePdfTouchMove}
               onTouchEnd={handlePdfTouchEnd}
-              className="flex-1 w-full bg-slate-100 relative overflow-auto flex flex-col"
-              style={{ WebkitOverflowScrolling: 'touch', touchAction: zoomLevel > 100 ? 'pan-x pan-y' : 'pan-y' }}
+              className="flex-1 w-full bg-slate-100 relative overflow-hidden flex flex-col"
             >
               {(activeDoc.file_url || (activeDoc.file_path && activeDoc.file_path.startsWith('gdrive://'))) ? (
                 <>
@@ -1233,40 +1203,6 @@ function ResultsContent() {
                   </div>
                 </div>
               )}
-            </div>
-
-            {/* Floating Quick Zoom Controller (Easy one-hand thumb access on mobile) */}
-            <div className="absolute bottom-5 right-4 z-40 flex items-center bg-slate-900/90 text-white backdrop-blur-md rounded-2xl px-2 py-1 shadow-2xl border border-white/15 space-x-1.5 text-xs select-none">
-              <button
-                type="button"
-                onClick={handlePdfZoomOut}
-                disabled={zoomLevel <= 100}
-                className="w-7 h-7 rounded-xl bg-white/10 hover:bg-white/20 active:bg-white/30 disabled:opacity-30 flex items-center justify-center font-bold text-sm cursor-pointer"
-                title="Zoom Out"
-              >
-                -
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const next = zoomLevel === 100 ? 160 : 100;
-                  setZoomLevel(next);
-                  zoomLevelFloatRef.current = next;
-                }}
-                className="font-bold text-[11px] min-w-[40px] text-center px-1 text-slate-200 hover:text-white"
-                title="Tap to toggle Zoom (100% / 160%)"
-              >
-                {zoomLevel}%
-              </button>
-              <button
-                type="button"
-                onClick={handlePdfZoomIn}
-                disabled={zoomLevel >= 300}
-                className="w-7 h-7 rounded-xl bg-white/10 hover:bg-white/20 active:bg-white/30 disabled:opacity-30 flex items-center justify-center font-bold text-sm cursor-pointer"
-                title="Zoom In"
-              >
-                +
-              </button>
             </div>
 
           </div>
