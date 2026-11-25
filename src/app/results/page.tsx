@@ -661,31 +661,33 @@ function ResultsContent() {
       {/* Main Container */}
       <div className="w-full max-w-4xl mx-auto space-y-5 sm:space-y-6 relative z-10 py-2 sm:py-4">
         
-        {/* Top Header & Breadcrumbs Bar */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-1 sm:py-2 px-1">
-          <Link
-            href="/"
-            className="inline-flex items-center space-x-2 text-sm font-semibold text-slate-700 hover:text-slate-900 transition-colors w-fit group"
-          >
-            <img src="/logo.png?v=2" alt="NoteBase" className="w-6 h-6 object-contain" />
-            <span className="font-extrabold text-slate-900">Note<span className="text-blue-600">Base</span></span>
-            <span className="text-slate-300">/</span>
-            <ArrowLeft className="w-3.5 h-3.5 shrink-0 text-slate-400 group-hover:-translate-x-0.5 transition-transform" />
-            <span className="text-xs text-slate-600 font-medium">Back to Search</span>
-          </Link>
+        {/* Top NoteBase Branding & Filter Badges Bar */}
+        <div className="space-y-3 py-1 sm:py-2 px-1">
+          {/* NoteBase Brand at Top */}
+          <div className="flex items-center justify-between">
+            <Link
+              href="/"
+              className="inline-flex items-center space-x-2 group cursor-pointer"
+            >
+              <img src="/logo.png?v=2" alt="NoteBase" className="w-7 h-7 sm:w-8 sm:h-8 object-contain transition-transform group-hover:scale-105" />
+              <span className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                Note<span className="text-blue-600">Base</span>
+              </span>
+            </Link>
+          </div>
 
-          {/* Active Filter Badges */}
-          <div className="flex items-center flex-wrap gap-1.5 sm:gap-2 text-[11px] sm:text-xs">
-            <span className="bg-white/80 border border-slate-200/80 px-2.5 sm:px-3 py-1 rounded-full text-slate-700 font-medium shadow-sm">
+          {/* Active Filter Badges: In 1 Single Line (No awkward wrapping into second line) */}
+          <div className="flex items-center gap-1.5 sm:gap-2 text-[11px] sm:text-xs overflow-x-auto no-scrollbar flex-nowrap py-0.5">
+            <span className="bg-white border border-slate-200/90 px-2.5 sm:px-3 py-1 rounded-full text-slate-700 font-semibold shadow-xs shrink-0 whitespace-nowrap">
               📅 {year}
             </span>
-            <span className="bg-white/80 border border-slate-200/80 px-2.5 sm:px-3 py-1 rounded-full text-slate-700 font-medium shadow-sm truncate max-w-[160px] sm:max-w-[240px]">
+            <span className="bg-white border border-slate-200/90 px-2.5 sm:px-3 py-1 rounded-full text-slate-700 font-semibold shadow-xs shrink-0 whitespace-nowrap">
               📚 {branch}
             </span>
-            <span className="bg-white/80 border border-slate-200/80 px-2.5 sm:px-3 py-1 rounded-full text-slate-700 font-medium shadow-sm">
+            <span className="bg-white border border-slate-200/90 px-2.5 sm:px-3 py-1 rounded-full text-slate-700 font-semibold shadow-xs shrink-0 whitespace-nowrap">
               🎓 {semester}
             </span>
-            <span className={`px-2.5 sm:px-3 py-1 rounded-full font-bold shadow-sm ${
+            <span className={`px-2.5 sm:px-3 py-1 rounded-full font-bold shadow-xs shrink-0 whitespace-nowrap ${
               type === 'Notes' 
                 ? 'bg-blue-600 text-white' 
                 : type === 'PYQ'
@@ -720,15 +722,15 @@ function ResultsContent() {
             </span>
           </div>
 
-          {/* Subject Cards / Buttons Grid */}
-          {isLoadingSubjects ? (
-            <div className="py-8 px-4 text-center rounded-2xl bg-slate-50/70 border border-slate-100 flex flex-col items-center justify-center space-y-2">
+          {/* Subject Compact Boxes / Chips (Small & neat boxes side by side) */}
+          {isLoadingSubjects && subjectsList.length === 0 ? (
+            <div className="py-6 px-4 text-center rounded-2xl bg-slate-50/70 border border-slate-100 flex flex-col items-center justify-center space-y-2">
               <Loader2 className="w-5 h-5 text-indigo-600 animate-spin" />
               <p className="text-xs font-semibold text-slate-600">Loading curriculum subjects for {branch}...</p>
             </div>
           ) : subjectsList.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 sm:gap-3">
-              {/* Individual Subjects */}
+            <div className="flex flex-wrap gap-2 sm:gap-2.5">
+              {/* Individual Compact Subject Box */}
               {subjectsList.map((subj) => {
                 const isSelected = activeSubject === subj.title;
 
@@ -737,25 +739,19 @@ function ResultsContent() {
                     key={subj.code}
                     type="button"
                     onClick={() => handleSelectSubject(subj.title)}
-                    className={`p-3 sm:p-3.5 rounded-2xl text-left transition-all border flex items-center justify-between gap-2 cursor-pointer ${
+                    className={`px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-bold transition-all border inline-flex items-center space-x-2 cursor-pointer shadow-xs ${
                       isSelected
-                        ? 'bg-[#3b49df] text-white border-[#3b49df] shadow-md shadow-indigo-100 ring-2 ring-indigo-200'
-                        : 'bg-slate-50/70 hover:bg-white border-slate-200/70 hover:border-indigo-300 text-slate-800 hover:shadow-sm'
+                        ? 'bg-[#3b49df] text-white border-[#3b49df] shadow-sm shadow-indigo-100 ring-2 ring-indigo-200 scale-[1.02]'
+                        : 'bg-slate-50 hover:bg-white border-slate-200/80 hover:border-indigo-300 text-slate-800 hover:shadow-xs'
                     }`}
                   >
-                    <div className="flex items-center space-x-3 min-w-0 flex-1">
-                      <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 font-bold text-[10px] ${
-                        isSelected ? 'bg-white/20 text-white' : 'bg-slate-200/60 text-slate-700'
-                      }`}>
-                        {subj.code.slice(0, 3)}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-xs sm:text-sm font-bold truncate" title={subj.title}>
-                          {subj.title}
-                        </div>
-                      </div>
-                    </div>
-                    {isSelected && <Check className="w-4 h-4 text-white shrink-0 ml-1" />}
+                    <span className={`text-[10px] sm:text-[11px] px-1.5 py-0.5 rounded-md font-extrabold ${
+                      isSelected ? 'bg-white/20 text-white' : 'bg-slate-200/70 text-slate-600'
+                    }`}>
+                      {subj.code.slice(0, 3)}
+                    </span>
+                    <span className="truncate max-w-[160px] sm:max-w-none">{subj.title}</span>
+                    {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0 ml-0.5" />}
                   </button>
                 );
               })}
