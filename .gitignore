@@ -27,6 +27,8 @@ android-app/.gradle/
 android-app/build/
 android-app/app/build/
 android-app/local.properties
+*.apk
+*.png
 
 # Debug & OS logs
 npm-debug.log*

@@ -1,23 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
+import { isBranchMatch } from '@/lib/coordinatorService';
 
 export const dynamic = 'force-dynamic';
-
-function isBranchMatch(coordBranch: string, targetBranch: string): boolean {
-  if (!coordBranch || !targetBranch) return false;
-  const cleanCoord = coordBranch.trim().toLowerCase();
-  const cleanTarget = targetBranch.trim().toLowerCase();
-  if (cleanCoord === cleanTarget) return true;
-
-  // CSE(AI&ML) variations
-  if (
-    (cleanCoord.includes('ai') && cleanCoord.includes('ml')) &&
-    (cleanTarget.includes('ai') && cleanTarget.includes('ml'))
-  ) {
-    return true;
-  }
-  return false;
-}
 
 export async function POST(req: NextRequest) {
   try {

@@ -300,10 +300,16 @@ function ResultsContent() {
       targetUrl = `https://drive.google.com/file/d/${fId}/view?usp=sharing`;
     }
 
-    // If real PDF URL exists, open it directly in a new tab for reading/downloading
+    // If real PDF URL exists, open direct download link
     if (targetUrl) {
+      let downloadUrl = targetUrl;
+      const fileIdMatch = targetUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+      if (fileIdMatch && fileIdMatch[1]) {
+        downloadUrl = `https://drive.google.com/uc?export=download&id=${fileIdMatch[1]}`;
+      }
+
       setDownloadSuccess(true);
-      window.open(targetUrl, '_blank');
+      window.open(downloadUrl, '_blank');
       setTimeout(() => setDownloadSuccess(false), 2500);
       return;
     }

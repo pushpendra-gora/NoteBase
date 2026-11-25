@@ -197,7 +197,7 @@ export default function CoordinatorLoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#f3effb] relative flex flex-col items-center justify-center p-4 sm:p-6 overflow-x-hidden selection:bg-purple-200">
+    <div className="min-h-screen bg-[#f3effb] relative flex flex-col items-center justify-center pt-[max(env(safe-area-inset-top),1.5rem)] pb-[max(env(safe-area-inset-bottom),1.5rem)] px-4 sm:p-6 overflow-x-hidden selection:bg-purple-200">
       
       {/* Background Soft Pastel Blobs matching the theme */}
       <div className="absolute top-[-80px] left-[-80px] w-96 h-96 bg-[#e8dcfa]/60 rounded-full blur-3xl pointer-events-none" />
