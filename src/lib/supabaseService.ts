@@ -46,7 +46,8 @@ async function fetchFromDedicatedTable(
   if (!client) return [];
 
   try {
-    let query = client.from(tableName).select('*');
+    const METADATA_FIELDS = 'id, title, year, branch, semester, subject, code, pages, size, owner, file_url, file_path, created_at';
+    let query = client.from(tableName).select(METADATA_FIELDS);
 
     if (year && year !== 'All') {
       query = query.eq('year', year);
@@ -68,7 +69,7 @@ async function fetchFromDedicatedTable(
       return [];
     }
 
-    return (data || []).map((row) => ({
+    return ((data || []) as any[]).map((row) => ({
       id: row.id,
       title: row.title,
       subject: row.subject,
@@ -242,7 +243,7 @@ export async function fetchSubjectsFromSupabase(
 
     if (error) return [];
 
-    return (data || []).map((row) => ({
+    return ((data || []) as any[]).map((row) => ({
       title: row.title,
       code: row.code,
       unitSnippets: row.unit_snippets || [

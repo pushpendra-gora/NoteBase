@@ -30,11 +30,12 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    const METADATA_COLUMNS = 'id, title, year, branch, semester, subject, code, pages, size, owner, file_url, file_path, created_at';
     let allDocs: any[] = [];
 
-    // Query notes
+    // Query notes (only lightweight metadata from Supabase database)
     if (type !== 'PYQ') {
-      let query = client.from('notes').select('*');
+      let query = client.from('notes').select(METADATA_COLUMNS);
       if (year && year !== 'All') query = query.eq('year', year);
       if (branch && branch !== 'All') query = query.eq('branch', branch);
       if (semester && semester !== 'All') query = query.eq('semester', semester);
@@ -45,9 +46,9 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Query pyqs
+    // Query pyqs (only lightweight metadata from Supabase database)
     if (type !== 'Notes') {
-      let query = client.from('pyqs').select('*');
+      let query = client.from('pyqs').select(METADATA_COLUMNS);
       if (year && year !== 'All') query = query.eq('year', year);
       if (branch && branch !== 'All') query = query.eq('branch', branch);
       if (semester && semester !== 'All') query = query.eq('semester', semester);
