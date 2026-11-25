@@ -825,8 +825,29 @@ function DashboardContent() {
   // Handle PDF Download / Direct Open (Real PDF directly from Google Drive / Supabase)
   const handleDownloadFile = (file: CoordinatorFile) => {
     if (file.file_url) {
-      window.open(file.file_url, '_blank');
-      showToast(`📥 Opening official PDF: "${file.name}"`);
+      let downloadUrl = file.file_url;
+      const fileIdMatch = file.file_url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+      const safeTitle = (file.name || 'document').replace(/[/\\?%*:|"<>]/g, '_');
+      const filename = safeTitle.toLowerCase().endsWith('.pdf') ? safeTitle : `${safeTitle}.pdf`;
+
+      if (fileIdMatch && fileIdMatch[1]) {
+        downloadUrl = `https://drive.google.com/uc?export=download&id=${fileIdMatch[1]}&filename=${encodeURIComponent(filename)}&title=${encodeURIComponent(filename)}`;
+      }
+
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.setAttribute('download', filename);
+      link.setAttribute('target', '_blank');
+      link.setAttribute('rel', 'noopener noreferrer');
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        try {
+          document.body.removeChild(link);
+        } catch {}
+      }, 300);
+
+      showToast(`📥 Downloading "${filename}"...`);
       return;
     }
     showToast(`⚠️ No PDF file attached for "${file.name}".`);

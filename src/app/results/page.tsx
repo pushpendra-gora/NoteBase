@@ -430,16 +430,16 @@ function ResultsContent() {
 
     // If real PDF URL exists, open direct download link
     if (targetUrl) {
+      const safeTitle = (doc.title || 'document').replace(/[/\\?%*:|"<>]/g, '_');
+      const filename = safeTitle.toLowerCase().endsWith('.pdf') ? safeTitle : `${safeTitle}.pdf`;
+
       let downloadUrl = targetUrl;
       const fileIdMatch = targetUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
       if (fileIdMatch && fileIdMatch[1]) {
-        downloadUrl = `https://drive.google.com/uc?export=download&id=${fileIdMatch[1]}`;
+        downloadUrl = `https://drive.google.com/uc?export=download&id=${fileIdMatch[1]}&filename=${encodeURIComponent(filename)}&title=${encodeURIComponent(filename)}`;
       }
 
       setDownloadSuccess(true);
-
-      const safeTitle = (doc.title || 'document').replace(/[/\\?%*:|"<>]/g, '_');
-      const filename = safeTitle.toLowerCase().endsWith('.pdf') ? safeTitle : `${safeTitle}.pdf`;
 
       // Trigger direct download via invisible anchor tag for mobile browsers & WebView
       const link = document.createElement('a');
@@ -487,7 +487,7 @@ function ResultsContent() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f3effb] relative flex flex-col items-center pt-[max(env(safe-area-inset-top),2.25rem)] pb-6 px-3.5 sm:p-8 overflow-x-hidden selection:bg-purple-200">
+    <div className="min-h-screen bg-[#f3effb] relative flex flex-col items-center pt-[max(env(safe-area-inset-top),3.75rem)] pb-6 px-3.5 sm:p-8 overflow-x-hidden selection:bg-purple-200">
       
       {/* Background Soft Blobs */}
       <div className="absolute top-[-80px] left-[-80px] w-96 h-96 bg-[#e8dcfa]/60 rounded-full blur-3xl pointer-events-none" />
@@ -832,11 +832,11 @@ function ResultsContent() {
 
       {/* 3. FULL REAL PDF VIEWER MODAL (Mobile-Optimized Clean Experience) */}
       {activeDoc && (
-        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-50 bg-white sm:bg-slate-900/80 sm:backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200">
           <div className="bg-white w-full h-[100dvh] sm:h-[90vh] max-w-5xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-100 shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
             
             {/* Modal Top Bar (Mobile-first compact header with safe notch padding) */}
-            <div className="pt-[max(env(safe-area-inset-top),2.5rem)] pb-3 px-3.5 sm:py-3.5 sm:px-6 border-b border-slate-100 flex items-center justify-between bg-white gap-2 shrink-0">
+            <div className="pt-[max(env(safe-area-inset-top),3.25rem)] pb-3 px-3.5 sm:py-3.5 sm:px-6 border-b border-slate-200/90 flex items-center justify-between bg-white gap-2 shrink-0 shadow-sm">
               <div className="space-y-0.5 min-w-0 flex-1">
                 <div className="flex items-center space-x-1.5 min-w-0">
                   <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 rounded shrink-0 ${
@@ -901,6 +901,7 @@ function ResultsContent() {
                   <iframe
                     src={getPdfEmbedUrl(activeDoc.file_url || activeDoc.file_path)}
                     title={activeDoc.title}
+                    loading="eager"
                     onLoad={() => {
                       setIsIframeLoading(false);
                       if (activeDoc && typeof window !== 'undefined') {
@@ -915,7 +916,7 @@ function ResultsContent() {
                       }
                     }}
                     className="w-full h-full flex-1 border-0 bg-white"
-                    allow="autoplay; fullscreen"
+                    allow="autoplay; fullscreen; clipboard-read; clipboard-write"
                   />
                 </>
               ) : (

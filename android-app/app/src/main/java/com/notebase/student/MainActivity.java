@@ -320,7 +320,23 @@ public class MainActivity extends AppCompatActivity {
                 request.addRequestHeader("User-Agent", userAgent);
             }
 
-            String fileName = URLUtil.guessFileName(url, contentDisposition, mime);
+            String fileName = null;
+            if (downloadUri != null) {
+                String paramFilename = downloadUri.getQueryParameter("filename");
+                if (paramFilename == null || paramFilename.trim().isEmpty()) {
+                    paramFilename = downloadUri.getQueryParameter("title");
+                }
+                if (paramFilename != null && !paramFilename.trim().isEmpty()) {
+                    fileName = Uri.decode(paramFilename.trim());
+                }
+            }
+
+            if (fileName == null || fileName.isEmpty()) {
+                fileName = URLUtil.guessFileName(url, contentDisposition, mime);
+            }
+
+            // Sanitize filename for Android storage and remove forbidden characters
+            fileName = fileName.replaceAll("[\\\\/:*?\"<>|]", "_");
             if (!fileName.toLowerCase().endsWith(".pdf") && !fileName.toLowerCase().endsWith(".apk")) {
                 fileName = fileName + ".pdf";
             }
