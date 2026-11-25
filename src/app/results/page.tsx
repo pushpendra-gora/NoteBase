@@ -148,6 +148,7 @@ function ResultsContent() {
   const isPinchingRef = useRef(false);
   const initialTouchDistRef = useRef(0);
   const initialTouchZoomRef = useRef(100);
+  const zoomLevelFloatRef = useRef(100);
 
   const getTouchesDistance = (e: React.TouchEvent) => {
     if (e.touches.length < 2) return 0;
@@ -160,7 +161,7 @@ function ResultsContent() {
     if (e.touches.length === 2) {
       isPinchingRef.current = true;
       initialTouchDistRef.current = getTouchesDistance(e);
-      initialTouchZoomRef.current = zoomLevel;
+      initialTouchZoomRef.current = zoomLevelFloatRef.current;
     }
   };
 
@@ -168,7 +169,8 @@ function ResultsContent() {
     if (isPinchingRef.current && e.touches.length === 2 && initialTouchDistRef.current > 0) {
       const currentDist = getTouchesDistance(e);
       const ratio = currentDist / initialTouchDistRef.current;
-      const target = Math.min(250, Math.max(100, Math.round((initialTouchZoomRef.current * ratio) / 5) * 5));
+      const target = Math.min(300, Math.max(100, Math.round(initialTouchZoomRef.current * ratio)));
+      zoomLevelFloatRef.current = target;
       setZoomLevel(target);
     }
   };
@@ -178,33 +180,41 @@ function ResultsContent() {
   };
 
   const handlePdfZoomIn = () => {
-    setZoomLevel((prev) => Math.min(250, prev + 25));
+    setZoomLevel((prev) => {
+      const next = Math.min(300, prev + 25);
+      zoomLevelFloatRef.current = next;
+      return next;
+    });
   };
 
   const handlePdfZoomOut = () => {
-    setZoomLevel((prev) => Math.max(100, prev - 25));
+    setZoomLevel((prev) => {
+      const next = Math.max(100, prev - 25);
+      zoomLevelFloatRef.current = next;
+      return next;
+    });
   };
 
   const handlePdfZoomReset = () => {
+    zoomLevelFloatRef.current = 100;
     setZoomLevel(100);
   };
 
   // Native double-finger pinch zoom listener for smooth isolated PDF scaling
   useEffect(() => {
     (window as any).onNativePinchZoom = (scaleFactor: number) => {
-      setZoomLevel((prev) => {
-        if (scaleFactor > 1.01) {
-          return Math.min(250, prev + Math.round((scaleFactor - 1) * 60));
-        } else if (scaleFactor < 0.99) {
-          return Math.max(100, prev - Math.round((1 - scaleFactor) * 60));
-        }
-        return prev;
-      });
+      if (!activeDoc) return;
+      if (typeof scaleFactor !== 'number' || isNaN(scaleFactor)) return;
+      
+      const target = zoomLevelFloatRef.current * scaleFactor;
+      const clamped = Math.min(300, Math.max(100, target));
+      zoomLevelFloatRef.current = clamped;
+      setZoomLevel(Math.round(clamped));
     };
     return () => {
       delete (window as any).onNativePinchZoom;
     };
-  }, []);
+  }, [activeDoc]);
 
   // Local device storage cache for already-opened PDFs (instant offline reopening)
   const [cachedPdfIds, setCachedPdfIds] = useState<Set<string>>(() => {
@@ -1010,7 +1020,12 @@ function ResultsContent() {
 
       {/* 3. FULL REAL PDF VIEWER MODAL (Mobile-Optimized Clean Experience) */}
       {activeDoc && (
-        <div className="fixed inset-0 z-50 bg-white sm:bg-slate-900/80 sm:backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200">
+        <div 
+          onTouchStart={handlePdfTouchStart}
+          onTouchMove={handlePdfTouchMove}
+          onTouchEnd={handlePdfTouchEnd}
+          className="fixed inset-0 z-50 bg-white sm:bg-slate-900/80 sm:backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200"
+        >
           <div className="bg-white w-full h-[100dvh] sm:h-[90vh] max-w-5xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-100 shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
             
             {/* Modal Top Bar: 100% ROCK-SOLID STATIC, ZERO GLITCH OR SHIFT */}
@@ -1098,7 +1113,7 @@ function ResultsContent() {
               onTouchMove={handlePdfTouchMove}
               onTouchEnd={handlePdfTouchEnd}
               className="flex-1 w-full bg-slate-100 relative overflow-auto flex flex-col"
-              style={{ WebkitOverflowScrolling: 'touch' }}
+              style={{ WebkitOverflowScrolling: 'touch', touchAction: zoomLevel > 100 ? 'pan-x pan-y' : 'pan-y' }}
             >
               {(activeDoc.file_url || (activeDoc.file_path && activeDoc.file_path.startsWith('gdrive://'))) ? (
                 <>
@@ -1119,32 +1134,44 @@ function ResultsContent() {
                       height: zoomLevel > 100 ? `${zoomLevel}%` : '100%',
                       minWidth: '100%',
                       minHeight: '100%',
-                      transform: zoomLevel > 100 ? `scale(${zoomLevel / 100})` : 'none',
-                      transformOrigin: 'top left',
-                      transition: isPinchingRef.current ? 'none' : 'transform 0.15s ease-out',
+                      position: 'relative',
                     }}
-                    className="flex-1 w-full h-full flex flex-col"
+                    className="flex-1 w-full h-full"
                   >
-                    <iframe
-                      src={getPdfEmbedUrl(activeDoc.file_url || activeDoc.file_path)}
-                      title={activeDoc.title}
-                      loading="eager"
-                      onLoad={() => {
-                        setIsIframeLoading(false);
-                        if (activeDoc && typeof window !== 'undefined') {
-                          setCachedPdfIds((prev) => {
-                            const next = new Set(prev);
-                            next.add(activeDoc.id);
-                            try {
-                              localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
-                            } catch {}
-                            return next;
-                          });
-                        }
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: zoomLevel > 100 ? `${10000 / zoomLevel}%` : '100%',
+                        height: zoomLevel > 100 ? `${10000 / zoomLevel}%` : '100%',
+                        transform: zoomLevel > 100 ? `scale(${zoomLevel / 100})` : 'none',
+                        transformOrigin: 'top left',
+                        transition: isPinchingRef.current ? 'none' : 'transform 0.1s ease-out',
                       }}
-                      className="w-full h-full flex-1 border-0 bg-white"
-                      allow="autoplay; fullscreen; clipboard-read; clipboard-write"
-                    />
+                      className="w-full h-full flex flex-col"
+                    >
+                      <iframe
+                        src={getPdfEmbedUrl(activeDoc.file_url || activeDoc.file_path)}
+                        title={activeDoc.title}
+                        loading="eager"
+                        onLoad={() => {
+                          setIsIframeLoading(false);
+                          if (activeDoc && typeof window !== 'undefined') {
+                            setCachedPdfIds((prev) => {
+                              const next = new Set(prev);
+                              next.add(activeDoc.id);
+                              try {
+                                localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
+                              } catch {}
+                              return next;
+                            });
+                          }
+                        }}
+                        className="w-full h-full flex-1 border-0 bg-white"
+                        allow="autoplay; fullscreen; clipboard-read; clipboard-write"
+                      />
+                    </div>
                   </div>
                 </>
               ) : (

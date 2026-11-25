@@ -80,8 +80,12 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public boolean onScale(android.view.ScaleGestureDetector detector) {
                 float factor = detector.getScaleFactor();
-                if (Math.abs(factor - 1.0f) > 0.015f) {
-                    webView.evaluateJavascript("if (window.onNativePinchZoom) { window.onNativePinchZoom(" + factor + "); }", null);
+                if (factor > 0.05f && factor < 10.0f && Math.abs(factor - 1.0f) > 0.001f) {
+                    runOnUiThread(() -> {
+                        if (webView != null) {
+                            webView.evaluateJavascript("if (window.onNativePinchZoom) { window.onNativePinchZoom(" + factor + "); }", null);
+                        }
+                    });
                 }
                 return true;
             }
@@ -341,7 +345,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public boolean dispatchTouchEvent(android.view.MotionEvent ev) {
-        if (scaleGestureDetector != null && ev.getPointerCount() == 2) {
+        if (scaleGestureDetector != null) {
             scaleGestureDetector.onTouchEvent(ev);
         }
         return super.dispatchTouchEvent(ev);
