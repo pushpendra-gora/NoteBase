@@ -203,36 +203,35 @@ export default function AdminPage() {
       ]).then(([supaDocs, supaLecs]) => {
         if ((supaDocs && supaDocs.length > 0) || (supaLecs && supaLecs.length > 0)) {
           setMaterials((prev) => {
-            const existingIds = new Set(prev.map((m) => m.id));
-            const newDocs: AdminMaterial[] = (supaDocs || [])
-              .filter((d) => !existingIds.has(d.id))
-              .map((d) => ({
-                id: d.id,
-                fileName: d.title.endsWith('.pdf') ? d.title : `${d.title}.pdf`,
-                year: d.year,
-                branch: d.branch,
-                semester: d.semester,
-                subject: d.subject,
-                type: (d.type === 'PYQ' ? 'PYQs' : 'Notes') as 'Notes' | 'PYQs',
-                uploadedBy: d.owner || 'Department',
-                file_url: d.file_url
-              }));
+            const supaDocIds = new Set((supaDocs || []).map((d) => d.id));
+            const supaLecIds = new Set((supaLecs || []).map((l) => l.id));
+            const uniquePrev = prev.filter((m) => !supaDocIds.has(m.id) && !supaLecIds.has(m.id));
 
-            const newLecs: AdminMaterial[] = (supaLecs || [])
-              .filter((l) => !existingIds.has(l.id))
-              .map((l) => ({
-                id: l.id,
-                fileName: l.title,
-                year: l.year || '2nd Year',
-                branch: l.branch || 'CSE(AI&ML)',
-                semester: l.semester,
-                subject: l.subject,
-                type: 'Lectures' as const,
-                uploadedBy: l.faculty || 'Coordinator',
-                link: l.link
-              }));
+            const newDocs: AdminMaterial[] = (supaDocs || []).map((d) => ({
+              id: d.id,
+              fileName: d.title.endsWith('.pdf') ? d.title : `${d.title}.pdf`,
+              year: d.year,
+              branch: d.branch,
+              semester: d.semester,
+              subject: d.subject,
+              type: (d.type === 'PYQ' ? 'PYQs' : 'Notes') as 'Notes' | 'PYQs',
+              uploadedBy: d.owner || 'Department',
+              file_url: d.file_url
+            }));
 
-            return [...newDocs, ...newLecs, ...prev];
+            const newLecs: AdminMaterial[] = (supaLecs || []).map((l) => ({
+              id: l.id,
+              fileName: l.title,
+              year: l.year || '2nd Year',
+              branch: l.branch || 'CSE(AI&ML)',
+              semester: l.semester,
+              subject: l.subject,
+              type: 'Lectures' as const,
+              uploadedBy: l.faculty || 'Coordinator',
+              link: l.link
+            }));
+
+            return [...newDocs, ...newLecs, ...uniquePrev];
           });
         }
       }).catch((err) => {

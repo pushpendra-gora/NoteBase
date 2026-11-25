@@ -280,25 +280,24 @@ function DashboardContent() {
     return [];
   });
 
-  // Fetch Supabase lectures on mount
+  // Fetch Supabase lectures on mount (Supabase is authoritative)
   useEffect(() => {
     if (isSupabaseConfigured()) {
       fetchLecturesFromSupabase(yearParam, branchParam).then((cloudLecs) => {
         if (cloudLecs && cloudLecs.length > 0) {
           setLecturesList((prev) => {
-            const existingIds = new Set(prev.map((l) => l.id));
-            const extra = cloudLecs
-              .filter((l) => !existingIds.has(l.id))
-              .map((l) => ({
-                id: l.id,
-                title: l.title,
-                subject: l.subject,
-                semester: l.semester,
-                faculty: l.faculty,
-                link: l.link,
-                date: l.date
-              }));
-            return [...extra, ...prev];
+            const cloudIds = new Set(cloudLecs.map((l) => l.id));
+            const uniquePrev = prev.filter((l) => !cloudIds.has(l.id));
+            const formattedCloud = cloudLecs.map((l) => ({
+              id: l.id,
+              title: l.title,
+              subject: l.subject,
+              semester: l.semester,
+              faculty: l.faculty,
+              link: l.link,
+              date: l.date
+            }));
+            return [...formattedCloud, ...uniquePrev];
           });
         }
       }).catch(() => {});
@@ -353,22 +352,21 @@ function DashboardContent() {
         if (!isMounted) return;
         const supaAll = [...supa1, ...supa2];
         if (supaAll.length > 0) {
-          const existingIds = new Set(localFiles.map((f) => f.id));
-          const extraSupaFiles: CoordinatorFile[] = supaAll
-            .filter((d) => !existingIds.has(d.id))
-            .map((d) => ({
-              id: d.id,
-              name: d.title,
-              subject: d.subject,
-              semester: d.semester,
-              size: d.size,
-              type: d.type === 'PYQ' ? 'PYQ' : 'Notes',
-              date: d.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
-              owner: d.owner,
-              file_url: d.file_url,
-              file_path: d.file_path
-            }));
-          setFiles([...extraSupaFiles, ...localFiles]);
+          const supaFileIds = new Set(supaAll.map((d) => d.id));
+          const uniqueLocal = localFiles.filter((f) => !supaFileIds.has(f.id));
+          const supaFiles: CoordinatorFile[] = supaAll.map((d) => ({
+            id: d.id,
+            name: d.title,
+            subject: d.subject,
+            semester: d.semester,
+            size: d.size,
+            type: d.type === 'PYQ' ? 'PYQ' : 'Notes',
+            date: d.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
+            owner: d.owner,
+            file_url: d.file_url,
+            file_path: d.file_path
+          }));
+          setFiles([...supaFiles, ...uniqueLocal]);
           return;
         }
         setFiles(localFiles);

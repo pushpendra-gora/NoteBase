@@ -166,12 +166,12 @@ function ResultsContent() {
     return subjectsList[0]?.title || '';
   }, [selectedSubject, subjectsList]);
 
-  // Filtered lectures for current activeSubject and semester (only real uploaded lectures with exact title)
+  // Filtered lectures for current activeSubject and semester (Supabase Cloud is primary)
   const displayedLectures = useMemo(() => {
     if (!activeSubject) return [];
 
-    const existingIds = new Set(localLectures.map((l) => l.id));
-    const merged = [...localLectures, ...cloudLectures.filter((l) => !existingIds.has(l.id))];
+    const cloudIds = new Set(cloudLectures.map((l) => l.id));
+    const merged = [...cloudLectures, ...localLectures.filter((l) => !cloudIds.has(l.id))];
 
     return merged.filter((l) => {
       const matchSubj = l.subject.trim().toLowerCase() === activeSubject.trim().toLowerCase();
@@ -180,15 +180,15 @@ function ResultsContent() {
     });
   }, [localLectures, cloudLectures, activeSubject, semester]);
 
-  // Retrieve authentic documents matching URL query
+  // Retrieve authentic documents matching URL query (Supabase Cloud is primary authoritative source)
   const allDocuments = useMemo(() => {
     if (!year || !branch || !semester || !type) {
       return [];
     }
     const localDocs = getDocumentsFor(year, branch, semester);
-    const existingIds = new Set(localDocs.map((d) => d.id));
-    const extraSupa = supabaseDocs.filter((d) => !existingIds.has(d.id));
-    const combined = [...extraSupa, ...localDocs];
+    const supaIds = new Set(supabaseDocs.map((d) => d.id));
+    const uniqueLocal = localDocs.filter((d) => !supaIds.has(d.id));
+    const combined = [...supabaseDocs, ...uniqueLocal];
     return combined.filter((d) => d.type === type);
   }, [year, branch, semester, type, subjectsVersion, supabaseDocs]);
 

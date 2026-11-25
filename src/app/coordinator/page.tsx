@@ -22,9 +22,7 @@ import {
   YEARS 
 } from '../../data/notesData';
 import { BranchOption, YearOption } from '../../types';
-import { getStoredCoordinators, isBranchMatch, saveStoredCoordinators } from '../../lib/coordinatorService';
-import { fetchCoordinatorsFromSupabase } from '../../lib/supabaseService';
-import { isSupabaseConfigured } from '../../lib/supabase';
+import { getStoredCoordinators, isBranchMatch } from '../../lib/coordinatorService';
 
 export default function CoordinatorLoginPage() {
   const router = useRouter();
@@ -57,17 +55,6 @@ export default function CoordinatorLoginPage() {
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  // Sync coordinators from Supabase on mount if configured
-  useEffect(() => {
-    if (isSupabaseConfigured()) {
-      fetchCoordinatorsFromSupabase().then((data) => {
-        if (data && data.length > 0) {
-          saveStoredCoordinators(data);
-        }
-      });
-    }
   }, []);
 
   const isYearSelected = selectedYear !== null;
@@ -119,21 +106,50 @@ export default function CoordinatorLoginPage() {
       return;
     }
 
-    // Always fetch latest coordinators from Supabase if online
-    let coordinatorsList = getStoredCoordinators();
-    if (isSupabaseConfigured()) {
-      try {
-        const cloud = await fetchCoordinatorsFromSupabase();
-        if (cloud && cloud.length > 0) {
-          coordinatorsList = cloud;
-          saveStoredCoordinators(cloud);
+    // 1. First authenticate securely via server-side /api/coordinator/auth (No passwords exposed to browser)
+    try {
+      const response = await fetch('/api/coordinator/auth', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          year: selectedYear,
+          branch: selectedBranch,
+          password: password.trim(),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success && data.coordinator) {
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem('notehub_active_coordinator', JSON.stringify({
+            id: data.coordinator.id,
+            name: data.coordinator.name,
+            branch: selectedBranch,
+            year: selectedYear,
+          }));
         }
-      } catch (err) {
-        console.warn('Could not reach Supabase for coordinator lookup, falling back to local storage:', err);
+
+        setLoginSuccess(true);
+        const query = new URLSearchParams({
+          year: selectedYear,
+          branch: selectedBranch,
+          name: data.coordinator.name,
+        }).toString();
+        router.push(`/coordinator/dashboard?${query}`);
+        return;
+      } else if (response.status === 401 || response.status === 403 || response.status === 404) {
+        setErrorMsg(data.error || 'Authentication failed.');
+        return;
       }
+    } catch {
+      // If server route is unreachable (e.g. offline dev), fall back to local validation
     }
 
-    // Match coordinator strictly by year and branch
+    // 2. Offline fallback (only if server was unreachable)
+    const coordinatorsList = getStoredCoordinators();
     const matchingCoord = coordinatorsList.find((c) => {
       const yearMatch = c.year === selectedYear;
       const branchMatch = isBranchMatch(c.branch, selectedBranch);
