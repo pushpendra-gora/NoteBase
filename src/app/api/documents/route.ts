@@ -19,6 +19,7 @@ export async function GET(req: NextRequest) {
     const year = searchParams.get('year');
     const branch = searchParams.get('branch');
     const semester = searchParams.get('semester');
+    const subject = searchParams.get('subject');
     const type = searchParams.get('type'); // 'Notes' or 'PYQ' or 'All'
 
     const client = resolveClient(req);
@@ -34,10 +35,11 @@ export async function GET(req: NextRequest) {
     // Query notes
     if (type !== 'PYQ') {
       let query = client.from('notes').select('*');
-      if (year) query = query.eq('year', year);
-      if (branch) query = query.eq('branch', branch);
-      if (semester) query = query.eq('semester', semester);
-      const { data, error } = await query;
+      if (year && year !== 'All') query = query.eq('year', year);
+      if (branch && branch !== 'All') query = query.eq('branch', branch);
+      if (semester && semester !== 'All') query = query.eq('semester', semester);
+      if (subject && subject !== 'All') query = query.eq('subject', subject);
+      const { data, error } = await query.order('created_at', { ascending: false });
       if (!error && data) {
         allDocs.push(...data.map((d) => ({ ...d, type: 'Notes' })));
       }
@@ -46,10 +48,11 @@ export async function GET(req: NextRequest) {
     // Query pyqs
     if (type !== 'Notes') {
       let query = client.from('pyqs').select('*');
-      if (year) query = query.eq('year', year);
-      if (branch) query = query.eq('branch', branch);
-      if (semester) query = query.eq('semester', semester);
-      const { data, error } = await query;
+      if (year && year !== 'All') query = query.eq('year', year);
+      if (branch && branch !== 'All') query = query.eq('branch', branch);
+      if (semester && semester !== 'All') query = query.eq('semester', semester);
+      if (subject && subject !== 'All') query = query.eq('subject', subject);
+      const { data, error } = await query.order('created_at', { ascending: false });
       if (!error && data) {
         allDocs.push(...data.map((d) => ({ ...d, type: 'PYQ' })));
       }

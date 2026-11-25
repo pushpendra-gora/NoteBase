@@ -26,7 +26,8 @@ import {
   Video,
   Play,
   PlayCircle,
-  AlertCircle
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 import { getDocumentsFor, getSubjectsFor, saveSubjectsFor, SubjectMeta } from '../../data/notesData';
 import { BranchOption, NoteDocument, SemesterOption, YearOption, LectureItem } from '../../types';
@@ -43,11 +44,19 @@ function ResultsContent() {
   const type = searchParams.get('type') as 'Notes' | 'PYQ' | 'Lectures' | null;
   const isLectures = type === 'Lectures';
 
-  // Active document modal state
+  // Active document modal state (Only loaded on-demand when student clicks a PDF)
   const [activeDoc, setActiveDoc] = useState<NoteDocument | null>(null);
+  const [isIframeLoading, setIsIframeLoading] = useState(true);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(100);
   const [subjectsVersion, setSubjectsVersion] = useState(0);
+
+  // Reset iframe loading state whenever student opens a new PDF
+  useEffect(() => {
+    if (activeDoc) {
+      setIsIframeLoading(true);
+    }
+  }, [activeDoc]);
 
   // Listen for dynamic subject updates made by coordinators
   useEffect(() => {
@@ -140,32 +149,74 @@ function ResultsContent() {
     };
   }, [year, branch, semester]);
 
-  // Fetch documents from Supabase if configured
-  useEffect(() => {
-    let isMounted = true;
-    if (year && branch && semester && type !== 'Lectures' && isSupabaseConfigured()) {
-      const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
-      fetchDocumentsFromSupabase(year, branch, semester, targetType).then((docs) => {
-        if (isMounted) {
-          setSupabaseDocs(docs || []);
-        }
-      }).catch((err) => {
-        console.warn('Could not load Supabase documents:', err);
-      });
-    } else if (type === 'Lectures') {
-      setSupabaseDocs([]);
-    }
-    return () => {
-      isMounted = false;
-    };
-  }, [year, branch, semester, type, subjectsVersion]);
-
+  // Active selected subject (defaults to the first subject in list)
   const activeSubject = useMemo(() => {
     if (selectedSubject && subjectsList.some((s) => s.title === selectedSubject)) {
       return selectedSubject;
     }
     return subjectsList[0]?.title || '';
   }, [selectedSubject, subjectsList]);
+
+  // Per-subject lazy-load cache: only metadata of the active subject is fetched from DB
+  const [subjectDocsCache, setSubjectDocsCache] = useState<Record<string, NoteDocument[]>>({});
+  const [isLoadingSubjectDocs, setIsLoadingSubjectDocs] = useState<boolean>(false);
+
+  // Lazy-load metadata strictly for the active subject currently viewed by the student
+  useEffect(() => {
+    let isMounted = true;
+    if (!year || !branch || !semester || !activeSubject || type === 'Lectures') {
+      return;
+    }
+
+    // If metadata for this subject was already loaded, reuse it instantly (0 network cost)
+    if (subjectDocsCache[activeSubject]) {
+      return;
+    }
+
+    setIsLoadingSubjectDocs(true);
+    const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+
+    const loadSubjectMetadata = async () => {
+      let fetchedDocs: NoteDocument[] = [];
+      try {
+        // Query server API for this specific subject only
+        const res = await fetch(
+          `/api/documents?year=${encodeURIComponent(year)}&branch=${encodeURIComponent(branch)}&semester=${encodeURIComponent(semester)}&type=${encodeURIComponent(targetType)}&subject=${encodeURIComponent(activeSubject)}`
+        );
+        const data = await res.json();
+        if (res.ok && data.success && Array.isArray(data.documents)) {
+          fetchedDocs = data.documents;
+        } else if (isSupabaseConfigured()) {
+          fetchedDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType, activeSubject);
+        }
+      } catch {
+        if (isSupabaseConfigured()) {
+          fetchedDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType, activeSubject);
+        }
+      }
+
+      // Merge with any local documents created for this exact subject
+      const localDocs = getDocumentsFor(year, branch, semester).filter(
+        (d) => d.type === targetType && d.subject === activeSubject
+      );
+      const fetchedIds = new Set(fetchedDocs.map((d) => d.id));
+      const combined = [...fetchedDocs, ...localDocs.filter((d) => !fetchedIds.has(d.id))];
+
+      if (isMounted) {
+        setSubjectDocsCache((prev) => ({
+          ...prev,
+          [activeSubject]: combined
+        }));
+        setIsLoadingSubjectDocs(false);
+      }
+    };
+
+    loadSubjectMetadata();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [year, branch, semester, type, activeSubject, subjectsVersion]);
 
   // Filtered lectures for current activeSubject and semester (Supabase Cloud is primary)
   const displayedLectures = useMemo(() => {
@@ -181,23 +232,11 @@ function ResultsContent() {
     });
   }, [localLectures, cloudLectures, activeSubject, semester]);
 
-  // Retrieve authentic documents matching URL query (Supabase Cloud is primary authoritative source)
-  const allDocuments = useMemo(() => {
-    if (!year || !branch || !semester || !type) {
-      return [];
-    }
-    const localDocs = getDocumentsFor(year, branch, semester);
-    const supaIds = new Set(supabaseDocs.map((d) => d.id));
-    const uniqueLocal = localDocs.filter((d) => !supaIds.has(d.id));
-    const combined = [...supabaseDocs, ...uniqueLocal];
-    return combined.filter((d) => d.type === type);
-  }, [year, branch, semester, type, subjectsVersion, supabaseDocs]);
-
-  // Filtered by active selected subject
+  // Displayed documents strictly for the currently viewed subject
   const displayedDocuments = useMemo(() => {
-    if (!activeSubject) return allDocuments;
-    return allDocuments.filter((d) => d.subject === activeSubject);
-  }, [allDocuments, activeSubject]);
+    if (!activeSubject) return [];
+    return subjectDocsCache[activeSubject] || [];
+  }, [subjectDocsCache, activeSubject]);
 
   // Helper to convert Google Drive or direct link to embeddable preview iframe URL
   const getPdfEmbedUrl = (url?: string): string => {
@@ -470,7 +509,19 @@ function ResultsContent() {
 
             {/* Documents Cards List */}
             <div className="space-y-3">
-              {displayedDocuments.length > 0 ? (
+              {isLoadingSubjectDocs ? (
+                <div className="bg-white rounded-3xl border border-slate-100 p-8 sm:p-12 text-center shadow-sm space-y-3">
+                  <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
+                    <Loader2 className="w-6 h-6 animate-spin" />
+                  </div>
+                  <h4 className="text-sm sm:text-base font-bold text-slate-800">
+                    Loading {activeSubject} PDFs...
+                  </h4>
+                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                    Fetching metadata exclusively for {activeSubject} to keep loading fast.
+                  </p>
+                </div>
+              ) : displayedDocuments.length > 0 ? (
                 displayedDocuments.map((doc) => (
                   <div
                     key={doc.id}
@@ -602,15 +653,29 @@ function ResultsContent() {
               </div>
             </div>
 
-            {/* REAL PDF EMBEDDED VIEWER (Google Drive iframe) */}
+            {/* REAL PDF EMBEDDED VIEWER (Google Drive iframe loaded strictly on-demand) */}
             <div className="flex-1 w-full bg-slate-100 relative overflow-hidden flex flex-col">
               {activeDoc.file_url ? (
-                <iframe
-                  src={getPdfEmbedUrl(activeDoc.file_url)}
-                  title={activeDoc.title}
-                  className="w-full h-full flex-1 border-0 bg-white"
-                  allow="autoplay; fullscreen"
-                />
+                <>
+                  {isIframeLoading && (
+                    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white space-y-3">
+                      <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shadow-sm">
+                        <Loader2 className="w-6 h-6 animate-spin" />
+                      </div>
+                      <div className="space-y-1 text-center">
+                        <p className="text-xs sm:text-sm font-bold text-slate-800">Streaming Verified PDF...</p>
+                        <p className="text-[11px] text-slate-400">Loading document securely on-demand from Google Drive</p>
+                      </div>
+                    </div>
+                  )}
+                  <iframe
+                    src={getPdfEmbedUrl(activeDoc.file_url)}
+                    title={activeDoc.title}
+                    onLoad={() => setIsIframeLoading(false)}
+                    className="w-full h-full flex-1 border-0 bg-white"
+                    allow="autoplay; fullscreen"
+                  />
+                </>
               ) : (
                 <div className="flex-1 p-8 sm:p-16 flex flex-col items-center justify-center text-center space-y-4 bg-slate-50">
                   <div className="w-14 h-14 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center shadow-sm">

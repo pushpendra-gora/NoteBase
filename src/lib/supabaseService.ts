@@ -125,18 +125,19 @@ export async function fetchDocumentsFromSupabase(
   year?: YearOption | string,
   branch?: BranchOption | string,
   semester?: SemesterOption | string,
-  type?: 'Notes' | 'PYQ'
+  type?: 'Notes' | 'PYQ',
+  subject?: string
 ): Promise<NoteDocument[]> {
   if (type === 'Notes') {
-    return fetchNotesFromSupabase(year, branch, semester);
+    return fetchNotesFromSupabase(year, branch, semester, subject);
   }
   if (type === 'PYQ') {
-    return fetchPyqsFromSupabase(year, branch, semester);
+    return fetchPyqsFromSupabase(year, branch, semester, subject);
   }
 
   const [notesList, pyqsList] = await Promise.all([
-    fetchNotesFromSupabase(year, branch, semester),
-    fetchPyqsFromSupabase(year, branch, semester)
+    fetchNotesFromSupabase(year, branch, semester, subject),
+    fetchPyqsFromSupabase(year, branch, semester, subject)
   ]);
 
   return [...notesList, ...pyqsList];
