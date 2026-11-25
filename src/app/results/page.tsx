@@ -612,55 +612,47 @@ function ResultsContent() {
 
       </div>
 
-      {/* 3. FULL REAL PDF VIEWER MODAL ("Real PDF open ho, koi dummy na aaye") */}
+      {/* 3. FULL REAL PDF VIEWER MODAL (Mobile-Optimized Clean Experience) */}
       {activeDoc && (
-        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 md:p-6 animate-in fade-in duration-200">
-          <div className="bg-white w-full max-w-5xl rounded-2xl sm:rounded-3xl border border-slate-100 shadow-2xl overflow-hidden flex flex-col h-[94vh] sm:h-[90vh] animate-in zoom-in-95 duration-150">
+        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200">
+          <div className="bg-white w-full h-[100dvh] sm:h-[90vh] max-w-5xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-100 shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
             
-            {/* Modal Top Bar */}
-            <div className="px-4 sm:px-6 py-3 sm:py-3.5 border-b border-slate-100 flex items-start justify-between bg-slate-50/90 gap-2 shrink-0">
+            {/* Modal Top Bar (Mobile-first compact header) */}
+            <div className="px-3 sm:px-6 py-2.5 sm:py-3.5 border-b border-slate-100 flex items-center justify-between bg-white gap-2 shrink-0">
               <div className="space-y-0.5 min-w-0 flex-1">
-                <div className="flex items-center space-x-2 min-w-0">
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded shrink-0 ${
+                <div className="flex items-center space-x-1.5 min-w-0">
+                  <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 rounded shrink-0 ${
                     activeDoc.type === 'PYQ' 
                       ? 'bg-amber-100 text-amber-800' 
                       : 'bg-blue-100 text-blue-800'
                   }`}>
-                    {activeDoc.type} PDF
+                    {activeDoc.type}
                   </span>
-                  <span className="text-[11px] sm:text-xs font-semibold text-slate-600 truncate">
+                  <span className="text-[10px] sm:text-xs font-medium text-slate-500 truncate">
                     {activeDoc.year} • {activeDoc.branch} • {activeDoc.semester}
                   </span>
-                  {activeDoc.file_url && (
-                    <span className="hidden sm:inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
-                      ☁️ Google Drive Official
-                    </span>
-                  )}
                 </div>
-                <h3 className="text-sm sm:text-base font-bold text-slate-900 truncate">
+                <h3 className="text-xs sm:text-base font-bold text-slate-900 truncate">
                   {activeDoc.title}
                 </h3>
-                <p className="text-[11px] sm:text-xs text-slate-500 font-medium truncate">
-                  <strong className="text-slate-700 font-semibold">{activeDoc.owner || 'Department Faculty'}</strong> • {activeDoc.subject} • {activeDoc.size}
-                </p>
               </div>
 
               <div className="flex items-center space-x-2 shrink-0">
-                {activeDoc && (activeDoc.file_url || activeDoc.file_path) && (
-                  <a
-                    href={activeDoc.file_url || (activeDoc.file_path?.startsWith('gdrive://') ? `https://drive.google.com/file/d/${activeDoc.file_path.replace('gdrive://', '')}/view?usp=sharing` : activeDoc.file_path)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Open Full PDF in New Tab"
-                    className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-colors cursor-pointer"
+                {activeDoc.file_url && (
+                  <button
+                    type="button"
+                    onClick={() => handleDownload(activeDoc)}
+                    className="inline-flex items-center space-x-1.5 px-3 sm:px-4 py-1.5 rounded-xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs font-semibold transition-all shadow-sm cursor-pointer"
+                    title="Download PDF"
                   >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">Open in Tab</span>
-                  </a>
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download</span>
+                  </button>
                 )}
                 <button
                   onClick={() => setActiveDoc(null)}
                   className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                  aria-label="Close Preview"
                 >
                   <X className="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
@@ -673,12 +665,12 @@ function ResultsContent() {
                 <>
                   {isIframeLoading && (
                     <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white space-y-3">
-                      <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shadow-sm">
-                        <Loader2 className="w-6 h-6 animate-spin" />
+                      <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shadow-sm">
+                        <Loader2 className="w-5 h-5 sm:w-6 sm:h-6 animate-spin" />
                       </div>
                       <div className="space-y-1 text-center">
                         <p className="text-xs sm:text-sm font-bold text-slate-800">Streaming Verified PDF...</p>
-                        <p className="text-[11px] text-slate-400">Loading document securely on-demand from Google Drive</p>
+                        <p className="text-[10px] sm:text-[11px] text-slate-400">Loading document securely from Google Drive</p>
                       </div>
                     </div>
                   )}
@@ -691,12 +683,12 @@ function ResultsContent() {
                   />
                 </>
               ) : (
-                <div className="flex-1 p-8 sm:p-16 flex flex-col items-center justify-center text-center space-y-4 bg-slate-50">
-                  <div className="w-14 h-14 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center shadow-sm">
-                    <AlertCircle className="w-7 h-7" />
+                <div className="flex-1 p-6 sm:p-16 flex flex-col items-center justify-center text-center space-y-4 bg-slate-50">
+                  <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center shadow-sm">
+                    <AlertCircle className="w-6 h-6 sm:w-7 sm:h-7" />
                   </div>
                   <div className="space-y-1.5 max-w-md">
-                    <h4 className="text-base sm:text-lg font-bold text-slate-900">
+                    <h4 className="text-sm sm:text-lg font-bold text-slate-900">
                       Actual PDF File Not Uploaded Yet
                     </h4>
                     <p className="text-xs text-slate-500 leading-relaxed">
@@ -705,35 +697,6 @@ function ResultsContent() {
                   </div>
                 </div>
               )}
-            </div>
-
-            {/* Modal Bottom Action Footer */}
-            <div className="px-4 sm:px-6 py-3 sm:py-3.5 bg-white border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center flex-wrap gap-2 text-[11px] sm:text-xs text-slate-500">
-                <span>Verified Curriculum PDF</span>
-                {activeDoc.file_url && <span>• Direct Google Drive Connection</span>}
-              </div>
-
-              <div className="flex items-center justify-end space-x-2">
-                <button
-                  type="button"
-                  onClick={() => setActiveDoc(null)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
-                >
-                  Close
-                </button>
-
-                {activeDoc.file_url && (
-                  <button
-                    type="button"
-                    onClick={() => handleDownload(activeDoc)}
-                    className="inline-flex items-center space-x-2 px-4 sm:px-5 py-2 rounded-xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs font-semibold transition-all shadow-sm cursor-pointer"
-                  >
-                    <Download className="w-4 h-4" />
-                    <span>Download / Open PDF</span>
-                  </button>
-                )}
-              </div>
             </div>
 
           </div>
