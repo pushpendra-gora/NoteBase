@@ -57,6 +57,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (targetScriptUrl.includes('/edit')) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid URL: You copied the Google Apps Script Editor link. Please click "Deploy" -> "Manage Deployments" -> copy the "Web app URL" (ends with /exec).'
+        },
+        { status: 400 }
+      );
+    }
+
+    if (targetScriptUrl.endsWith('/dev')) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid URL: Your URL ends with /dev (test deployment), which forces Google login. Please click "Deploy" -> "New Deployment" -> select "Web app" -> set "Who has access" to "Anyone" -> Deploy, and copy the URL ending with /exec.'
+        },
+        { status: 400 }
+      );
+    }
+
     if (!base64 || !fileName) {
       return NextResponse.json(
         { success: false, error: 'File content (base64) and filename are required for upload.' },
@@ -81,16 +101,19 @@ export async function POST(req: NextRequest) {
 
     const responseText = await gscriptResponse.text();
 
-    // Check if Google Apps Script returned a login screen (indicates Web App permission is not "Anyone")
+    // Check if Google Apps Script returned a login screen, passport redirect, or unexpected HTML
     if (
       responseText.includes('accounts.google.com') ||
       responseText.includes('ServiceLogin') ||
-      responseText.includes('Sign in - Google Accounts')
+      responseText.includes('Sign in - Google Accounts') ||
+      responseText.includes('ppConfig') ||
+      responseText.includes('<!DOCTYPE') ||
+      responseText.includes('<html')
     ) {
       return NextResponse.json(
         {
           success: false,
-          error: 'Google Apps Script requires authorization. In your Google Apps Script editor, click Deploy -> Manage Deployments -> Edit (pencil icon) -> Set "Who has access" to "Anyone", then click Deploy.',
+          error: 'Google Apps Script requires authorization: In your Google Apps Script editor, click "Deploy" -> "Manage deployments" -> Edit (pencil icon) -> Set "Who has access" to "Anyone" -> Click "Deploy". (If prompted, click Review Permissions -> Advanced -> Allow).',
         },
         { status: 403 }
       );
