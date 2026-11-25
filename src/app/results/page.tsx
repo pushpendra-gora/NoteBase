@@ -46,6 +46,7 @@ function ResultsContent() {
 
   // Active document modal state (Only loaded on-demand when student clicks a PDF)
   const [activeDoc, setActiveDoc] = useState<NoteDocument | null>(null);
+  const [activeLecture, setActiveLecture] = useState<LectureItem | null>(null);
   const [isIframeLoading, setIsIframeLoading] = useState(true);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(100);
@@ -339,6 +340,40 @@ function ResultsContent() {
     return url;
   };
 
+  // Helper to convert any YouTube URL into a seamless embedded in-app player URL
+  const getYouTubeEmbedUrl = (url?: string): string => {
+    if (!url) return '';
+    const trimmed = url.trim();
+
+    // Already an embed URL
+    if (trimmed.includes('youtube.com/embed/')) {
+      const glue = trimmed.includes('?') ? '&' : '?';
+      return `${trimmed}${glue}autoplay=1&playsinline=1&rel=0&modestbranding=1`;
+    }
+
+    let videoId = '';
+    const watchMatch = trimmed.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+    if (watchMatch && watchMatch[1]) {
+      videoId = watchMatch[1];
+    } else {
+      const shortMatch = trimmed.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
+      if (shortMatch && shortMatch[1]) {
+        videoId = shortMatch[1];
+      } else {
+        const shortsMatch = trimmed.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/);
+        if (shortsMatch && shortsMatch[1]) {
+          videoId = shortsMatch[1];
+        }
+      }
+    }
+
+    if (videoId) {
+      return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1`;
+    }
+
+    return trimmed;
+  };
+
   const handleDownload = (doc: NoteDocument) => {
     let targetUrl = doc.file_url;
     if (targetUrl && targetUrl.startsWith('gdrive://')) {
@@ -588,7 +623,8 @@ function ResultsContent() {
                 displayedLectures.map((lec) => (
                   <div
                     key={lec.id}
-                    className="bg-white rounded-3xl border border-slate-100/90 p-4 sm:p-6 shadow-[0_2px_14px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_24px_rgba(147,51,234,0.08)] hover:border-purple-200 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 sm:gap-4 group"
+                    onClick={() => lec.link && setActiveLecture(lec)}
+                    className="bg-white rounded-3xl border border-slate-100/90 p-4 sm:p-6 shadow-[0_2px_14px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_24px_rgba(147,51,234,0.08)] hover:border-purple-200 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 sm:gap-4 group cursor-pointer"
                   >
                     {/* Left: Video Icon & Title Only (No small subtitle text) */}
                     <div className="flex items-center space-x-3.5 sm:space-x-4 min-w-0 flex-1">
@@ -604,19 +640,20 @@ function ResultsContent() {
                       </div>
                     </div>
 
-                    {/* Right: Watch / Open Link Button */}
+                    {/* Right: Watch / In-App Play Button */}
                     <div className="flex items-center justify-end space-x-2.5 shrink-0 w-full sm:w-auto pt-2.5 sm:pt-0 border-t sm:border-t-0 border-slate-100">
                       {lec.link ? (
-                        <a
-                          href={lec.link}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveLecture(lec);
+                          }}
                           className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-5 py-2.5 rounded-2xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs sm:text-sm font-semibold transition-all shadow-sm hover:shadow cursor-pointer"
                         >
                           <Play className="w-4 h-4 fill-current" />
-                          <span>Watch Lecture</span>
-                          <ExternalLink className="w-3.5 h-3.5 ml-0.5" />
-                        </a>
+                          <span>Watch in App</span>
+                        </button>
                       ) : (
                         <span className="px-4 py-2.5 rounded-2xl bg-slate-100 text-slate-500 text-xs font-semibold">
                           Link coming soon
@@ -852,6 +889,85 @@ function ResultsContent() {
                   </div>
                 </div>
               )}
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* 4. IN-APP YOUTUBE / VIDEO LECTURE PLAYER MODAL */}
+      {activeLecture && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200">
+          <div className="bg-slate-900 w-full h-[100dvh] sm:h-auto sm:max-h-[92vh] max-w-4xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-800 shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
+            
+            {/* Modal Top Bar */}
+            <div className="pt-[max(env(safe-area-inset-top),1.75rem)] pb-3 px-4 sm:py-3.5 sm:px-6 border-b border-slate-800 flex items-center justify-between bg-slate-900 text-white gap-2 shrink-0">
+              <div className="space-y-0.5 min-w-0 flex-1">
+                <div className="flex items-center space-x-2 min-w-0">
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 shrink-0">
+                    🎬 Video Lecture
+                  </span>
+                  <span className="text-[11px] font-medium text-slate-400 truncate">
+                    {activeLecture.subject} • {activeLecture.semester}
+                  </span>
+                </div>
+                <h3 className="text-xs sm:text-base font-bold text-slate-100 truncate">
+                  {activeLecture.title}
+                </h3>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setActiveLecture(null)}
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                aria-label="Close Video"
+              >
+                <X className="w-4 h-4 sm:w-5 sm:h-5" />
+              </button>
+            </div>
+
+            {/* Video Player 16:9 Aspect Ratio Container */}
+            <div className="relative w-full aspect-video bg-black flex items-center justify-center overflow-hidden">
+              <iframe
+                src={getYouTubeEmbedUrl(activeLecture.link)}
+                title={activeLecture.title}
+                className="w-full h-full border-0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+                allowFullScreen
+              />
+            </div>
+
+            {/* Bottom Info Bar */}
+            <div className="p-3.5 sm:p-5 bg-slate-900 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-400 border-t border-slate-800/80 pb-[max(env(safe-area-inset-bottom),1rem)] sm:pb-5">
+              <div className="space-y-0.5 min-w-0">
+                <p className="text-slate-200 font-semibold text-xs sm:text-sm truncate">
+                  {activeLecture.faculty || 'Department Faculty'}
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  {activeLecture.date ? `Uploaded on ${activeLecture.date}` : 'Verified Curriculum Lecture'}
+                </p>
+              </div>
+
+              <div className="flex items-center space-x-2 shrink-0">
+                {activeLecture.link && (
+                  <a
+                    href={activeLecture.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium transition-colors cursor-pointer"
+                  >
+                    <span>External Link</span>
+                    <ExternalLink className="w-3 h-3 ml-0.5" />
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setActiveLecture(null)}
+                  className="px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-semibold transition-colors cursor-pointer"
+                >
+                  Close Player
+                </button>
+              </div>
             </div>
 
           </div>

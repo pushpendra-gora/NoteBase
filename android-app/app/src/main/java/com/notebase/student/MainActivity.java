@@ -10,6 +10,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.WindowManager;
 import android.webkit.DownloadListener;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
@@ -19,6 +20,7 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.ProgressBar;
 import android.widget.Toast;
 
@@ -32,6 +34,9 @@ public class MainActivity extends AppCompatActivity {
     private static final String APP_URL = "https://notebase-sigma.vercel.app";
     private WebView webView;
     private ProgressBar progressBar;
+    private FrameLayout customViewContainer;
+    private View customView;
+    private WebChromeClient.CustomViewCallback customViewCallback;
     private ValueCallback<Uri[]> fileUploadCallback;
 
     private final ActivityResultLauncher<Intent> fileChooserLauncher =
@@ -62,6 +67,7 @@ public class MainActivity extends AppCompatActivity {
 
         webView = findViewById(R.id.webView);
         progressBar = findViewById(R.id.progressBar);
+        customViewContainer = findViewById(R.id.customViewContainer);
 
         // Configure WebSettings for optimal performance and PDF view support
         WebSettings webSettings = webView.getSettings();
@@ -117,6 +123,24 @@ public class MainActivity extends AppCompatActivity {
                     } catch (Exception e) {
                         return true;
                     }
+                }
+
+                if (url.startsWith("intent:")) {
+                    try {
+                        Intent intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME);
+                        if (intent != null) {
+                            String fallbackUrl = intent.getStringExtra("browser_fallback_url");
+                            if (fallbackUrl != null) {
+                                webView.loadUrl(fallbackUrl);
+                                return true;
+                            }
+                            try {
+                                startActivity(intent);
+                            } catch (Exception ignored) {}
+                            return true;
+                        }
+                    } catch (Exception ignored) {}
+                    return true;
                 }
 
                 // If user clicks a direct drive download link or PDF, initiate direct device download
@@ -175,6 +199,34 @@ public class MainActivity extends AppCompatActivity {
                 }
                 return true;
             }
+
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (customView != null) {
+                    callback.onCustomViewHidden();
+                    return;
+                }
+                customView = view;
+                customViewCallback = callback;
+                webView.setVisibility(View.GONE);
+                customViewContainer.setVisibility(View.VISIBLE);
+                customViewContainer.addView(view);
+                getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            }
+
+            @Override
+            public void onHideCustomView() {
+                if (customView == null) return;
+                customViewContainer.removeView(customView);
+                customView = null;
+                customViewContainer.setVisibility(View.GONE);
+                webView.setVisibility(View.VISIBLE);
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                if (customViewCallback != null) {
+                    customViewCallback.onCustomViewHidden();
+                    customViewCallback = null;
+                }
+            }
         });
 
         // Direct Download Listener: Downloads cleanly to user's device Downloads/Files folder
@@ -189,6 +241,19 @@ public class MainActivity extends AppCompatActivity {
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
+                if (customView != null) {
+                    // Exit fullscreen video
+                    customViewContainer.removeView(customView);
+                    customView = null;
+                    customViewContainer.setVisibility(View.GONE);
+                    webView.setVisibility(View.VISIBLE);
+                    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                    if (customViewCallback != null) {
+                        customViewCallback.onCustomViewHidden();
+                        customViewCallback = null;
+                    }
+                    return;
+                }
                 if (webView.canGoBack()) {
                     webView.goBack();
                 } else {
