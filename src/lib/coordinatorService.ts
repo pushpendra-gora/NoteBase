@@ -39,41 +39,29 @@ export function saveStoredCoordinators(list: CoordinatorRecord[]) {
 
 /**
  * Checks if coordinator branch matches the user selected branch.
- * Normalizes short names like "CSE", "CSE (AIML)", and full names like "Computer Science & Engineering (CSE)".
+ * Normalizes approved NoteBase branches without false cross-matching between distinct specializations (e.g. CSE vs CSE(AI&ML)).
  */
 export function isBranchMatch(coordBranch: string, selectedBranch: string): boolean {
   if (!coordBranch || !selectedBranch) return false;
-  const c = coordBranch.trim().toLowerCase();
-  const s = selectedBranch.trim().toLowerCase();
+  const c = coordBranch.trim().toLowerCase().replace(/\s+/g, '');
+  const s = selectedBranch.trim().toLowerCase().replace(/\s+/g, '');
   if (c === s) return true;
 
-  // Extract abbreviation inside parenthesis e.g. "CSE" from "Computer Science & Engineering (CSE)"
-  const extractCode = (str: string) => {
-    const match = str.match(/\(([^)]+)\)/);
-    return match ? match[1].toLowerCase() : '';
+  const normalizeBranch = (str: string): string => {
+    const raw = str.toLowerCase().replace(/[\s\-_()&]/g, '');
+    if (raw.includes('aiml') || raw.includes('aiandml') || (raw.includes('ai') && raw.includes('ml'))) return 'cse_aiml';
+    if (raw.includes('ds') || raw.includes('datascience')) return 'cse_ds';
+    if (raw.includes('petroleum')) return 'petroleum';
+    if (raw.includes('chemical')) return 'chemical';
+    if (raw.includes('civil')) return 'civil';
+    if (raw.includes('mechanical')) return 'mechanical';
+    if (raw.includes('electrical')) return 'electrical';
+    if (raw.includes('electronics') || raw.includes('ece') || raw.includes('communication')) return 'ece';
+    if (raw.includes('abcd')) return 'group_abcd';
+    if (raw.includes('efgh')) return 'group_efgh';
+    if (raw === 'cse' || raw.includes('computerscience')) return 'cse_core';
+    return raw;
   };
 
-  const cCode = extractCode(c);
-  const sCode = extractCode(s);
-
-  if (cCode && sCode && cCode === sCode) return true;
-  if (cCode && s.includes(cCode)) return true;
-  if (sCode && c.includes(sCode)) return true;
-
-  if (c.includes('computer science') && s.includes('cse')) return true;
-  if (s.includes('computer science') && c.includes('cse')) return true;
-  if ((c.includes('cse') || c.includes('computer')) && (s.includes('cse') || s.includes('computer'))) return true;
-  if (c.includes('petroleum') && s.includes('petroleum')) return true;
-  if (c.includes('chemical') && s.includes('chemical')) return true;
-  if (c.includes('electronics') && (s.includes('electronics') || s.includes('ece'))) return true;
-  if (s.includes('electronics') && (c.includes('electronics') || c.includes('ece'))) return true;
-  if (c.includes('mechanical') && (s.includes('mechanical') || s.includes('me'))) return true;
-  if (s.includes('mechanical') && (c.includes('mechanical') || c.includes('me'))) return true;
-  if (c.includes('civil') && (s.includes('civil') || s.includes('ce'))) return true;
-  if (s.includes('civil') && (c.includes('civil') || c.includes('ce'))) return true;
-  if (c.includes('electrical') && (s.includes('electrical') || s.includes('ee'))) return true;
-  if (s.includes('electrical') && (c.includes('electrical') || c.includes('ee'))) return true;
-  if (c.includes('ai') && s.includes('ai')) return true;
-
-  return false;
+  return normalizeBranch(coordBranch) === normalizeBranch(selectedBranch);
 }

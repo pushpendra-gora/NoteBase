@@ -3,16 +3,22 @@ import { getSupabaseClient } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 
+function resolveClient(req: NextRequest) {
+  const customUrl = req.headers.get('x-supabase-url') || undefined;
+  const customKey = req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined;
+  return getSupabaseClient(customUrl, customKey);
+}
+
 /**
  * GET /api/coordinators
  * Fetches all coordinators directly from Supabase
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const client = getSupabaseClient();
+    const client = resolveClient(req);
     if (!client) {
       return NextResponse.json(
-        { success: false, error: 'Supabase client is not configured on the server. Please check environment variables (NEXT_PUBLIC_SUPABASE_URL & NEXT_PUBLIC_SUPABASE_ANON_KEY).' },
+        { success: false, error: 'Supabase client is not configured. Please set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY on Vercel or in Admin Settings.' },
         { status: 503 }
       );
     }
@@ -71,10 +77,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const client = getSupabaseClient();
+    const client = resolveClient(req);
     if (!client) {
       return NextResponse.json(
-        { success: false, error: 'Supabase database is not connected. Please verify NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY on Vercel.' },
+        { success: false, error: 'Supabase database is not connected. Please verify NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY on Vercel or Admin Settings.' },
         { status: 503 }
       );
     }
@@ -90,18 +96,39 @@ export async function POST(req: NextRequest) {
       password: password.trim(),
       initials: cleanInitials,
       status: status || 'Active',
-      created_at: new Date().toISOString(),
     };
 
-    const { data, error } = await client
+    // Attempt upsert on primary key `id`
+    let { data, error } = await client
       .from('coordinators')
-      .upsert(record)
+      .upsert(record, { onConflict: 'id' })
       .select();
+
+    // If upsert fails, try direct insert
+    if (error) {
+      const insertResult = await client
+        .from('coordinators')
+        .insert(record)
+        .select();
+      if (!insertResult.error) {
+        data = insertResult.data;
+        error = null;
+      } else {
+        error = insertResult.error;
+      }
+    }
 
     if (error) {
       console.error('Supabase error inserting coordinator:', error);
+      const isTableMissing = error.message.includes('does not exist') || error.code === '42P01';
       return NextResponse.json(
-        { success: false, error: `Supabase database error: ${error.message} (Hint: ensure public.coordinators table is created in SQL Editor)` },
+        { 
+          success: false, 
+          error: isTableMissing 
+            ? "Table 'coordinators' does not exist in Supabase. Please run supabase-schema.sql in Supabase SQL Editor."
+            : error.message,
+          code: error.code,
+        },
         { status: 500 }
       );
     }
@@ -136,7 +163,7 @@ export async function PUT(req: NextRequest) {
       );
     }
 
-    const client = getSupabaseClient();
+    const client = resolveClient(req);
     if (!client) {
       return NextResponse.json(
         { success: false, error: 'Supabase client is not connected.' },
@@ -191,7 +218,7 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    const client = getSupabaseClient();
+    const client = resolveClient(req);
     if (!client) {
       return NextResponse.json(
         { success: false, error: 'Supabase client is not connected.' },

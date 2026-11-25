@@ -3,6 +3,12 @@ import { getSupabaseClient } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 
+function resolveClient(req: NextRequest) {
+  const customUrl = req.headers.get('x-supabase-url') || undefined;
+  const customKey = req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined;
+  return getSupabaseClient(customUrl, customKey);
+}
+
 /**
  * GET /api/documents
  * Fetches notes or pyqs from Supabase
@@ -15,7 +21,7 @@ export async function GET(req: NextRequest) {
     const semester = searchParams.get('semester');
     const type = searchParams.get('type'); // 'Notes' or 'PYQ' or 'All'
 
-    const client = getSupabaseClient();
+    const client = resolveClient(req);
     if (!client) {
       return NextResponse.json(
         { success: false, error: 'Database service is unreachable on the server.' },
@@ -78,7 +84,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const client = getSupabaseClient();
+    const client = resolveClient(req);
     if (!client) {
       return NextResponse.json(
         { success: false, error: 'Supabase database is not connected on the server. Please check Vercel environment variables.' },
@@ -149,7 +155,7 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    const client = getSupabaseClient();
+    const client = resolveClient(req);
     if (!client) {
       return NextResponse.json(
         { success: false, error: 'Supabase client is not connected.' },

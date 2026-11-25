@@ -43,7 +43,8 @@ import {
   HardDrive,
   Cloud,
   Copy,
-  RefreshCw
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
 import { 
   getSubjectsFor, 
@@ -77,7 +78,7 @@ import {
   updateSubjectInSupabase,
   deleteSubjectFromSupabase
 } from '../../lib/supabaseService';
-import { isSupabaseConfigured, getSupabaseCredentials } from '../../lib/supabase';
+import { isSupabaseConfigured, getSupabaseCredentials, saveSupabaseCredentials, clearSupabaseCredentials } from '../../lib/supabase';
 import { getStoredCoordinators, saveStoredCoordinators, isBranchMatch } from '../../lib/coordinatorService';
 import {
   getGoogleDriveConfig,
@@ -363,6 +364,8 @@ export default function AdminPage() {
   const [previewMaterial, setPreviewMaterial] = useState<AdminMaterial | null>(null);
   const [isAddCoordOpen, setIsAddCoordOpen] = useState(false);
   const [editingCoord, setEditingCoord] = useState<CoordinatorItem | null>(null);
+  const [isSavingCoord, setIsSavingCoord] = useState(false);
+  const [coordModalError, setCoordModalError] = useState<string | null>(null);
   const [coordForm, setCoordForm] = useState({
     name: '',
     branch: 'CSE(AI&ML)',
@@ -374,6 +377,18 @@ export default function AdminPage() {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const [toast, setToast] = useState<{ message: string; type?: 'success' | 'info' | 'error' } | null>(null);
+
+  // Supabase Database Cloud Configuration State
+  const [supabaseConfig, setSupabaseConfig] = useState(() => {
+    const creds = getSupabaseCredentials();
+    return { url: creds.url, key: creds.key };
+  });
+  const [isSupabaseTesting, setIsSupabaseTesting] = useState(false);
+  const [supabaseTestDetails, setSupabaseTestDetails] = useState<{
+    connected: boolean;
+    tables: Record<string, { exists: boolean; error?: string }>;
+    error?: string;
+  } | null>(null);
 
   // Close Admin Profile menu on outside click (matching coordinator page logic)
   useEffect(() => {
@@ -437,6 +452,61 @@ export default function AdminPage() {
     e.preventDefault();
     saveGoogleDriveConfig(gdriveConfig);
     showToast('Google Drive cloud storage configuration saved!', 'success');
+  };
+
+  // Test Supabase Connection & Table Availability
+  const handleTestSupabaseConnection = async () => {
+    setIsSupabaseTesting(true);
+    setSupabaseTestDetails(null);
+    try {
+      const headers: Record<string, string> = {};
+      if (supabaseConfig.url.trim() && supabaseConfig.key.trim()) {
+        headers['x-supabase-url'] = supabaseConfig.url.trim();
+        headers['x-supabase-key'] = supabaseConfig.key.trim();
+      }
+      const res = await fetch('/api/status', { headers });
+      const data = await res.json();
+      setSupabaseTestDetails({
+        connected: Boolean(data.connected),
+        tables: data.tables || {},
+        error: data.error || undefined
+      });
+      setSupabaseHealth({
+        checked: true,
+        connected: Boolean(data.connected),
+        error: data.error || null
+      });
+      if (data.connected) {
+        showToast('✅ Supabase database is connected & all tables verified!', 'success');
+      } else {
+        showToast(`⚠️ Supabase: ${data.error || 'Connection failed'}`, 'error');
+      }
+    } catch (err: any) {
+      showToast('⚠️ Could not run Supabase connection check.', 'error');
+    } finally {
+      setIsSupabaseTesting(false);
+    }
+  };
+
+  // Save Supabase Credentials
+  const handleSaveSupabaseConfig = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supabaseConfig.url.trim() || !supabaseConfig.key.trim()) {
+      showToast('Please enter both Supabase URL and Anon Key.', 'error');
+      return;
+    }
+    saveSupabaseCredentials(supabaseConfig.url, supabaseConfig.key);
+    showToast('Supabase database credentials saved locally!', 'success');
+    handleTestSupabaseConnection();
+  };
+
+  // Copy SQL to create coordinators table
+  const handleCopyCoordinatorsSql = () => {
+    const sql = `-- Run this in Supabase Dashboard -> SQL Editor -> New Query -> Run\ncreate table if not exists public.coordinators (\n  id text primary key,\n  name text not null,\n  branch text not null,\n  year text not null,\n  password text not null default '',\n  initials text default '',\n  status text not null default 'Active',\n  created_at timestamp with time zone default timezone('utc'::text, now()) not null\n);\n\nalter table public.coordinators enable row level security;\n\ncreate policy "Allow select for coordinators" on public.coordinators for select using (true);\ncreate policy "Allow insert for coordinators" on public.coordinators for insert with check (true);\ncreate policy "Allow update for coordinators" on public.coordinators for update using (true);\ncreate policy "Allow delete for coordinators" on public.coordinators for delete using (true);`;
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(sql);
+      showToast('📋 SQL to create "coordinators" table copied to clipboard!', 'success');
+    }
   };
 
   // Test Google Drive Upload
@@ -1118,11 +1188,15 @@ export default function AdminPage() {
 
   const handleSaveCoordinator = async (e: React.FormEvent) => {
     e.preventDefault();
+    setCoordModalError(null);
+
     if (!coordForm.name.trim()) {
+      setCoordModalError('Please enter Coordinator Full Name.');
       showToast('Please enter Coordinator Full Name.', 'error');
       return;
     }
     if (!coordForm.password.trim()) {
+      setCoordModalError('Please set a Login Password for this coordinator.');
       showToast('Please set a Login Password for this coordinator.', 'error');
       return;
     }
@@ -1134,7 +1208,9 @@ export default function AdminPage() {
     });
 
     if (duplicateCoord) {
-      showToast(`⚠️ Coordinator "${duplicateCoord.name}" is already registered for ${coordForm.year} • ${coordForm.branch}! Only 1 coordinator is allowed per Year & Branch.`, 'error');
+      const msg = `Coordinator "${duplicateCoord.name}" is already registered for ${coordForm.year} • ${coordForm.branch}! Only 1 coordinator is allowed per Year & Branch.`;
+      setCoordModalError(msg);
+      showToast(`⚠️ ${msg}`, 'error');
       return;
     }
 
@@ -1147,91 +1223,134 @@ export default function AdminPage() {
       .toUpperCase()
       .slice(0, 2) || 'CO';
 
-    if (editingCoord) {
-      const updatedItem: CoordinatorItem = {
-        ...editingCoord,
-        name: cleanName,
-        branch: coordForm.branch,
-        year: coordForm.year,
-        password: cleanPassword,
-        status: coordForm.status,
-        initials
-      };
+    setIsSavingCoord(true);
 
-      try {
-        const res = await fetch('/api/coordinators', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updatedItem),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.success) {
-          showToast(`⚠️ Supabase Error: ${data.error || 'Failed to update in cloud database'}`, 'error');
-          return;
-        }
-      } catch {
-        if (isSupabaseConfigured()) {
-          const ok = await updateCoordinatorInSupabase(updatedItem);
-          if (!ok) {
-            showToast('⚠️ Could not sync coordinator update to Supabase.', 'error');
-            return;
-          }
-        }
-      }
-
-      const updatedList = coordinators.map(c => c.id === editingCoord.id ? updatedItem : c);
-      setCoordinators(updatedList);
-      saveStoredCoordinators(updatedList);
-
-      showToast(`Coordinator "${cleanName}" & password updated in Supabase!`, 'success');
-    } else {
-      const newCoord: CoordinatorItem = {
-        id: `coord-${Date.now()}`,
-        name: cleanName,
-        branch: coordForm.branch,
-        year: coordForm.year,
-        password: cleanPassword,
-        status: coordForm.status,
-        initials
-      };
-
-      try {
-        const res = await fetch('/api/coordinators', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newCoord),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.success) {
-          showToast(`⚠️ Supabase Error: ${data.error || 'Failed to save to cloud database'}`, 'error');
-          return;
-        }
-      } catch {
-        if (isSupabaseConfigured()) {
-          const ok = await insertCoordinatorToSupabase(newCoord);
-          if (!ok) {
-            showToast('⚠️ Could not save coordinator in Supabase.', 'error');
-            return;
-          }
-        }
-      }
-
-      const updatedList = [newCoord, ...coordinators];
-      setCoordinators(updatedList);
-      saveStoredCoordinators(updatedList);
-
-      showToast(`Coordinator "${cleanName}" saved directly to Supabase cloud!`, 'success');
+    const creds = getSupabaseCredentials();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (creds.url && creds.key) {
+      headers['x-supabase-url'] = creds.url;
+      headers['x-supabase-key'] = creds.key;
     }
 
-    setIsAddCoordOpen(false);
-    setEditingCoord(null);
-    setCoordForm({
-      name: '',
-      branch: 'CSE(AI&ML)',
-      year: '2nd Year',
-      password: '',
-      status: 'Active'
-    });
+    try {
+      if (editingCoord) {
+        const updatedItem: CoordinatorItem = {
+          ...editingCoord,
+          name: cleanName,
+          branch: coordForm.branch,
+          year: coordForm.year,
+          password: cleanPassword,
+          status: coordForm.status,
+          initials
+        };
+
+        let saved = false;
+        let lastError = '';
+
+        try {
+          const res = await fetch('/api/coordinators', {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify(updatedItem),
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            saved = true;
+          } else {
+            lastError = data.error || 'Failed to update coordinator on server.';
+          }
+        } catch (err: any) {
+          lastError = err?.message || 'Server request failed.';
+        }
+
+        // Direct client fallback
+        if (!saved && isSupabaseConfigured()) {
+          const ok = await updateCoordinatorInSupabase(updatedItem);
+          if (ok) saved = true;
+        }
+
+        if (!saved) {
+          const errorMsg = lastError || 'Could not sync coordinator update to Supabase cloud. Please verify your Supabase database credentials and tables.';
+          setCoordModalError(errorMsg);
+          showToast(`⚠️ Supabase Error: ${errorMsg}`, 'error');
+          setIsSavingCoord(false);
+          return;
+        }
+
+        const updatedList = coordinators.map(c => c.id === editingCoord.id ? updatedItem : c);
+        setCoordinators(updatedList);
+        saveStoredCoordinators(updatedList);
+
+        showToast(`Coordinator "${cleanName}" & password updated in Supabase!`, 'success');
+      } else {
+        const newCoord: CoordinatorItem = {
+          id: `coord-${Date.now()}`,
+          name: cleanName,
+          branch: coordForm.branch,
+          year: coordForm.year,
+          password: cleanPassword,
+          status: coordForm.status,
+          initials
+        };
+
+        let saved = false;
+        let lastError = '';
+
+        try {
+          const res = await fetch('/api/coordinators', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(newCoord),
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            saved = true;
+          } else {
+            lastError = data.error || 'Failed to save coordinator on server.';
+          }
+        } catch (err: any) {
+          lastError = err?.message || 'Server request failed.';
+        }
+
+        // Direct client fallback
+        if (!saved && isSupabaseConfigured()) {
+          const ok = await insertCoordinatorToSupabase(newCoord);
+          if (ok) saved = true;
+        }
+
+        if (!saved) {
+          const errorMsg = lastError || 'Could not save coordinator to Supabase cloud. Please verify your Supabase database credentials and tables.';
+          setCoordModalError(errorMsg);
+          showToast(`⚠️ Supabase Error: ${errorMsg}`, 'error');
+          setIsSavingCoord(false);
+          return;
+        }
+
+        const updatedList = [newCoord, ...coordinators];
+        setCoordinators(updatedList);
+        saveStoredCoordinators(updatedList);
+
+        showToast(`Coordinator "${cleanName}" saved directly to Supabase cloud!`, 'success');
+      }
+
+      setIsAddCoordOpen(false);
+      setEditingCoord(null);
+      setCoordModalError(null);
+      setCoordForm({
+        name: '',
+        branch: 'CSE(AI&ML)',
+        year: '2nd Year',
+        password: '',
+        status: 'Active'
+      });
+    } catch (err: any) {
+      setCoordModalError(err?.message || 'An unexpected error occurred.');
+      showToast('⚠️ Error saving coordinator.', 'error');
+    } finally {
+      setIsSavingCoord(false);
+    }
   };
 
   const handleDeleteCoordinator = (id: string, name: string) => {
@@ -1239,14 +1358,23 @@ export default function AdminPage() {
       title: 'Delete Coordinator',
       message: `Are you sure you want to remove coordinator "${name}"? They will no longer be able to log in.`,
       onConfirm: async () => {
+        const creds = getSupabaseCredentials();
+        const headers: Record<string, string> = {};
+        if (creds.url && creds.key) {
+          headers['x-supabase-url'] = creds.url;
+          headers['x-supabase-key'] = creds.key;
+        }
+
         try {
           const res = await fetch(`/api/coordinators?id=${encodeURIComponent(id)}`, {
             method: 'DELETE',
+            headers,
           });
           const data = await res.json();
           if (!res.ok || !data.success) {
-            showToast(`⚠️ Supabase Error: ${data.error || 'Failed to delete from cloud database'}`, 'error');
-            return;
+            if (isSupabaseConfigured()) {
+              await deleteCoordinatorFromSupabase(id);
+            }
           }
         } catch {
           if (isSupabaseConfigured()) {
@@ -2441,6 +2569,7 @@ export default function AdminPage() {
                     password: '',
                     status: 'Active'
                   });
+                  setCoordModalError(null);
                   setIsAddCoordOpen(true);
                 }}
                 className="inline-flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-[#3b49df] hover:bg-indigo-700 active:scale-95 text-white text-xs font-bold shadow-sm transition-all cursor-pointer"
@@ -2496,6 +2625,7 @@ export default function AdminPage() {
                             password: coord.password || '123',
                             status: coord.status || 'Active'
                           });
+                          setCoordModalError(null);
                           setIsAddCoordOpen(true);
                         }}
                         title="Edit Coordinator & Password"
@@ -3191,7 +3321,9 @@ export default function AdminPage() {
               <div className="bg-white rounded-3xl border border-slate-100/90 p-6 shadow-[0_2px_14px_rgba(0,0,0,0.02)] space-y-4">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                   <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+                    <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${
+                      supabaseHealth.connected ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'
+                    }`}>
                       <Database className="w-5 h-5" />
                     </div>
                     <div>
@@ -3199,12 +3331,16 @@ export default function AdminPage() {
                         Supabase Cloud Database
                       </h3>
                       <p className="text-[11px] text-slate-400">
-                        PostgreSQL Database & Live Cloud Schema
+                        PostgreSQL Database & Live Cloud Tables
                       </p>
                     </div>
                   </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    Connected
+                  <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${
+                    supabaseHealth.connected 
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
+                      : 'bg-amber-50 text-amber-700 border-amber-200'
+                  }`}>
+                    {supabaseHealth.connected ? 'Online (Connected)' : 'Attention Required'}
                   </span>
                 </div>
 
@@ -3233,6 +3369,62 @@ export default function AdminPage() {
                       lectures ({materials.filter(m => m.type === 'Lectures').length}) • subjects active
                     </span>
                   </div>
+                </div>
+
+                {/* Direct Credentials & Testing Actions */}
+                <div className="pt-2 border-t border-slate-100 space-y-3">
+                  <form onSubmit={handleSaveSupabaseConfig} className="space-y-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-0.5">Supabase URL</label>
+                        <input
+                          type="text"
+                          value={supabaseConfig.url}
+                          onChange={(e) => setSupabaseConfig({ ...supabaseConfig, url: e.target.value })}
+                          placeholder="https://xyz.supabase.co"
+                          className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-mono text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-0.5">Anon Key</label>
+                        <input
+                          type="password"
+                          value={supabaseConfig.key}
+                          onChange={(e) => setSupabaseConfig({ ...supabaseConfig, key: e.target.value })}
+                          placeholder="eyJhbGciOi..."
+                          className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-mono text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between pt-1">
+                      <button
+                        type="button"
+                        onClick={handleCopyCoordinatorsSql}
+                        className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center space-x-1 cursor-pointer"
+                        title="Copy SQL query to create coordinators table in Supabase"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>Copy Coordinators SQL</span>
+                      </button>
+                      <div className="flex items-center space-x-2">
+                        <button
+                          type="button"
+                          onClick={handleTestSupabaseConnection}
+                          disabled={isSupabaseTesting}
+                          className="px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold transition-all cursor-pointer flex items-center space-x-1"
+                        >
+                          {isSupabaseTesting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                          <span>Test Check</span>
+                        </button>
+                        <button
+                          type="submit"
+                          className="px-3.5 py-1.5 rounded-lg bg-[#3b49df] hover:bg-indigo-700 text-white text-xs font-bold transition-all cursor-pointer"
+                        >
+                          Save Credentials
+                        </button>
+                      </div>
+                    </div>
+                  </form>
                 </div>
               </div>
 
@@ -3850,21 +4042,45 @@ export default function AdminPage() {
                 </select>
               </div>
 
+              {/* Error Display inside Modal */}
+              {coordModalError && (
+                <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs space-y-1 animate-in fade-in">
+                  <div className="flex items-center space-x-2 font-bold text-rose-900">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>Cannot Save to Supabase</span>
+                  </div>
+                  <p className="text-[11px] text-rose-700 leading-relaxed font-medium">
+                    {coordModalError}
+                  </p>
+                </div>
+              )}
+
               {/* Actions */}
               <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
+                  disabled={isSavingCoord}
                   onClick={() => setIsAddCoordOpen(false)}
-                  className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+                  className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-[#3b49df] hover:bg-indigo-700 text-white text-xs font-bold shadow-sm transition-colors cursor-pointer flex items-center space-x-1.5"
+                  disabled={isSavingCoord}
+                  className="px-5 py-2.5 rounded-xl bg-[#3b49df] hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold shadow-sm transition-colors cursor-pointer flex items-center space-x-1.5"
                 >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>{editingCoord ? 'Update Coordinator' : 'Save Coordinator'}</span>
+                  {isSavingCoord ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Saving to Supabase...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      <span>{editingCoord ? 'Update Coordinator' : 'Save Coordinator'}</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>

@@ -604,9 +604,16 @@ function DashboardContent() {
 
       // 2. Insert record into Supabase database via server API & direct client
       try {
+        const creds = getSupabaseCredentials();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (creds.url && creds.key) {
+          headers['x-supabase-url'] = creds.url;
+          headers['x-supabase-key'] = creds.key;
+        }
+
         const docRes = await fetch('/api/documents', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify(noteDoc),
         });
         const docData = await docRes.json();

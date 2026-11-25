@@ -1,30 +1,31 @@
-import { NextResponse } from 'next/server';
-import { getSupabaseClient } from '@/lib/supabase';
+import { NextRequest, NextResponse } from 'next/server';
+import { getSupabaseClient, getSupabaseCredentials } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
-  const envUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '';
-  const hasAnonKey = Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY);
-  const hasServiceKey = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY);
+export async function GET(req: NextRequest) {
+  const customUrl = req.headers.get('x-supabase-url') || undefined;
+  const customKey = req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined;
+
+  const creds = getSupabaseCredentials(customUrl, customKey);
   const hasDriveWebhook = Boolean(process.env.GOOGLE_DRIVE_WEBHOOK_URL);
 
-  if (!envUrl || (!hasAnonKey && !hasServiceKey)) {
+  if (!creds.url || !creds.key) {
     return NextResponse.json({
       success: false,
       connected: false,
-      error: 'Supabase credentials are missing on the server. Please set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in Vercel Environment Variables and REDEPLOY.',
+      error: 'Supabase credentials are missing. Please set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY on Vercel or enter them in Admin Settings.',
       tables: {},
       googleDrive: { configured: hasDriveWebhook },
     });
   }
 
-  const client = getSupabaseClient();
+  const client = getSupabaseClient(creds.url, creds.key);
   if (!client) {
     return NextResponse.json({
       success: false,
       connected: false,
-      error: 'Failed to initialize Supabase client with provided URL and Key.',
+      error: 'Failed to initialize Supabase client with provided URL and Key. Ensure URL starts with https:// and Key is valid.',
       tables: {},
       googleDrive: { configured: hasDriveWebhook },
     });
@@ -79,7 +80,7 @@ export async function GET() {
   return NextResponse.json({
     success: !hasAnyTableError,
     connected: !hasAnyTableError,
-    supabaseUrl: envUrl,
+    supabaseUrl: creds.url,
     error: hasAnyTableError ? (primaryError || 'One or more Supabase tables are missing. Please run supabase-schema.sql in Supabase SQL Editor.') : null,
     tables: tablesStatus,
     googleDrive: { configured: hasDriveWebhook },

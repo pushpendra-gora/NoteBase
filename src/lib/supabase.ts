@@ -1,24 +1,66 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-// Read default credentials from environment variables or browser storage
-const envUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '';
-const envKey = (typeof window === 'undefined' && process.env.SUPABASE_SERVICE_ROLE_KEY)
-  ? process.env.SUPABASE_SERVICE_ROLE_KEY
-  : (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '');
+export function getSupabaseCredentials(customUrl?: string, customKey?: string) {
+  // 1. Explicitly provided credentials (e.g. from request headers or direct invocation)
+  if (customUrl && customKey) {
+    return { url: customUrl.trim(), key: customKey.trim() };
+  }
 
-export function getSupabaseCredentials() {
+  // 2. Client-side browser storage (allows Admin to set/override credentials in dashboard UI)
   if (typeof window !== 'undefined') {
-    const savedUrl = localStorage.getItem('notehub_supabase_url');
-    const savedKey = localStorage.getItem('notehub_supabase_anon_key');
-    if (savedUrl && savedKey) {
-      return { url: savedUrl, key: savedKey };
+    try {
+      const savedUrl = localStorage.getItem('notehub_supabase_url');
+      const savedKey = localStorage.getItem('notehub_supabase_anon_key');
+      if (savedUrl && savedKey && savedUrl.trim() && savedKey.trim()) {
+        return { url: savedUrl.trim(), key: savedKey.trim() };
+      }
+    } catch {
+      // LocalStorage access may fail in restricted iframe environments
     }
   }
-  return { url: envUrl, key: envKey };
+
+  // 3. Server / Client Environment Variables
+  const envUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '';
+  const envKey = (typeof window === 'undefined' && process.env.SUPABASE_SERVICE_ROLE_KEY)
+    ? process.env.SUPABASE_SERVICE_ROLE_KEY
+    : (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
+       process.env.SUPABASE_ANON_KEY || 
+       process.env.NEXT_PUBLIC_SUPABASE_KEY || 
+       process.env.SUPABASE_KEY || 
+       '');
+
+  return { url: envUrl.trim(), key: envKey.trim() };
 }
 
-export function isSupabaseConfigured(): boolean {
-  const { url, key } = getSupabaseCredentials();
+export function saveSupabaseCredentials(url: string, key: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem('notehub_supabase_url', url.trim());
+    localStorage.setItem('notehub_supabase_anon_key', key.trim());
+    // Invalidate client cache
+    cachedClient = null;
+    lastUsedUrl = '';
+    lastUsedKey = '';
+  } catch (err) {
+    console.error('Failed to save Supabase credentials to localStorage:', err);
+  }
+}
+
+export function clearSupabaseCredentials() {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem('notehub_supabase_url');
+    localStorage.removeItem('notehub_supabase_anon_key');
+    cachedClient = null;
+    lastUsedUrl = '';
+    lastUsedKey = '';
+  } catch (err) {
+    console.error('Failed to clear Supabase credentials from localStorage:', err);
+  }
+}
+
+export function isSupabaseConfigured(customUrl?: string, customKey?: string): boolean {
+  const { url, key } = getSupabaseCredentials(customUrl, customKey);
   return Boolean(
     url &&
     key &&
@@ -32,8 +74,8 @@ let cachedClient: SupabaseClient | null = null;
 let lastUsedUrl = '';
 let lastUsedKey = '';
 
-export function getSupabaseClient(): SupabaseClient | null {
-  const { url, key } = getSupabaseCredentials();
+export function getSupabaseClient(customUrl?: string, customKey?: string): SupabaseClient | null {
+  const { url, key } = getSupabaseCredentials(customUrl, customKey);
   if (!url || !key || !url.startsWith('https://')) {
     return null;
   }
@@ -43,7 +85,12 @@ export function getSupabaseClient(): SupabaseClient | null {
   }
 
   try {
-    cachedClient = createClient(url, key);
+    cachedClient = createClient(url, key, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      }
+    });
     lastUsedUrl = url;
     lastUsedKey = key;
     return cachedClient;
