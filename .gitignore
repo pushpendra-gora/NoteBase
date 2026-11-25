@@ -22,6 +22,12 @@
 # TypeScript build info
 *.tsbuildinfo
 
+# Android build output
+android-app/.gradle/
+android-app/build/
+android-app/app/build/
+android-app/local.properties
+
 # Debug & OS logs
 npm-debug.log*
 yarn-debug.log*

@@ -51,12 +51,24 @@ function ResultsContent() {
   const [zoomLevel, setZoomLevel] = useState(100);
   const [subjectsVersion, setSubjectsVersion] = useState(0);
 
+  // Local device storage cache for already-opened PDFs (instant offline reopening)
+  const [cachedPdfIds, setCachedPdfIds] = useState<Set<string>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('notebase_cached_pdf_ids');
+        if (saved) return new Set(JSON.parse(saved));
+      } catch {}
+    }
+    return new Set<string>();
+  });
+
   // Reset iframe loading state whenever student opens a new PDF
   useEffect(() => {
     if (activeDoc) {
-      setIsIframeLoading(true);
+      // If already cached locally, skip waiting spinner
+      setIsIframeLoading(!cachedPdfIds.has(activeDoc.id));
     }
-  }, [activeDoc]);
+  }, [activeDoc, cachedPdfIds]);
 
   // Listen for dynamic subject updates made by coordinators
   useEffect(() => {
@@ -157,9 +169,28 @@ function ResultsContent() {
     return subjectsList[0]?.title || '';
   }, [selectedSubject, subjectsList]);
 
-  // Per-subject lazy-load cache: only metadata of the active subject is fetched from DB
-  const [subjectDocsCache, setSubjectDocsCache] = useState<Record<string, NoteDocument[]>>({});
+  // Per-subject lazy-load cache: with persistent localStorage fallback
+  const [subjectDocsCache, setSubjectDocsCache] = useState<Record<string, NoteDocument[]>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const key = `notebase_docs_${year || ''}_${branch || ''}_${semester || ''}_${type || ''}`;
+        const saved = localStorage.getItem(key);
+        if (saved) return JSON.parse(saved);
+      } catch {}
+    }
+    return {};
+  });
   const [isLoadingSubjectDocs, setIsLoadingSubjectDocs] = useState<boolean>(false);
+
+  // Sync subject documents to localStorage whenever updated
+  useEffect(() => {
+    if (typeof window !== 'undefined' && year && branch && semester && type && Object.keys(subjectDocsCache).length > 0) {
+      try {
+        const key = `notebase_docs_${year}_${branch}_${semester}_${type}`;
+        localStorage.setItem(key, JSON.stringify(subjectDocsCache));
+      } catch {}
+    }
+  }, [subjectDocsCache, year, branch, semester, type]);
 
   // Lazy-load metadata strictly for the active subject currently viewed by the student
   useEffect(() => {
@@ -169,7 +200,7 @@ function ResultsContent() {
     }
 
     // If metadata for this subject was already loaded, reuse it instantly (0 network cost)
-    if (subjectDocsCache[activeSubject]) {
+    if (subjectDocsCache[activeSubject] && subjectDocsCache[activeSubject].length > 0) {
       return;
     }
 
@@ -557,11 +588,16 @@ function ResultsContent() {
                         <p className="text-[11px] sm:text-xs text-slate-500 font-medium flex items-center gap-x-1.5 gap-y-1 flex-wrap">
                           <strong className="text-slate-700 font-semibold">{doc.owner || 'Department Faculty'}</strong>
                           <span>• {doc.pages} Pages • {doc.size}</span>
-                          {doc.file_url && (
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          {cachedPdfIds.has(doc.id) ? (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 inline-flex items-center space-x-1">
+                              <span>⚡</span>
+                              <span>Cached on Device</span>
+                            </span>
+                          ) : doc.file_url ? (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
                               ☁️ Cloud PDF
                             </span>
-                          )}
+                          ) : null}
                         </p>
                       </div>
                     </div>
@@ -631,6 +667,12 @@ function ResultsContent() {
                   <span className="text-[10px] sm:text-xs font-medium text-slate-500 truncate">
                     {activeDoc.year} • {activeDoc.branch} • {activeDoc.semester}
                   </span>
+                  {cachedPdfIds.has(activeDoc.id) && (
+                    <span className="inline-flex items-center space-x-1 text-[9px] sm:text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
+                      <span>⚡</span>
+                      <span>Cached on Device</span>
+                    </span>
+                  )}
                 </div>
                 <h3 className="text-xs sm:text-base font-bold text-slate-900 truncate">
                   {activeDoc.title}
@@ -677,7 +719,19 @@ function ResultsContent() {
                   <iframe
                     src={getPdfEmbedUrl(activeDoc.file_url || activeDoc.file_path)}
                     title={activeDoc.title}
-                    onLoad={() => setIsIframeLoading(false)}
+                    onLoad={() => {
+                      setIsIframeLoading(false);
+                      if (activeDoc && typeof window !== 'undefined') {
+                        setCachedPdfIds((prev) => {
+                          const next = new Set(prev);
+                          next.add(activeDoc.id);
+                          try {
+                            localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
+                          } catch {}
+                          return next;
+                        });
+                      }
+                    }}
                     className="w-full h-full flex-1 border-0 bg-white"
                     allow="autoplay; fullscreen"
                   />
