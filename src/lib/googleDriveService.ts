@@ -58,15 +58,16 @@ function doPost(e) {
     
     // Create the PDF file in Google Drive
     var file = folder.createFile(blob);
+    var fileId = file.getId();
+    var fileName = file.getName();
     
-    // Make file publicly viewable with link (with fallback for enterprise/institutional Drive)
+    // Try to make file viewable with link (ignore error if restricted by Google Account settings)
     try {
       file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     } catch (shareErr) {
-      // In case enterprise domain policy restricts external sharing, proceed safely
+      // Ignore: folder-level sharing or direct Drive view will work
     }
     
-    var fileId = file.getId();
     // Public view and direct download links
     var publicViewUrl = "https://drive.google.com/file/d/" + fileId + "/view?usp=sharing";
     var directDownloadUrl = "https://drive.google.com/uc?export=download&id=" + fileId;
@@ -74,10 +75,9 @@ function doPost(e) {
     var output = {
       success: true,
       fileId: fileId,
-      fileName: file.getName(),
+      fileName: fileName,
       fileUrl: publicViewUrl,
       downloadUrl: directDownloadUrl,
-      folderName: folder.getName(),
       created_at: new Date().toISOString()
     };
     
