@@ -1,14 +1,17 @@
 package com.notebase.student;
 
 import android.annotation.SuppressLint;
+import android.app.DownloadManager;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.view.KeyEvent;
 import android.view.View;
 import android.webkit.DownloadListener;
+import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -116,13 +119,10 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
 
-                // If user clicks a direct drive download link, launch browser or download
-                if (url.contains("export=download") || url.endsWith(".apk")) {
-                    try {
-                        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                        startActivity(intent);
-                        return true;
-                    } catch (Exception ignored) {}
+                // If user clicks a direct drive download link or PDF, initiate direct device download
+                if (url.contains("export=download") || url.endsWith(".apk") || url.endsWith(".pdf")) {
+                    downloadFile(url, webView.getSettings().getUserAgentString(), null, "application/pdf");
+                    return true;
                 }
 
                 return false;
@@ -177,16 +177,11 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Direct Download Listener
+        // Direct Download Listener: Downloads cleanly to user's device Downloads/Files folder
         webView.setDownloadListener(new DownloadListener() {
             @Override
             public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
-                try {
-                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                    startActivity(intent);
-                } catch (Exception e) {
-                    Toast.makeText(MainActivity.this, "Opening download...", Toast.LENGTH_SHORT).show();
-                }
+                downloadFile(url, userAgent, contentDisposition, mimetype);
             }
         });
 
@@ -216,6 +211,52 @@ public class MainActivity extends AppCompatActivity {
         super.onSaveInstanceState(outState);
         if (webView != null) {
             webView.saveState(outState);
+        }
+    }
+
+    private void downloadFile(String url, String userAgent, String contentDisposition, String mimetype) {
+        try {
+            Uri downloadUri = Uri.parse(url);
+            DownloadManager.Request request = new DownloadManager.Request(downloadUri);
+
+            String mime = (mimetype != null && !mimetype.isEmpty() && !mimetype.equals("application/octet-stream"))
+                    ? mimetype : "application/pdf";
+            request.setMimeType(mime);
+
+            if (userAgent != null && !userAgent.isEmpty()) {
+                request.addRequestHeader("User-Agent", userAgent);
+            }
+
+            String fileName = URLUtil.guessFileName(url, contentDisposition, mime);
+            if (!fileName.toLowerCase().endsWith(".pdf") && !fileName.toLowerCase().endsWith(".apk")) {
+                fileName = fileName + ".pdf";
+            }
+
+            request.setTitle(fileName);
+            request.setDescription("Saving NoteBase document to your device...");
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
+
+            // Notify Media Scanner so the file is immediately visible in Gallery / File Manager
+            try {
+                request.allowScanningByMediaScanner();
+            } catch (Exception ignored) {}
+
+            DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+            if (dm != null) {
+                dm.enqueue(request);
+                Toast.makeText(this, "Downloading " + fileName + " to phone Downloads...", Toast.LENGTH_LONG).show();
+                return;
+            }
+        } catch (Exception e) {
+            // Fallback to external browser if DownloadManager cannot handle the URI directly
+        }
+
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            startActivity(intent);
+        } catch (Exception ex) {
+            Toast.makeText(this, "Cannot download file: " + ex.getMessage(), Toast.LENGTH_SHORT).show();
         }
     }
 }

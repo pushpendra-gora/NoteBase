@@ -358,7 +358,24 @@ function ResultsContent() {
       }
 
       setDownloadSuccess(true);
-      window.open(downloadUrl, '_blank');
+
+      const safeTitle = (doc.title || 'document').replace(/[/\\?%*:|"<>]/g, '_');
+      const filename = safeTitle.toLowerCase().endsWith('.pdf') ? safeTitle : `${safeTitle}.pdf`;
+
+      // Trigger direct download via invisible anchor tag for mobile browsers & WebView
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.setAttribute('download', filename);
+      link.setAttribute('target', '_blank');
+      link.setAttribute('rel', 'noopener noreferrer');
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        try {
+          document.body.removeChild(link);
+        } catch {}
+      }, 300);
+
       setTimeout(() => setDownloadSuccess(false), 2500);
       return;
     }
