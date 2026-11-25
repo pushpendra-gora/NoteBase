@@ -75,9 +75,7 @@ import {
   fetchSubjectsFromSupabase,
   insertSubjectToSupabase,
   updateSubjectInSupabase,
-  deleteSubjectFromSupabase,
-  fetchAdminCredentialsFromSupabase,
-  updateAdminPasswordInSupabase
+  deleteSubjectFromSupabase
 } from '../../lib/supabaseService';
 import { isSupabaseConfigured, getSupabaseCredentials } from '../../lib/supabase';
 import { getStoredCoordinators, saveStoredCoordinators, isBranchMatch } from '../../lib/coordinatorService';
@@ -120,15 +118,6 @@ export default function AdminPage() {
       return localStorage.getItem('notehub_admin_id') || 'admin';
     }
     return 'admin';
-  });
-
-  // Admin Stored Password with LocalStorage persistence and env variable support
-  const defaultAdminPass = process.env.NEXT_PUBLIC_ADMIN_DEFAULT_PASSWORD || 'admin123';
-  const [storedAdminPassword, setStoredAdminPassword] = useState<string>(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('notehub_admin_password') || defaultAdminPass;
-    }
-    return defaultAdminPass;
   });
 
   // Admin Change Password Modal State
@@ -268,20 +257,27 @@ export default function AdminPage() {
         }
       }).catch(() => {});
 
-      // Fetch latest Admin ID and Password from Supabase Cloud
-      fetchAdminCredentialsFromSupabase().then((creds) => {
-        if (creds && creds.password) {
-          setStoredAdminId(creds.id);
-          setStoredAdminPassword(creds.password);
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('notehub_admin_id', creds.id);
-            localStorage.setItem('notehub_admin_password', creds.password);
-          }
-        }
-      }).catch((err) => {
-        console.warn('Could not fetch admin credentials from Supabase:', err);
-      });
     }
+
+    // Verify existing admin session from server httpOnly cookie
+    fetch('/api/admin/auth')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.authenticated) {
+          setIsLoggedIn(true);
+        }
+      })
+      .catch(() => {});
+
+    // Sync Google Drive server configuration status
+    fetch('/api/upload-drive')
+      .then((res) => res.json())
+      .then((data) => {
+        if (typeof window !== 'undefined' && data && data.configured !== undefined) {
+          localStorage.setItem('notebase_gdrive_server_configured', data.configured ? 'true' : 'false');
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Sequential Cascading Filters (Year -> Branch -> Semester -> Subject)
@@ -1155,7 +1151,7 @@ export default function AdminPage() {
     });
   };
 
-  // Handle Login Submit (Verifies with Supabase cloud database credentials)
+  // Handle Login Submit (Securely verified via server-side /api/admin/auth)
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!adminId.trim() || !password.trim()) {
@@ -1166,51 +1162,62 @@ export default function AdminPage() {
     setIsSubmitting(true);
     setLoginError('');
 
-    let currentId = storedAdminId;
-    let currentPass = storedAdminPassword;
+    try {
+      const response = await fetch('/api/admin/auth', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'login',
+          id: adminId.trim(),
+          password: password.trim(),
+        }),
+      });
 
-    // Check latest Supabase cloud database credentials
-    if (isSupabaseConfigured()) {
-      try {
-        const cloudCreds = await fetchAdminCredentialsFromSupabase();
-        if (cloudCreds && cloudCreds.password) {
-          currentId = cloudCreds.id;
-          currentPass = cloudCreds.password;
-          setStoredAdminId(currentId);
-          setStoredAdminPassword(currentPass);
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('notehub_admin_id', currentId);
-            localStorage.setItem('notehub_admin_password', currentPass);
-          }
-        }
-      } catch (err) {
-        console.warn('Could not verify credentials with Supabase, using local fallback:', err);
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        setIsSubmitting(false);
+        setLoginError(data.error || 'Invalid Admin ID or Password.');
+        return;
       }
-    }
 
-    if (adminId.trim().toLowerCase() !== currentId.trim().toLowerCase()) {
       setIsSubmitting(false);
-      setLoginError('Incorrect Admin ID.');
-      return;
-    }
-
-    if (password.trim() !== currentPass.trim()) {
+      setIsLoggedIn(true);
+      if (data.adminId) {
+        setStoredAdminId(data.adminId);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('notehub_admin_id', data.adminId);
+        }
+      }
+    } catch (err: any) {
       setIsSubmitting(false);
-      setLoginError('Incorrect Admin Password. Please enter the valid password.');
-      return;
+      setLoginError(err?.message || 'Failed to connect to authentication service.');
     }
-
-    setIsSubmitting(false);
-    setIsLoggedIn(true);
   };
 
-  // Handle Admin Password Change Submit (Updates in Supabase PostgreSQL table & LocalStorage)
+  // Handle Admin Logout (Clears secure server session cookie)
+  const handleAdminLogout = async () => {
+    try {
+      await fetch('/api/admin/auth', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'logout' }),
+      });
+    } catch {}
+    setIsLoggedIn(false);
+  };
+
+  // Handle Admin Password Change Submit (Processed securely on server without client password storage)
   const handleAdminPasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
     setPasswordChangeError('');
 
-    if (changePasswordForm.currentPassword.trim() !== storedAdminPassword.trim()) {
-      setPasswordChangeError('Current password does not match.');
+    if (!changePasswordForm.currentPassword.trim()) {
+      setPasswordChangeError('Please enter your current password.');
       return;
     }
 
@@ -1224,30 +1231,36 @@ export default function AdminPage() {
       return;
     }
 
-    const newPass = changePasswordForm.newPassword.trim();
+    const cleanNewPass = changePasswordForm.newPassword.trim();
+    const cleanCurrentPass = changePasswordForm.currentPassword.trim();
     setIsUpdatingPassword(true);
 
     try {
-      // 1. Update in Supabase
-      if (isSupabaseConfigured()) {
-        const success = await updateAdminPasswordInSupabase(newPass, storedAdminId);
-        if (!success) {
-          console.warn('Could not sync password to Supabase table, saving locally.');
-        }
-      }
+      const response = await fetch('/api/admin/auth', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'change-password',
+          currentPassword: cleanCurrentPass,
+          newPassword: cleanNewPass,
+        }),
+      });
 
-      // 2. Update local state & localStorage
-      setStoredAdminPassword(newPass);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('notehub_admin_password', newPass);
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        setPasswordChangeError(data.error || 'Failed to update password.');
+        return;
       }
 
       setIsChangePasswordOpen(false);
       setChangePasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
-      showToast('🔐 Admin password updated in Supabase & cloud successfully!', 'success');
-    } catch (err) {
+      showToast('🔐 Admin password updated in cloud database successfully!', 'success');
+    } catch (err: any) {
       console.error('Error changing admin password:', err);
-      setPasswordChangeError('Failed to update password in database.');
+      setPasswordChangeError(err?.message || 'Failed to update password in database.');
     } finally {
       setIsUpdatingPassword(false);
     }
@@ -1531,7 +1544,7 @@ export default function AdminPage() {
 
           <button
             type="button"
-            onClick={() => setIsLoggedIn(false)}
+            onClick={handleAdminLogout}
             title="Sign out of Admin Dashboard"
             className="w-9 h-9 rounded-xl hover:bg-red-50 text-slate-400 hover:text-red-600 flex items-center justify-center transition-colors cursor-pointer shrink-0"
           >
@@ -1611,7 +1624,7 @@ export default function AdminPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setIsLoggedIn(false)}
+                      onClick={handleAdminLogout}
                       className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-red-600 hover:bg-red-50 transition-colors cursor-pointer text-left font-bold border-t border-slate-100 mt-1"
                     >
                       <LogOut className="w-3.5 h-3.5" />

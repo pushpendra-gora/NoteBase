@@ -35,9 +35,15 @@ NoteBase is a college notes and academic resource portal built with Next.js 15, 
    ```
    Add your credentials:
    ```env
+   # Client-Side (Public)
    NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-   NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL=your-script-url
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-public-key
+
+   # Server-Side Secrets (No NEXT_PUBLIC_ prefix - keeps keys private from client bundle)
+   GOOGLE_DRIVE_WEBHOOK_URL=https://script.google.com/macros/s/your-deployment-id/exec
+   GOOGLE_DRIVE_FOLDER_ID=your-google-drive-folder-id
+   ADMIN_DEFAULT_ID=admin
+   ADMIN_DEFAULT_PASSWORD=admin123
    ```
 
 3. **Database Setup:**

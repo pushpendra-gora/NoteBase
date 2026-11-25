@@ -678,8 +678,8 @@ export async function fetchAdminCredentialsFromSupabase(): Promise<AdminCredenti
     }
 
     // If table exists but has no rows, seed the default admin
-    const fallbackId = process.env.NEXT_PUBLIC_ADMIN_DEFAULT_ID || 'admin';
-    const fallbackPassword = process.env.NEXT_PUBLIC_ADMIN_DEFAULT_PASSWORD || 'admin123';
+    const fallbackId = process.env.ADMIN_DEFAULT_ID || 'admin';
+    const fallbackPassword = process.env.ADMIN_DEFAULT_PASSWORD || 'admin123';
     const defaultAdmin = { id: fallbackId, password: fallbackPassword, updated_at: new Date().toISOString() };
     await client.from('admin_credentials').upsert(defaultAdmin);
     return { id: fallbackId, password: fallbackPassword };

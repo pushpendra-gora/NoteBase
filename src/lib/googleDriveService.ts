@@ -102,16 +102,13 @@ function doGet(e) {
  * Get current Google Drive configuration from localStorage
  */
 export function getGoogleDriveConfig(): GoogleDriveConfig {
-  const envWebhookUrl = process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL || '';
-  const envFolderId = process.env.NEXT_PUBLIC_GOOGLE_DRIVE_FOLDER_ID || '';
-
   if (typeof window === 'undefined') {
-    return { webhookUrl: envWebhookUrl, folderId: envFolderId, enabled: Boolean(envWebhookUrl) };
+    return { webhookUrl: '', folderId: '', enabled: true };
   }
-  const webhookUrl = localStorage.getItem(STORAGE_KEYS.URL) || envWebhookUrl;
-  const folderId = localStorage.getItem(STORAGE_KEYS.FOLDER) || envFolderId;
+  const webhookUrl = localStorage.getItem(STORAGE_KEYS.URL) || '';
+  const folderId = localStorage.getItem(STORAGE_KEYS.FOLDER) || '';
   const enabledStr = localStorage.getItem(STORAGE_KEYS.ENABLED);
-  const enabled = enabledStr === null ? Boolean(webhookUrl) : enabledStr === 'true';
+  const enabled = enabledStr === null ? true : enabledStr === 'true';
 
   return { webhookUrl, folderId, enabled };
 }
@@ -134,11 +131,18 @@ export function saveGoogleDriveConfig(config: Partial<GoogleDriveConfig>) {
 }
 
 /**
- * Checks if Google Drive upload is properly configured and active
+ * Checks if Google Drive upload is properly configured and active.
+ * Checks localStorage custom webhook URL, or defaults to true for server-configured webhook.
  */
 export function isGoogleDriveConfigured(): boolean {
-  const { webhookUrl, enabled } = getGoogleDriveConfig();
-  return Boolean(enabled && webhookUrl && webhookUrl.startsWith('https://script.google.com/'));
+  if (typeof window === 'undefined') return true;
+  const customUrl = localStorage.getItem(STORAGE_KEYS.URL);
+  if (customUrl && customUrl.startsWith('https://script.google.com/')) {
+    const enabledStr = localStorage.getItem(STORAGE_KEYS.ENABLED);
+    return enabledStr !== 'false';
+  }
+  const serverConfigured = localStorage.getItem('notebase_gdrive_server_configured');
+  return serverConfigured !== 'false';
 }
 
 /**
@@ -159,7 +163,10 @@ export function fileToBase64(file: File): Promise<string> {
 }
 
 /**
- * Uploads a PDF to user's Google Drive via the Web App endpoint
+ * Uploads a PDF to Google Drive:
+ * 1. If admin configured a custom Webhook URL in dashboard localStorage, tries direct browser upload.
+ * 2. Otherwise calls secure server endpoint `/api/upload-drive` which holds GOOGLE_DRIVE_WEBHOOK_URL server-only!
+ * (Zero webhook secrets exposed to client bundle!)
  */
 export async function uploadPdfToGoogleDrive(
   file: File,
@@ -174,41 +181,41 @@ export async function uploadPdfToGoogleDrive(
   const { webhookUrl, folderId: savedFolderId } = getGoogleDriveConfig();
   const targetFolderId = folderId || savedFolderId;
 
-  if (!webhookUrl) {
-    return {
-      success: false,
-      fileUrl: '',
-      downloadUrl: '',
-      fileId: '',
-      error: 'Google Drive Web App URL is not configured.',
-    };
-  }
-
   try {
     const base64Data = await fileToBase64(file);
 
     const payload = {
-      scriptUrl: webhookUrl,
+      scriptUrl: webhookUrl || undefined,
       fileName: file.name,
       mimeType: file.type || 'application/pdf',
       base64: base64Data,
       folderId: targetFolderId || undefined,
     };
 
-    // Direct upload from browser straight to Google Drive (Zero Vercel traffic)
-    // Sending with 'text/plain;charset=utf-8' prevents CORS preflight (OPTIONS)
-    // while Google Apps Script parses e.postData.contents as the raw JSON payload!
     let response: Response;
-    try {
-      response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-        },
-        body: JSON.stringify(payload),
-      });
-    } catch (directError) {
-      console.warn('Direct upload to Google Apps Script encountered an issue, trying proxy fallback:', directError);
+
+    // If custom URL is configured in client localStorage, try direct upload to Google Apps Script
+    if (webhookUrl && webhookUrl.startsWith('https://script.google.com/')) {
+      try {
+        response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch (directError) {
+        console.warn('Direct upload to Google Apps Script failed, routing through server gateway:', directError);
+        response = await fetch('/api/upload-drive', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+      }
+    } else {
+      // Secure server gateway: Keeps GOOGLE_DRIVE_WEBHOOK_URL completely hidden on the server!
       response = await fetch('/api/upload-drive', {
         method: 'POST',
         headers: {
@@ -220,7 +227,12 @@ export async function uploadPdfToGoogleDrive(
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`Upload failed with HTTP ${response.status}: ${errText}`);
+      let parsedErr = '';
+      try {
+        const jsonErr = JSON.parse(errText);
+        parsedErr = jsonErr.error || '';
+      } catch {}
+      throw new Error(parsedErr || `Upload failed with HTTP ${response.status}: ${errText.slice(0, 200)}`);
     }
 
     const responseText = await response.text();

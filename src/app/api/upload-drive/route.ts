@@ -8,9 +8,14 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { scriptUrl, fileName, mimeType, base64, folderId } = body;
 
-    if (!scriptUrl) {
+    // Use server-side secret environment variable first (never exposed to client),
+    // with fallback to custom user-provided URL if configured in admin dashboard.
+    const targetScriptUrl = process.env.GOOGLE_DRIVE_WEBHOOK_URL || scriptUrl;
+    const targetFolderId = folderId || process.env.GOOGLE_DRIVE_FOLDER_ID || undefined;
+
+    if (!targetScriptUrl) {
       return NextResponse.json(
-        { success: false, error: 'Google Apps Script Web App URL is required.' },
+        { success: false, error: 'Google Drive Web App URL is not configured on the server. Please set GOOGLE_DRIVE_WEBHOOK_URL in environment variables.' },
         { status: 400 }
       );
     }
@@ -22,8 +27,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Call user's Google Apps Script Web App endpoint with follow redirects
-    const gscriptResponse = await fetch(scriptUrl, {
+    // Call Google Apps Script Web App endpoint from the secure server
+    const gscriptResponse = await fetch(targetScriptUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -32,7 +37,7 @@ export async function POST(req: NextRequest) {
         fileName,
         mimeType: mimeType || 'application/pdf',
         base64,
-        folderId: folderId || undefined,
+        folderId: targetFolderId,
       }),
       redirect: 'follow',
     });
@@ -71,8 +76,10 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET() {
+  const isConfigured = Boolean(process.env.GOOGLE_DRIVE_WEBHOOK_URL);
   return NextResponse.json({
     status: 'online',
+    configured: isConfigured,
     service: 'Google Drive PDF Upload Gateway',
   });
 }
