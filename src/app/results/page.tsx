@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useState, useMemo, useEffect } from 'react';
+import React, { Suspense, useState, useMemo, useEffect, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { 
@@ -65,6 +65,7 @@ function ResultsContent() {
     if (typeof window !== 'undefined') {
       window.history.pushState({ modal: 'pdf' }, '');
     }
+    setZoomLevel(100);
     setActiveDoc(doc);
   };
 
@@ -90,10 +91,103 @@ function ResultsContent() {
       setActiveLecture(null);
     }
   };
+
   const [isIframeLoading, setIsIframeLoading] = useState(true);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(100);
   const [subjectsVersion, setSubjectsVersion] = useState(0);
+
+  // Video container & fullscreen state
+  const videoPlayerContainerRef = useRef<HTMLDivElement>(null);
+  const [isVideoFullscreen, setIsVideoFullscreen] = useState(false);
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsVideoFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    document.addEventListener('webkitfullscreenchange', handleFsChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFsChange);
+      document.removeEventListener('webkitfullscreenchange', handleFsChange);
+    };
+  }, []);
+
+  const toggleVideoFullscreen = () => {
+    if (!document.fullscreenElement) {
+      const el = videoPlayerContainerRef.current as any;
+      if (el) {
+        if (el.requestFullscreen) {
+          el.requestFullscreen().catch(() => {});
+        } else if (el.webkitRequestFullscreen) {
+          el.webkitRequestFullscreen();
+        }
+      }
+      try {
+        if (screen.orientation && 'lock' in screen.orientation) {
+          (screen.orientation as any).lock('landscape').catch(() => {});
+        }
+      } catch {}
+    } else {
+      const doc = document as any;
+      if (doc.exitFullscreen) {
+        doc.exitFullscreen().catch(() => {});
+      } else if (doc.webkitExitFullscreen) {
+        doc.webkitExitFullscreen();
+      }
+      try {
+        if (screen.orientation && 'unlock' in screen.orientation) {
+          (screen.orientation as any).unlock();
+        }
+      } catch {}
+    }
+  };
+
+  // Dedicated PDF viewer container & gesture pinch zoom handlers (isolated from top bar)
+  const pdfContainerRef = useRef<HTMLDivElement>(null);
+  const isPinchingRef = useRef(false);
+  const initialTouchDistRef = useRef(0);
+  const initialTouchZoomRef = useRef(100);
+
+  const getTouchesDistance = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) return 0;
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+
+  const handlePdfTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      isPinchingRef.current = true;
+      initialTouchDistRef.current = getTouchesDistance(e);
+      initialTouchZoomRef.current = zoomLevel;
+    }
+  };
+
+  const handlePdfTouchMove = (e: React.TouchEvent) => {
+    if (isPinchingRef.current && e.touches.length === 2 && initialTouchDistRef.current > 0) {
+      const currentDist = getTouchesDistance(e);
+      const ratio = currentDist / initialTouchDistRef.current;
+      const target = Math.min(250, Math.max(100, Math.round((initialTouchZoomRef.current * ratio) / 5) * 5));
+      setZoomLevel(target);
+    }
+  };
+
+  const handlePdfTouchEnd = () => {
+    isPinchingRef.current = false;
+  };
+
+  const handlePdfZoomIn = () => {
+    setZoomLevel((prev) => Math.min(250, prev + 25));
+  };
+
+  const handlePdfZoomOut = () => {
+    setZoomLevel((prev) => Math.max(100, prev - 25));
+  };
+
+  const handlePdfZoomReset = () => {
+    setZoomLevel(100);
+  };
 
   // Local device storage cache for already-opened PDFs (instant offline reopening)
   const [cachedPdfIds, setCachedPdfIds] = useState<Set<string>>(() => {
@@ -178,8 +272,25 @@ function ResultsContent() {
     return [...local, ...extra];
   }, [year, branch, semester, subjectsVersion, cloudSubjects]);
 
-  // Selected subject filter: defaults to the 1st subject
-  const [selectedSubject, setSelectedSubject] = useState<string>('');
+  // Selected subject filter: defaults to the 1st subject, with localStorage persistence across back navigation
+  const [selectedSubject, setSelectedSubject] = useState<string>(() => {
+    if (typeof window !== 'undefined' && year && branch && semester) {
+      try {
+        const saved = localStorage.getItem(`notebase_active_subj_${year}_${branch}_${semester}`);
+        if (saved) return saved;
+      } catch {}
+    }
+    return '';
+  });
+
+  const handleSelectSubject = (subjTitle: string) => {
+    setSelectedSubject(subjTitle);
+    if (typeof window !== 'undefined' && year && branch && semester) {
+      try {
+        localStorage.setItem(`notebase_active_subj_${year}_${branch}_${semester}`, subjTitle);
+      } catch {}
+    }
+  };
 
   // Supabase cloud documents
   const [supabaseDocs, setSupabaseDocs] = useState<NoteDocument[]>([]);
@@ -253,16 +364,34 @@ function ResultsContent() {
     return subjectsList[0]?.title || '';
   }, [selectedSubject, subjectsList]);
 
-  // Per-subject lazy-load cache: with persistent localStorage fallback
+  // Per-subject progressive cache: initializes with localStorage + local verified documents for zero-wait display
   const [subjectDocsCache, setSubjectDocsCache] = useState<Record<string, NoteDocument[]>>(() => {
-    if (typeof window !== 'undefined') {
+    const initial: Record<string, NoteDocument[]> = {};
+    if (typeof window !== 'undefined' && year && branch && semester && type) {
       try {
-        const key = `notebase_docs_${year || ''}_${branch || ''}_${semester || ''}_${type || ''}`;
+        const key = `notebase_docs_${year}_${branch}_${semester}_${type}`;
         const saved = localStorage.getItem(key);
-        if (saved) return JSON.parse(saved);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          Object.assign(initial, parsed);
+        }
       } catch {}
+
+      // Pre-seed with any local verified documents for this semester
+      if (type !== 'Lectures') {
+        const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+        const localDocs = getDocumentsFor(year, branch, semester).filter((d) => d.type === targetType);
+        for (const doc of localDocs) {
+          if (doc.subject) {
+            const existing = initial[doc.subject] || [];
+            if (!existing.some((d) => d.id === doc.id)) {
+              initial[doc.subject] = [...existing, doc];
+            }
+          }
+        }
+      }
     }
-    return {};
+    return initial;
   });
   const [isLoadingSubjectDocs, setIsLoadingSubjectDocs] = useState<boolean>(false);
 
@@ -276,26 +405,66 @@ function ResultsContent() {
     }
   }, [subjectDocsCache, year, branch, semester, type]);
 
-  // Lazy-load metadata strictly for the active subject currently viewed by the student
+  // Warm cache for all subjects of this semester in background so switching subjects is instant
+  useEffect(() => {
+    let isMounted = true;
+    if (!year || !branch || !semester || !type || type === 'Lectures') return;
+
+    const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+    if (isSupabaseConfigured()) {
+      fetchDocumentsFromSupabase(year, branch, semester, targetType)
+        .then((allDocs) => {
+          if (!isMounted || !allDocs || allDocs.length === 0) return;
+          setSubjectDocsCache((prev) => {
+            const next = { ...prev };
+            for (const doc of allDocs) {
+              const subj = doc.subject;
+              if (subj) {
+                const existing = next[subj] || [];
+                if (!existing.some((d) => d.id === doc.id)) {
+                  next[subj] = [...existing, doc];
+                }
+              }
+            }
+            return next;
+          });
+        })
+        .catch(() => {});
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [year, branch, semester, type]);
+
+  // Progressive load metadata strictly for the active subject currently viewed by student
   useEffect(() => {
     let isMounted = true;
     if (!year || !branch || !semester || !activeSubject || type === 'Lectures') {
       return;
     }
 
-    // If metadata for this subject was already loaded, reuse it instantly (0 network cost, zero lag)
-    if (subjectDocsCache[activeSubject] !== undefined) {
-      setIsLoadingSubjectDocs(false);
-      return;
+    const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+
+    // Seed local documents immediately if not yet in cache so student never waits
+    const localDocs = getDocumentsFor(year, branch, semester).filter(
+      (d) => d.type === targetType && d.subject === activeSubject
+    );
+    if (localDocs.length > 0 && (!subjectDocsCache[activeSubject] || subjectDocsCache[activeSubject].length === 0)) {
+      setSubjectDocsCache((prev) => ({
+        ...prev,
+        [activeSubject]: localDocs
+      }));
     }
 
-    setIsLoadingSubjectDocs(true);
-    const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+    // Only trigger network spinner if absolutely zero files exist for this subject
+    const alreadyHasDocs = (subjectDocsCache[activeSubject] && subjectDocsCache[activeSubject].length > 0) || localDocs.length > 0;
+    if (!alreadyHasDocs) {
+      setIsLoadingSubjectDocs(true);
+    }
 
     const loadSubjectMetadata = async () => {
       let fetchedDocs: NoteDocument[] = [];
       try {
-        // Query server API for this specific subject only
         const res = await fetch(
           `/api/documents?year=${encodeURIComponent(year)}&branch=${encodeURIComponent(branch)}&semester=${encodeURIComponent(semester)}&type=${encodeURIComponent(targetType)}&subject=${encodeURIComponent(activeSubject)}`
         );
@@ -311,10 +480,6 @@ function ResultsContent() {
         }
       }
 
-      // Merge with any local documents created for this exact subject
-      const localDocs = getDocumentsFor(year, branch, semester).filter(
-        (d) => d.type === targetType && d.subject === activeSubject
-      );
       const fetchedIds = new Set(fetchedDocs.map((d) => d.id));
       const combined = [...fetchedDocs, ...localDocs.filter((d) => !fetchedIds.has(d.id))];
 
@@ -354,14 +519,14 @@ function ResultsContent() {
     return subjectDocsCache[activeSubject] || [];
   }, [subjectDocsCache, activeSubject]);
 
-  // Check if documents for the active subject are currently being loaded/checked
+  // Check if documents for active subject are loading - never blocks if files are already showing!
   const isDocLoadingForActive = useMemo(() => {
     if (type === 'Lectures') return false;
-    if (isLoadingSubjects) return true;
+    if (displayedDocuments.length > 0) return false;
+    if (isLoadingSubjects && subjectsList.length === 0) return true;
     if (!activeSubject) return false;
-    if (isLoadingSubjectDocs) return true;
-    return subjectDocsCache[activeSubject] === undefined;
-  }, [type, isLoadingSubjects, activeSubject, isLoadingSubjectDocs, subjectDocsCache]);
+    return isLoadingSubjectDocs && (!subjectDocsCache[activeSubject] || subjectDocsCache[activeSubject].length === 0);
+  }, [type, displayedDocuments.length, isLoadingSubjects, subjectsList.length, activeSubject, isLoadingSubjectDocs, subjectDocsCache]);
 
   // Helper to convert Google Drive or direct link to embeddable preview iframe URL
   const getPdfEmbedUrl = (url?: string): string => {
@@ -392,7 +557,7 @@ function ResultsContent() {
     // Already an embed URL
     if (trimmed.includes('youtube.com/embed/')) {
       const glue = trimmed.includes('?') ? '&' : '?';
-      return `${trimmed}${glue}autoplay=1&playsinline=1&rel=0&modestbranding=1`;
+      return `${trimmed}${glue}autoplay=1&rel=0&modestbranding=1&fs=1&enablejsapi=1`;
     }
 
     let videoId = '';
@@ -412,7 +577,7 @@ function ResultsContent() {
     }
 
     if (videoId) {
-      return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1`;
+      return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1&fs=1`;
     }
 
     return trimmed;
@@ -571,7 +736,7 @@ function ResultsContent() {
                   <button
                     key={subj.code}
                     type="button"
-                    onClick={() => setSelectedSubject(subj.title)}
+                    onClick={() => handleSelectSubject(subj.title)}
                     className={`p-3 sm:p-3.5 rounded-2xl text-left transition-all border flex items-center justify-between gap-2 cursor-pointer ${
                       isSelected
                         ? 'bg-[#3b49df] text-white border-[#3b49df] shadow-md shadow-indigo-100 ring-2 ring-indigo-200'
@@ -835,8 +1000,8 @@ function ResultsContent() {
         <div className="fixed inset-0 z-50 bg-white sm:bg-slate-900/80 sm:backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200">
           <div className="bg-white w-full h-[100dvh] sm:h-[90vh] max-w-5xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-100 shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
             
-            {/* Modal Top Bar (Mobile-first compact header with safe notch padding) */}
-            <div className="pt-[max(env(safe-area-inset-top),3.25rem)] pb-3 px-3.5 sm:py-3.5 sm:px-6 border-b border-slate-200/90 flex items-center justify-between bg-white gap-2 shrink-0 shadow-sm">
+            {/* Modal Top Bar: 100% STATIC, NEVER SCALES OR SHIFTS ON PINCH */}
+            <div className="pt-[max(env(safe-area-inset-top),3.25rem)] pb-3 px-3.5 sm:py-3.5 sm:px-6 border-b border-slate-200/90 flex items-center justify-between bg-white gap-2 shrink-0 shadow-sm z-30 select-none">
               <div className="space-y-0.5 min-w-0 flex-1">
                 <div className="flex items-center space-x-1.5 min-w-0">
                   <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 rounded shrink-0 ${
@@ -856,9 +1021,39 @@ function ResultsContent() {
                     />
                   )}
                 </div>
-                <h3 className="text-xs sm:text-base font-bold text-slate-900 truncate">
+                <h3 className="text-xs sm:text-base font-bold text-slate-900 truncate" title={activeDoc.title}>
                   {activeDoc.title}
                 </h3>
+              </div>
+
+              {/* Dedicated PDF Zoom Controls: Zooms Only the Document Without Touching Top Bar */}
+              <div className="flex items-center space-x-1 shrink-0 bg-slate-100/90 p-1 rounded-2xl border border-slate-200/80">
+                <button
+                  type="button"
+                  onClick={handlePdfZoomOut}
+                  disabled={zoomLevel <= 100}
+                  className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-white disabled:opacity-40 text-slate-700 hover:text-indigo-600 flex items-center justify-center shadow-xs transition-all cursor-pointer"
+                  title="Zoom Out PDF"
+                >
+                  <ZoomOut className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePdfZoomReset}
+                  className="px-1.5 sm:px-2 py-1 text-[10px] sm:text-xs font-bold text-slate-700 hover:text-indigo-600 transition-colors cursor-pointer min-w-[36px] text-center"
+                  title="Reset Zoom to 100%"
+                >
+                  {zoomLevel}%
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePdfZoomIn}
+                  disabled={zoomLevel >= 250}
+                  className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-white disabled:opacity-40 text-slate-700 hover:text-indigo-600 flex items-center justify-center shadow-xs transition-all cursor-pointer"
+                  title="Zoom In PDF"
+                >
+                  <ZoomIn className="w-3.5 h-3.5" />
+                </button>
               </div>
 
               <div className="flex items-center space-x-2 shrink-0">
@@ -883,8 +1078,15 @@ function ResultsContent() {
               </div>
             </div>
 
-            {/* REAL PDF EMBEDDED VIEWER (Google Drive iframe loaded strictly on-demand) */}
-            <div className="flex-1 w-full bg-slate-100 relative overflow-hidden flex flex-col">
+            {/* REAL PDF EMBEDDED VIEWER (Only inner document zooms on pinch or controls) */}
+            <div 
+              ref={pdfContainerRef}
+              onTouchStart={handlePdfTouchStart}
+              onTouchMove={handlePdfTouchMove}
+              onTouchEnd={handlePdfTouchEnd}
+              className="flex-1 w-full bg-slate-100 relative overflow-auto flex flex-col"
+              style={{ WebkitOverflowScrolling: 'touch' }}
+            >
               {(activeDoc.file_url || (activeDoc.file_path && activeDoc.file_path.startsWith('gdrive://'))) ? (
                 <>
                   {isIframeLoading && (
@@ -898,26 +1100,39 @@ function ResultsContent() {
                       </div>
                     </div>
                   )}
-                  <iframe
-                    src={getPdfEmbedUrl(activeDoc.file_url || activeDoc.file_path)}
-                    title={activeDoc.title}
-                    loading="eager"
-                    onLoad={() => {
-                      setIsIframeLoading(false);
-                      if (activeDoc && typeof window !== 'undefined') {
-                        setCachedPdfIds((prev) => {
-                          const next = new Set(prev);
-                          next.add(activeDoc.id);
-                          try {
-                            localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
-                          } catch {}
-                          return next;
-                        });
-                      }
+                  <div 
+                    style={{
+                      width: zoomLevel > 100 ? `${zoomLevel}%` : '100%',
+                      height: zoomLevel > 100 ? `${zoomLevel}%` : '100%',
+                      minWidth: '100%',
+                      minHeight: '100%',
+                      transform: zoomLevel > 100 ? `scale(${zoomLevel / 100})` : 'none',
+                      transformOrigin: 'top left',
+                      transition: isPinchingRef.current ? 'none' : 'transform 0.15s ease-out',
                     }}
-                    className="w-full h-full flex-1 border-0 bg-white"
-                    allow="autoplay; fullscreen; clipboard-read; clipboard-write"
-                  />
+                    className="flex-1 w-full h-full flex flex-col"
+                  >
+                    <iframe
+                      src={getPdfEmbedUrl(activeDoc.file_url || activeDoc.file_path)}
+                      title={activeDoc.title}
+                      loading="eager"
+                      onLoad={() => {
+                        setIsIframeLoading(false);
+                        if (activeDoc && typeof window !== 'undefined') {
+                          setCachedPdfIds((prev) => {
+                            const next = new Set(prev);
+                            next.add(activeDoc.id);
+                            try {
+                              localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
+                            } catch {}
+                            return next;
+                          });
+                        }
+                      }}
+                      className="w-full h-full flex-1 border-0 bg-white"
+                      allow="autoplay; fullscreen; clipboard-read; clipboard-write"
+                    />
+                  </div>
                 </>
               ) : (
                 <div className="flex-1 p-6 sm:p-16 flex flex-col items-center justify-center text-center space-y-4 bg-slate-50">
@@ -942,7 +1157,10 @@ function ResultsContent() {
 
       {/* 4. IN-APP YOUTUBE / VIDEO LECTURE PLAYER MODAL (Adaptive Native Fullscreen in Horizontal / Landscape) */}
       {activeLecture && (
-        <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-150">
+        <div 
+          ref={videoPlayerContainerRef}
+          className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-150"
+        >
           <div className="bg-slate-900 w-full h-[100dvh] sm:h-auto sm:max-h-[92vh] max-w-4xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-800 shadow-2xl overflow-hidden flex flex-col landscape:fixed landscape:inset-0 landscape:h-screen landscape:w-screen landscape:max-w-none landscape:rounded-none landscape:z-50 animate-in zoom-in-95 duration-150">
             
             {/* Modal Top Bar: Shown in portrait, auto-collapsed on mobile landscape for immersive 100% video */}
@@ -961,14 +1179,27 @@ function ResultsContent() {
                 </h3>
               </div>
 
-              <button
-                type="button"
-                onClick={closeLectureModal}
-                className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors cursor-pointer shrink-0"
-                aria-label="Close Video"
-              >
-                <X className="w-4 h-4 sm:w-5 sm:h-5" />
-              </button>
+              <div className="flex items-center space-x-2 shrink-0">
+                {/* Dedicated Fullscreen Toggle Button */}
+                <button
+                  type="button"
+                  onClick={toggleVideoFullscreen}
+                  className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-purple-600/30 hover:bg-purple-600/60 text-purple-200 border border-purple-500/40 text-xs font-semibold transition-all cursor-pointer"
+                  title="Toggle Fullscreen"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                  <span>{isVideoFullscreen ? 'Exit Full Screen' : 'Full Screen'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={closeLectureModal}
+                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                  aria-label="Close Video"
+                >
+                  <X className="w-4 h-4 sm:w-5 sm:h-5" />
+                </button>
+              </div>
             </div>
 
             {/* Video Player Container: Expands to edge-to-edge full screen in landscape */}

@@ -214,8 +214,21 @@ public class MainActivity extends AppCompatActivity {
                 customViewCallback = callback;
                 webView.setVisibility(View.GONE);
                 customViewContainer.setVisibility(View.VISIBLE);
-                customViewContainer.addView(view);
+                customViewContainer.addView(view, new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                ));
                 getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                try {
+                    androidx.core.view.WindowInsetsControllerCompat controller =
+                            androidx.core.view.WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+                    if (controller != null) {
+                        controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars());
+                        controller.setSystemBarsBehavior(
+                                androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        );
+                    }
+                } catch (Exception ignored) {}
                 setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
             }
 
@@ -227,6 +240,13 @@ public class MainActivity extends AppCompatActivity {
                 customViewContainer.setVisibility(View.GONE);
                 webView.setVisibility(View.VISIBLE);
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                try {
+                    androidx.core.view.WindowInsetsControllerCompat controller =
+                            androidx.core.view.WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+                    if (controller != null) {
+                        controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars());
+                    }
+                } catch (Exception ignored) {}
                 setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
                 if (customViewCallback != null) {
                     customViewCallback.onCustomViewHidden();
@@ -254,6 +274,13 @@ public class MainActivity extends AppCompatActivity {
                     customViewContainer.setVisibility(View.GONE);
                     webView.setVisibility(View.VISIBLE);
                     getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                    try {
+                        androidx.core.view.WindowInsetsControllerCompat controller =
+                                androidx.core.view.WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+                        if (controller != null) {
+                            controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars());
+                        }
+                    } catch (Exception ignored) {}
                     setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
                     if (customViewCallback != null) {
                         customViewCallback.onCustomViewHidden();
