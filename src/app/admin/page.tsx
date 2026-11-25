@@ -99,6 +99,7 @@ interface AdminMaterial {
   type: 'Notes' | 'PYQs' | 'Lectures';
   uploadedBy: string;
   link?: string;
+  file_url?: string;
 }
 
 type CoordinatorItem = CoordinatorRecord;
@@ -982,9 +983,19 @@ export default function AdminPage() {
     }
   };
 
-  // Action Handlers
+  // Action Handlers (Opens real PDF / external link directly)
   const handleDownloadSingle = (m: AdminMaterial) => {
-    showToast(`Downloading "${m.fileName}"...`, 'info');
+    if (m.file_url) {
+      window.open(m.file_url, '_blank');
+      showToast(`Opening official PDF for "${m.fileName}"...`, 'success');
+      return;
+    }
+    if (m.link) {
+      window.open(m.link, '_blank');
+      showToast(`Opening lecture link for "${m.fileName}"...`, 'success');
+      return;
+    }
+    showToast(`No file attachment available for "${m.fileName}".`, 'error');
   };
 
   const handleDeleteSingle = (id: string, fileName: string) => {
@@ -3396,21 +3407,21 @@ export default function AdminPage() {
       </main>
 
       {/* =================================================================
-          MODAL: PREVIEW MATERIAL
+          MODAL: PREVIEW MATERIAL (Real PDF iframe)
          ================================================================= */}
       {previewMaterial && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center space-x-2.5">
-                <div className="w-8 h-8 rounded-xl bg-red-50 text-red-600 font-bold text-xs flex items-center justify-center border border-red-100">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-4xl w-full h-[85vh] p-5 sm:p-6 shadow-2xl border border-slate-100 flex flex-col space-y-3">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 shrink-0">
+              <div className="flex items-center space-x-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-red-50 text-red-600 font-bold text-xs flex items-center justify-center border border-red-100 shrink-0">
                   PDF
                 </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900 truncate max-w-[280px]">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-slate-900 truncate max-w-md">
                     {previewMaterial.fileName}
                   </h3>
-                  <p className="text-[11px] text-slate-400">
+                  <p className="text-[11px] text-slate-400 truncate">
                     {previewMaterial.subject} • {previewMaterial.branch} ({previewMaterial.year})
                   </p>
                 </div>
@@ -3418,28 +3429,39 @@ export default function AdminPage() {
               <button
                 type="button"
                 onClick={() => setPreviewMaterial(null)}
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center cursor-pointer transition-colors"
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center cursor-pointer transition-colors shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="bg-slate-50 border border-dashed border-slate-200 rounded-2xl p-8 text-center space-y-2">
-              <FileText className="w-12 h-12 text-indigo-500 mx-auto" />
-              <p className="text-xs font-semibold text-slate-700">Document Preview Ready</p>
-              <p className="text-[11px] text-slate-400">
-                Uploaded by {previewMaterial.uploadedBy} • Type: {previewMaterial.type}
-              </p>
+            <div className="flex-1 w-full bg-slate-100 rounded-2xl overflow-hidden flex flex-col">
+              {previewMaterial.file_url ? (
+                <iframe
+                  src={previewMaterial.file_url.replace(/\/view(\?.*)?$/, '/preview')}
+                  title={previewMaterial.fileName}
+                  className="w-full h-full flex-1 border-0 bg-white"
+                  allow="autoplay; fullscreen"
+                />
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-2">
+                  <FileText className="w-12 h-12 text-slate-400 mx-auto" />
+                  <p className="text-sm font-bold text-slate-700">No PDF File Attached</p>
+                  <p className="text-xs text-slate-400">
+                    Uploaded by {previewMaterial.uploadedBy} • Type: {previewMaterial.type}
+                  </p>
+                </div>
+              )}
             </div>
 
-            <div className="flex items-center justify-end space-x-2 pt-2">
+            <div className="flex items-center justify-end space-x-2 pt-2 shrink-0">
               <button
                 type="button"
                 onClick={() => handleDownloadSingle(previewMaterial)}
                 className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold transition-all cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>Download</span>
+                <span>{previewMaterial.file_url ? 'Download / View PDF' : 'Download'}</span>
               </button>
               <button
                 type="button"

@@ -25,7 +25,8 @@ import {
   ExternalLink,
   Video,
   Play,
-  PlayCircle
+  PlayCircle,
+  AlertCircle
 } from 'lucide-react';
 import { getDocumentsFor, getSubjectsFor, saveSubjectsFor, SubjectMeta } from '../../data/notesData';
 import { BranchOption, NoteDocument, SemesterOption, YearOption, LectureItem } from '../../types';
@@ -198,45 +199,33 @@ function ResultsContent() {
     return allDocuments.filter((d) => d.subject === activeSubject);
   }, [allDocuments, activeSubject]);
 
-  const handleDownload = (doc: NoteDocument) => {
-    setDownloadSuccess(true);
+  // Helper to convert Google Drive or direct link to embeddable preview iframe URL
+  const getPdfEmbedUrl = (url?: string): string => {
+    if (!url) return '';
+    // Standard Google Drive file view link
+    const driveMatch = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (driveMatch && driveMatch[1]) {
+      return `https://drive.google.com/file/d/${driveMatch[1]}/preview`;
+    }
+    // Google Drive open?id= link
+    const idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (idMatch && idMatch[1] && url.includes('drive.google.com')) {
+      return `https://drive.google.com/file/d/${idMatch[1]}/preview`;
+    }
+    return url;
+  };
 
-    // If PDF is hosted on Supabase Storage, open / download the real PDF directly
+  const handleDownload = (doc: NoteDocument) => {
+    // If real PDF URL exists, open it directly in a new tab for reading/downloading
     if (doc.file_url) {
+      setDownloadSuccess(true);
       window.open(doc.file_url, '_blank');
       setTimeout(() => setDownloadSuccess(false), 2500);
       return;
     }
 
-    const textContent = `%PDF-1.4
-==============================================
-NOTEBASE - ACADEMIC STUDY REPOSITORY
-==============================================
-Subject: ${doc.subject} (${doc.code})
-Document: ${doc.title}
-Category: ${doc.type === 'PYQ' ? 'Previous Year Exam Paper (PYQ)' : 'Lecture Study Notes'}
-Year: ${doc.year} | Group/Branch: ${doc.branch} | Semester: ${doc.semester}
-Total Pages: ${doc.pages} | Size: ${doc.size}
-Access: Student Read-Only Verified
-
-CURRICULUM CONTENT / TOPICS COVERED:
-${doc.preview.map((p, i) => `[Unit Topic 0${i + 1}]: ${p}`).join('\n')}
-
-==============================================
-Department of Technical Education • Semester Repository
-Note: Uploading and modifying documents is restricted to Branch Coordinators.
-==============================================
-`;
-    const blob = new Blob([textContent], { type: 'application/pdf;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${doc.code}_${doc.type}_${doc.semester.replace(/\s+/g, '')}.pdf`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    setTimeout(() => setDownloadSuccess(false), 2500);
+    // No fake dummy PDF generated: alert student cleanly
+    alert(`The actual PDF for "${doc.title}" has not been uploaded to Google Drive yet. Please contact your Branch Coordinator.`);
   };
 
   if (!year || !branch || !semester || !type) {
@@ -558,14 +547,14 @@ Note: Uploading and modifying documents is restricted to Branch Coordinators.
 
       </div>
 
-      {/* 3. FULL PDF READER / PREVIEW MODAL ("Click karke open kar sake") */}
+      {/* 3. FULL REAL PDF VIEWER MODAL ("Real PDF open ho, koi dummy na aaye") */}
       {activeDoc && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-2.5 sm:p-6 animate-in fade-in duration-200">
-          <div className="bg-white w-full max-w-3xl rounded-2xl sm:rounded-3xl border border-slate-100 shadow-2xl overflow-hidden flex flex-col max-h-[94vh] sm:max-h-[92vh] animate-in zoom-in-95 duration-150">
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 md:p-6 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-5xl rounded-2xl sm:rounded-3xl border border-slate-100 shadow-2xl overflow-hidden flex flex-col h-[94vh] sm:h-[90vh] animate-in zoom-in-95 duration-150">
             
             {/* Modal Top Bar */}
-            <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-slate-100 flex items-start justify-between bg-slate-50/70 gap-2">
-              <div className="space-y-1 min-w-0 flex-1">
+            <div className="px-4 sm:px-6 py-3 sm:py-3.5 border-b border-slate-100 flex items-start justify-between bg-slate-50/90 gap-2 shrink-0">
+              <div className="space-y-0.5 min-w-0 flex-1">
                 <div className="flex items-center space-x-2 min-w-0">
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded shrink-0 ${
                     activeDoc.type === 'PYQ' 
@@ -577,171 +566,94 @@ Note: Uploading and modifying documents is restricted to Branch Coordinators.
                   <span className="text-[11px] sm:text-xs font-semibold text-slate-600 truncate">
                     {activeDoc.year} • {activeDoc.branch} • {activeDoc.semester}
                   </span>
+                  {activeDoc.file_url && (
+                    <span className="hidden sm:inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
+                      ☁️ Google Drive Official
+                    </span>
+                  )}
                 </div>
-                <h3 className="text-sm sm:text-lg font-bold text-slate-900 truncate">
+                <h3 className="text-sm sm:text-base font-bold text-slate-900 truncate">
                   {activeDoc.title}
                 </h3>
                 <p className="text-[11px] sm:text-xs text-slate-500 font-medium truncate">
-                  <strong className="text-slate-700 font-semibold">{activeDoc.owner || 'Department Faculty'}</strong> • {activeDoc.pages} Pages • {activeDoc.size}
+                  <strong className="text-slate-700 font-semibold">{activeDoc.owner || 'Department Faculty'}</strong> • {activeDoc.subject} • {activeDoc.size}
                 </p>
               </div>
 
-              <button
-                onClick={() => setActiveDoc(null)}
-                className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors cursor-pointer shrink-0"
-              >
-                <X className="w-4 h-4 sm:w-5 sm:h-5" />
-              </button>
-            </div>
-
-            {/* Read-Only Student Banner & Toolbar */}
-            <div className="px-4 sm:px-6 py-2 bg-emerald-50/80 border-b border-emerald-100 flex items-center justify-between text-[11px] sm:text-xs text-emerald-800">
-              <div className="flex items-center space-x-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>
-                  <strong>Student Verified Mode:</strong> Read-only syllabus curriculum file
-                </span>
-              </div>
-              
-              {/* Zoom Controls */}
-              <div className="hidden sm:flex items-center space-x-2 text-slate-600">
-                <button 
-                  onClick={() => setZoomLevel((prev) => Math.max(75, prev - 10))}
-                  className="p-1 hover:bg-emerald-100 rounded"
-                  title="Zoom Out"
-                >
-                  <ZoomOut className="w-3.5 h-3.5" />
-                </button>
-                <span className="text-[11px] font-mono">{zoomLevel}%</span>
-                <button 
-                  onClick={() => setZoomLevel((prev) => Math.min(150, prev + 10))}
-                  className="p-1 hover:bg-emerald-100 rounded"
-                  title="Zoom In"
-                >
-                  <ZoomIn className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* PDF Viewer Content Simulator */}
-            <div className="px-3 sm:px-6 py-4 sm:py-6 overflow-y-auto space-y-4 flex-1 bg-slate-100/60">
-              
-              {/* Simulated PDF Paper View */}
-              <div 
-                className="bg-white rounded-2xl p-4 sm:p-8 shadow-sm border border-slate-200/80 mx-auto max-w-2xl space-y-4 sm:space-y-5 transition-transform"
-                style={{ transform: `scale(${zoomLevel / 100})`, transformOrigin: 'top center' }}
-              >
-                
-                {/* Header of PDF Page */}
-                <div className="border-b-2 border-slate-800 pb-3 sm:pb-4 text-center space-y-1">
-                  <div className="text-[9px] sm:text-[10px] uppercase font-bold tracking-widest text-slate-400">
-                    Department of Technical Education • Semester Examination Repository
-                  </div>
-                  <h4 className="text-sm sm:text-lg font-extrabold text-slate-900 uppercase">
-                    {activeDoc.subject} ({activeDoc.code})
-                  </h4>
-                  <div className="text-[11px] sm:text-xs text-slate-600 font-medium">
-                    {activeDoc.year} • {activeDoc.branch} • {activeDoc.semester}
-                  </div>
-                </div>
-
-                {/* Simulated Content / Question / Theory Sections */}
-                <div className="space-y-4 text-xs sm:text-sm text-slate-700 leading-relaxed font-serif">
-                  <div className="p-3 bg-indigo-50/50 rounded-xl border border-indigo-100 text-xs font-sans text-indigo-950 font-medium flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                    <span className="truncate">Document: {activeDoc.title}</span>
-                    <span className="font-bold shrink-0">{activeDoc.pages} Pages Total</span>
-                  </div>
-
-                  <div className="space-y-3 pt-2">
-                    <p className="font-bold text-slate-900 border-b border-slate-200 pb-1">
-                      {activeDoc.type === 'PYQ' ? 'EXAMINATION QUESTIONS OVERVIEW:' : 'CHAPTER TOPICS & LECTURE SUMMARY:'}
-                    </p>
-
-                    {activeDoc.preview.map((snip, i) => (
-                      <div key={i} className="p-3.5 bg-slate-50 rounded-xl border border-slate-100/90 font-sans text-xs space-y-1">
-                        <div className="font-bold text-indigo-700 flex items-center space-x-1.5">
-                          <span className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-800 flex items-center justify-center text-[10px]">
-                            {i + 1}
-                          </span>
-                          <span>{activeDoc.type === 'PYQ' ? `Question Paper Section ${String.fromCharCode(65 + i)}` : `Unit Topic ${i + 1}`}</span>
-                        </div>
-                        <p className="text-slate-600 pl-6 leading-relaxed">
-                          {snip}
-                        </p>
-                      </div>
-                    ))}
-
-                    <div className="p-4 bg-slate-900 text-slate-200 rounded-xl font-mono text-xs space-y-2 mt-4">
-                      <div className="text-indigo-400 text-[10px] uppercase tracking-wider font-bold">
-                        PDF Reader Status
-                      </div>
-                      <p className="text-slate-300">
-                        File verified by academic coordinator. Complete full-text PDF is ready for reading and offline study.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Footer of PDF page */}
-                <div className="border-t border-slate-200 pt-3 flex items-center justify-between text-[11px] text-slate-400 font-mono">
-                  <span>NoteBase Academic Portal</span>
-                  <span>Page 1 of {activeDoc.pages}</span>
-                </div>
-
-              </div>
-
-            </div>
-
-            {/* Modal Bottom Action Footer */}
-            <div className="px-4 sm:px-6 py-3.5 sm:py-4 bg-white border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center flex-wrap gap-2">
-                <span className="text-[11px] sm:text-xs text-slate-500 font-medium">
-                  File size: {activeDoc.size} • Verified PDF
-                </span>
-                {activeDoc.file_url && (
-                  <span className="inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    ☁️ Cloud PDF
-                  </span>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="flex items-center space-x-2 shrink-0">
                 {activeDoc.file_url && (
                   <a
                     href={activeDoc.file_url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center space-x-1.5 px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-colors cursor-pointer"
+                    title="Open Full PDF in New Tab"
+                    className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-colors cursor-pointer"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
-                    <span>Open in New Tab</span>
+                    <span className="hidden sm:inline">Open in Tab</span>
                   </a>
                 )}
-
                 <button
                   onClick={() => setActiveDoc(null)}
-                  className="px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
+                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                >
+                  <X className="w-4 h-4 sm:w-5 sm:h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* REAL PDF EMBEDDED VIEWER (Google Drive iframe) */}
+            <div className="flex-1 w-full bg-slate-100 relative overflow-hidden flex flex-col">
+              {activeDoc.file_url ? (
+                <iframe
+                  src={getPdfEmbedUrl(activeDoc.file_url)}
+                  title={activeDoc.title}
+                  className="w-full h-full flex-1 border-0 bg-white"
+                  allow="autoplay; fullscreen"
+                />
+              ) : (
+                <div className="flex-1 p-8 sm:p-16 flex flex-col items-center justify-center text-center space-y-4 bg-slate-50">
+                  <div className="w-14 h-14 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center shadow-sm">
+                    <AlertCircle className="w-7 h-7" />
+                  </div>
+                  <div className="space-y-1.5 max-w-md">
+                    <h4 className="text-base sm:text-lg font-bold text-slate-900">
+                      Actual PDF File Not Uploaded Yet
+                    </h4>
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      The PDF document for <strong>&quot;{activeDoc.title}&quot;</strong> ({activeDoc.subject}) has not been attached or uploaded to Google Drive yet. Please contact your Year/Branch Coordinator to upload the document file.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Bottom Action Footer */}
+            <div className="px-4 sm:px-6 py-3 sm:py-3.5 bg-white border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center flex-wrap gap-2 text-[11px] sm:text-xs text-slate-500">
+                <span>Verified Curriculum PDF</span>
+                {activeDoc.file_url && <span>• Direct Google Drive Connection</span>}
+              </div>
+
+              <div className="flex items-center justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveDoc(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
                 >
                   Close
                 </button>
 
-                <button
-                  onClick={() => handleDownload(activeDoc)}
-                  disabled={downloadSuccess}
-                  className="inline-flex items-center space-x-2 px-4 sm:px-5 py-2 sm:py-2.5 rounded-xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs font-semibold transition-all shadow-sm cursor-pointer"
-                >
-                  {downloadSuccess ? (
-                    <>
-                      <Check className="w-4 h-4 text-emerald-300" />
-                      <span>{activeDoc.file_url ? 'Opening...' : 'Downloaded Successfully'}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Download className="w-4 h-4" />
-                      <span>{activeDoc.file_url ? 'Download / View PDF' : 'Download PDF'}</span>
-                    </>
-                  )}
-                </button>
+                {activeDoc.file_url && (
+                  <button
+                    type="button"
+                    onClick={() => handleDownload(activeDoc)}
+                    className="inline-flex items-center space-x-2 px-4 sm:px-5 py-2 rounded-xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs font-semibold transition-all shadow-sm cursor-pointer"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download / Open PDF</span>
+                  </button>
+                )}
               </div>
             </div>
 
