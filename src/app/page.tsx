@@ -25,11 +25,68 @@ import { BranchOption, SemesterOption, YearOption } from '../types';
 export default function NoteBaseHome() {
   const router = useRouter();
 
-  const [selectedYear, setSelectedYear] = useState<YearOption | null>(null);
-  const [selectedBranch, setSelectedBranch] = useState<BranchOption | null>(null);
-  const [selectedSemester, setSelectedSemester] = useState<SemesterOption | null>(null);
-  const [selectedType, setSelectedType] = useState<'Notes' | 'PYQ' | 'Lectures' | null>(null);
+  // Persistent filters: restore on mount so back navigation never resets choices
+  const [selectedYear, setSelectedYear] = useState<YearOption | null>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('notebase_filter_year');
+        if (saved && YEARS.includes(saved as YearOption)) return saved as YearOption;
+      } catch {}
+    }
+    return null;
+  });
+  const [selectedBranch, setSelectedBranch] = useState<BranchOption | null>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('notebase_filter_branch');
+        if (saved) return saved as BranchOption;
+      } catch {}
+    }
+    return null;
+  });
+  const [selectedSemester, setSelectedSemester] = useState<SemesterOption | null>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('notebase_filter_semester');
+        if (saved) return saved as SemesterOption;
+      } catch {}
+    }
+    return null;
+  });
+  const [selectedType, setSelectedType] = useState<'Notes' | 'PYQ' | 'Lectures' | null>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('notebase_filter_type');
+        if (saved && ['Notes', 'PYQ', 'Lectures'].includes(saved)) return saved as 'Notes' | 'PYQ' | 'Lectures';
+      } catch {}
+    }
+    return null;
+  });
   const [isSearching, setIsSearching] = useState(false);
+
+  // Sync selected filters to local storage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        if (selectedYear) localStorage.setItem('notebase_filter_year', selectedYear);
+        else localStorage.removeItem('notebase_filter_year');
+
+        if (selectedBranch) localStorage.setItem('notebase_filter_branch', selectedBranch);
+        else localStorage.removeItem('notebase_filter_branch');
+
+        if (selectedSemester) localStorage.setItem('notebase_filter_semester', selectedSemester);
+        else localStorage.removeItem('notebase_filter_semester');
+
+        if (selectedType) localStorage.setItem('notebase_filter_type', selectedType);
+        else localStorage.removeItem('notebase_filter_type');
+      } catch {}
+    }
+  }, [selectedYear, selectedBranch, selectedSemester, selectedType]);
+
+  // Reset search button spinner when returning back to Home
+  useEffect(() => {
+    setIsSearching(false);
+  }, []);
 
   // Dropdown open states
   const [yearOpen, setYearOpen] = useState(false);
@@ -131,6 +188,14 @@ export default function NoteBaseHome() {
     setSelectedBranch(null);
     setSelectedSemester(null);
     setSelectedType(null);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem('notebase_filter_year');
+        localStorage.removeItem('notebase_filter_branch');
+        localStorage.removeItem('notebase_filter_semester');
+        localStorage.removeItem('notebase_filter_type');
+      } catch {}
+    }
   };
 
   // Search Navigation: Opens the new results page with query params

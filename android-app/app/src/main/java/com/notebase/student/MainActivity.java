@@ -71,6 +71,9 @@ public class MainActivity extends AppCompatActivity {
         customViewContainer = findViewById(R.id.customViewContainer);
 
         // Configure WebSettings for optimal performance and PDF view support
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+
         WebSettings webSettings = webView.getSettings();
         webSettings.setJavaScriptEnabled(true);
         webSettings.setDomStorageEnabled(true);
@@ -213,6 +216,7 @@ public class MainActivity extends AppCompatActivity {
                 customViewContainer.setVisibility(View.VISIBLE);
                 customViewContainer.addView(view);
                 getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
             }
 
             @Override
@@ -223,6 +227,7 @@ public class MainActivity extends AppCompatActivity {
                 customViewContainer.setVisibility(View.GONE);
                 webView.setVisibility(View.VISIBLE);
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
                 if (customViewCallback != null) {
                     customViewCallback.onCustomViewHidden();
                     customViewCallback = null;
@@ -249,6 +254,7 @@ public class MainActivity extends AppCompatActivity {
                     customViewContainer.setVisibility(View.GONE);
                     webView.setVisibility(View.VISIBLE);
                     getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                    setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
                     if (customViewCallback != null) {
                         customViewCallback.onCustomViewHidden();
                         customViewCallback = null;

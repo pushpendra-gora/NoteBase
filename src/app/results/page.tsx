@@ -283,8 +283,9 @@ function ResultsContent() {
       return;
     }
 
-    // If metadata for this subject was already loaded, reuse it instantly (0 network cost)
-    if (subjectDocsCache[activeSubject] && subjectDocsCache[activeSubject].length > 0) {
+    // If metadata for this subject was already loaded, reuse it instantly (0 network cost, zero lag)
+    if (subjectDocsCache[activeSubject] !== undefined) {
+      setIsLoadingSubjectDocs(false);
       return;
     }
 
@@ -938,13 +939,13 @@ function ResultsContent() {
         </div>
       )}
 
-      {/* 4. IN-APP YOUTUBE / VIDEO LECTURE PLAYER MODAL */}
+      {/* 4. IN-APP YOUTUBE / VIDEO LECTURE PLAYER MODAL (Adaptive Native Fullscreen in Horizontal / Landscape) */}
       {activeLecture && (
-        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200">
-          <div className="bg-slate-900 w-full h-[100dvh] sm:h-auto sm:max-h-[92vh] max-w-4xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-800 shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
+        <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-150">
+          <div className="bg-slate-900 w-full h-[100dvh] sm:h-auto sm:max-h-[92vh] max-w-4xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-800 shadow-2xl overflow-hidden flex flex-col landscape:fixed landscape:inset-0 landscape:h-screen landscape:w-screen landscape:max-w-none landscape:rounded-none landscape:z-50 animate-in zoom-in-95 duration-150">
             
-            {/* Modal Top Bar */}
-            <div className="pt-[max(env(safe-area-inset-top),1.75rem)] pb-3 px-4 sm:py-3.5 sm:px-6 border-b border-slate-800 flex items-center justify-between bg-slate-900 text-white gap-2 shrink-0">
+            {/* Modal Top Bar: Shown in portrait, auto-collapsed on mobile landscape for immersive 100% video */}
+            <div className="pt-[max(env(safe-area-inset-top),1.5rem)] pb-2.5 px-4 sm:py-3.5 sm:px-6 border-b border-slate-800 flex items-center justify-between bg-slate-900 text-white gap-2 shrink-0 landscape:hidden sm:landscape:flex">
               <div className="space-y-0.5 min-w-0 flex-1">
                 <div className="flex items-center space-x-2 min-w-0">
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 shrink-0">
@@ -969,8 +970,8 @@ function ResultsContent() {
               </button>
             </div>
 
-            {/* Video Player 16:9 Aspect Ratio Container */}
-            <div className="relative w-full aspect-video bg-black flex items-center justify-center overflow-hidden">
+            {/* Video Player Container: Expands to edge-to-edge full screen in landscape */}
+            <div className="relative w-full flex-1 aspect-video landscape:aspect-auto landscape:h-full bg-black flex items-center justify-center overflow-hidden">
               <iframe
                 src={getYouTubeEmbedUrl(activeLecture.link)}
                 title={activeLecture.title}
@@ -978,10 +979,20 @@ function ResultsContent() {
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
                 allowFullScreen
               />
+
+              {/* Floating Close Button for Landscape Mode */}
+              <button
+                type="button"
+                onClick={closeLectureModal}
+                className="hidden landscape:flex sm:landscape:hidden absolute top-4 right-4 z-30 w-10 h-10 rounded-full bg-black/60 hover:bg-black/90 text-white items-center justify-center backdrop-blur-md border border-white/20 transition-all shadow-xl cursor-pointer"
+                aria-label="Exit Fullscreen Video"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
-            {/* Bottom Info Bar */}
-            <div className="p-3.5 sm:p-5 bg-slate-900 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-400 border-t border-slate-800/80 pb-[max(env(safe-area-inset-bottom),1rem)] sm:pb-5">
+            {/* Bottom Info Bar: Shown in portrait, auto-collapsed in landscape */}
+            <div className="p-3.5 sm:p-5 bg-slate-900 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-400 border-t border-slate-800/80 pb-[max(env(safe-area-inset-bottom),1rem)] sm:pb-5 landscape:hidden sm:landscape:flex">
               <div className="space-y-0.5 min-w-0">
                 <p className="text-slate-200 font-semibold text-xs sm:text-sm truncate">
                   {activeLecture.faculty || 'Department Faculty'}
