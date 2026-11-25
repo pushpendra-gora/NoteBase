@@ -241,6 +241,11 @@ function ResultsContent() {
   // Helper to convert Google Drive or direct link to embeddable preview iframe URL
   const getPdfEmbedUrl = (url?: string): string => {
     if (!url) return '';
+    // Handle gdrive:// protocol
+    const gdriveProtocol = url.match(/^gdrive:\/\/([a-zA-Z0-9_-]+)/);
+    if (gdriveProtocol && gdriveProtocol[1]) {
+      return `https://drive.google.com/file/d/${gdriveProtocol[1]}/preview`;
+    }
     // Standard Google Drive file view link
     const driveMatch = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
     if (driveMatch && driveMatch[1]) {
@@ -255,10 +260,19 @@ function ResultsContent() {
   };
 
   const handleDownload = (doc: NoteDocument) => {
+    let targetUrl = doc.file_url;
+    if (targetUrl && targetUrl.startsWith('gdrive://')) {
+      const fId = targetUrl.replace('gdrive://', '');
+      targetUrl = `https://drive.google.com/file/d/${fId}/view?usp=sharing`;
+    } else if (!targetUrl && doc.file_path && doc.file_path.startsWith('gdrive://')) {
+      const fId = doc.file_path.replace('gdrive://', '');
+      targetUrl = `https://drive.google.com/file/d/${fId}/view?usp=sharing`;
+    }
+
     // If real PDF URL exists, open it directly in a new tab for reading/downloading
-    if (doc.file_url) {
+    if (targetUrl) {
       setDownloadSuccess(true);
-      window.open(doc.file_url, '_blank');
+      window.open(targetUrl, '_blank');
       setTimeout(() => setDownloadSuccess(false), 2500);
       return;
     }
@@ -632,9 +646,9 @@ function ResultsContent() {
               </div>
 
               <div className="flex items-center space-x-2 shrink-0">
-                {activeDoc.file_url && (
+                {activeDoc && (activeDoc.file_url || activeDoc.file_path) && (
                   <a
-                    href={activeDoc.file_url}
+                    href={activeDoc.file_url || (activeDoc.file_path?.startsWith('gdrive://') ? `https://drive.google.com/file/d/${activeDoc.file_path.replace('gdrive://', '')}/view?usp=sharing` : activeDoc.file_path)}
                     target="_blank"
                     rel="noopener noreferrer"
                     title="Open Full PDF in New Tab"
@@ -655,7 +669,7 @@ function ResultsContent() {
 
             {/* REAL PDF EMBEDDED VIEWER (Google Drive iframe loaded strictly on-demand) */}
             <div className="flex-1 w-full bg-slate-100 relative overflow-hidden flex flex-col">
-              {activeDoc.file_url ? (
+              {(activeDoc.file_url || (activeDoc.file_path && activeDoc.file_path.startsWith('gdrive://'))) ? (
                 <>
                   {isIframeLoading && (
                     <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white space-y-3">
@@ -669,7 +683,7 @@ function ResultsContent() {
                     </div>
                   )}
                   <iframe
-                    src={getPdfEmbedUrl(activeDoc.file_url)}
+                    src={getPdfEmbedUrl(activeDoc.file_url || activeDoc.file_path)}
                     title={activeDoc.title}
                     onLoad={() => setIsIframeLoading(false)}
                     className="w-full h-full flex-1 border-0 bg-white"

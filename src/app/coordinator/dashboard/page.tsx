@@ -72,7 +72,13 @@ import {
   fetchCoordinatorsFromSupabase
 } from '../../../lib/supabaseService';
 import { getStoredCoordinators, saveStoredCoordinators, isBranchMatch } from '../../../lib/coordinatorService';
-import { uploadUnifiedPdf, isGoogleDriveConfigured } from '../../../lib/googleDriveService';
+import { 
+  uploadUnifiedPdf, 
+  isGoogleDriveConfigured, 
+  lastGoogleDriveError,
+  getGoogleDriveConfig,
+  saveGoogleDriveConfig
+} from '../../../lib/googleDriveService';
 
 interface CoordinatorFile {
   id: string;
@@ -241,12 +247,31 @@ function DashboardContent() {
   const [supabaseTesting, setSupabaseTesting] = useState(false);
   const [supabaseMessage, setSupabaseMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
 
-  // Initialize Supabase configuration
+  // Initialize Supabase & Google Drive configuration
   useEffect(() => {
     const creds = getSupabaseCredentials();
     if (creds.url) setSupabaseUrlInput(creds.url);
     if (creds.key) setSupabaseKeyInput(creds.key);
     setSupabaseConnected(isSupabaseConfigured());
+
+    // Auto-sync Google Drive Webhook from server/Supabase
+    if (typeof window !== 'undefined') {
+      const driveCfg = getGoogleDriveConfig();
+      if (!driveCfg.webhookUrl) {
+        fetch('/api/status')
+          .then((res) => res.json())
+          .then((data) => {
+            if (data?.googleDrive?.webhookUrl) {
+              saveGoogleDriveConfig({
+                webhookUrl: data.googleDrive.webhookUrl,
+                folderId: data.googleDrive.folderId || '',
+                enabled: true,
+              });
+            }
+          })
+          .catch(() => {});
+      }
+    }
   }, []);
 
   // Lecture Upload Form State
@@ -543,21 +568,23 @@ function DashboardContent() {
 
       // 1. Upload actual PDF file exclusively to Google Drive (Supabase bucket disabled)
       if (selectedFileObj) {
-        if (isGoogleDriveConfigured()) {
-          showToast('☁️ Uploading PDF to Google Drive...');
-          const uploadResult = await uploadUnifiedPdf(selectedFileObj, undefined, {
-            title: finalDisplayName,
-            year: yearParam,
-            branch: branchParam,
-            semester: finalSem
-          });
-          if (uploadResult && uploadResult.publicUrl) {
-            uploadedFileUrl = uploadResult.publicUrl;
-            uploadedFilePath = uploadResult.filePath;
-            showToast('✅ Saved to Google Drive! Public link saved to database.');
-          }
+        showToast('☁️ Uploading PDF to Google Drive...');
+        const uploadResult = await uploadUnifiedPdf(selectedFileObj, undefined, {
+          title: finalDisplayName,
+          year: yearParam,
+          branch: branchParam,
+          semester: finalSem
+        });
+        if (uploadResult && uploadResult.publicUrl) {
+          uploadedFileUrl = uploadResult.publicUrl;
+          uploadedFilePath = uploadResult.filePath;
+          showToast('✅ Saved to Google Drive! Public link saved to database.');
         } else {
-          showToast('ℹ️ Notice: Google Drive not configured yet. Saving record to database.');
+          setIsUploading(false);
+          const errDetail = lastGoogleDriveError || 'Google Drive Web App URL is not configured or failed to upload.';
+          showToast(`⚠️ Google Drive upload failed: ${errDetail}`);
+          alert(`Google Drive Upload Error:\n${errDetail}\n\nPlease check your Google Apps Script Web App URL in Admin -> Statistics or set GOOGLE_DRIVE_WEBHOOK_URL on Vercel.`);
+          return;
         }
       }
 

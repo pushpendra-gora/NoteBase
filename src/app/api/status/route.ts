@@ -8,7 +8,8 @@ export async function GET(req: NextRequest) {
   const customKey = req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined;
 
   const creds = getSupabaseCredentials(customUrl, customKey);
-  const hasDriveWebhook = Boolean(process.env.GOOGLE_DRIVE_WEBHOOK_URL);
+  let driveWebhookUrl = process.env.GOOGLE_DRIVE_WEBHOOK_URL || process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL || '';
+  let driveFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID || process.env.NEXT_PUBLIC_GOOGLE_DRIVE_FOLDER_ID || '';
 
   if (!creds.url || !creds.key) {
     return NextResponse.json({
@@ -16,7 +17,11 @@ export async function GET(req: NextRequest) {
       connected: false,
       error: 'Supabase credentials are missing. Please set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY on Vercel or enter them in Admin Settings.',
       tables: {},
-      googleDrive: { configured: hasDriveWebhook },
+      googleDrive: { 
+        configured: Boolean(driveWebhookUrl),
+        webhookUrl: driveWebhookUrl || undefined,
+        folderId: driveFolderId || undefined,
+      },
     });
   }
 
@@ -27,7 +32,11 @@ export async function GET(req: NextRequest) {
       connected: false,
       error: 'Failed to initialize Supabase client with provided URL and Key. Ensure URL starts with https:// and Key is valid.',
       tables: {},
-      googleDrive: { configured: hasDriveWebhook },
+      googleDrive: { 
+        configured: Boolean(driveWebhookUrl),
+        webhookUrl: driveWebhookUrl || undefined,
+        folderId: driveFolderId || undefined,
+      },
     });
   }
 
@@ -66,10 +75,16 @@ export async function GET(req: NextRequest) {
     tablesStatus.subjects = { exists: false, error: e?.message };
   }
 
-  // 5. Admin Credentials Table Check
+  // 5. Admin Credentials Table Check & Drive Webhook Check
   try {
-    const { error } = await client.from('admin_credentials').select('id').limit(1);
+    const { data: adminData, error } = await client.from('admin_credentials').select('id, gdrive_webhook, gdrive_folder_id').eq('id', 'admin').limit(1).single();
     tablesStatus.admin_credentials = { exists: !error, error: error?.message };
+    if (adminData?.gdrive_webhook && !driveWebhookUrl) {
+      driveWebhookUrl = adminData.gdrive_webhook;
+      if (adminData.gdrive_folder_id && !driveFolderId) {
+        driveFolderId = adminData.gdrive_folder_id;
+      }
+    }
   } catch (e: any) {
     tablesStatus.admin_credentials = { exists: false, error: e?.message };
   }
@@ -83,6 +98,10 @@ export async function GET(req: NextRequest) {
     supabaseUrl: creds.url,
     error: hasAnyTableError ? (primaryError || 'One or more Supabase tables are missing. Please run supabase-schema.sql in Supabase SQL Editor.') : null,
     tables: tablesStatus,
-    googleDrive: { configured: hasDriveWebhook },
+    googleDrive: { 
+      configured: Boolean(driveWebhookUrl),
+      webhookUrl: driveWebhookUrl || undefined,
+      folderId: driveFolderId || undefined,
+    },
   });
 }

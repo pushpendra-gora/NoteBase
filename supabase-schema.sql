@@ -143,12 +143,15 @@ alter table public.coordinators add column if not exists status text not null de
 create index if not exists idx_coordinators_lookup on public.coordinators(year, branch);
 
 
--- 5. ADMIN CREDENTIALS TABLE (Stores Admin ID & Password)
+-- 5. ADMIN CREDENTIALS TABLE (Stores Admin ID, Password, and Google Drive Cloud Sync)
 create table if not exists public.admin_credentials (
   id text primary key,
   password text not null,
   updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+
+alter table public.admin_credentials add column if not exists gdrive_webhook text;
+alter table public.admin_credentials add column if not exists gdrive_folder_id text;
 
 -- Seed initial admin if empty
 insert into public.admin_credentials (id, password)

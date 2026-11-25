@@ -59,8 +59,12 @@ function doPost(e) {
     // Create the PDF file in Google Drive
     var file = folder.createFile(blob);
     
-    // Make file publicly viewable with link
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    // Make file publicly viewable with link (with fallback for enterprise/institutional Drive)
+    try {
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    } catch (shareErr) {
+      // In case enterprise domain policy restricts external sharing, proceed safely
+    }
     
     var fileId = file.getId();
     // Public view and direct download links
@@ -99,14 +103,26 @@ function doGet(e) {
 `;
 
 /**
- * Get current Google Drive configuration from localStorage
+ * Get current Google Drive configuration from localStorage or environment
  */
 export function getGoogleDriveConfig(): GoogleDriveConfig {
   if (typeof window === 'undefined') {
-    return { webhookUrl: '', folderId: '', enabled: true };
+    return {
+      webhookUrl:
+        process.env.GOOGLE_DRIVE_WEBHOOK_URL ||
+        process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL ||
+        '',
+      folderId:
+        process.env.GOOGLE_DRIVE_FOLDER_ID ||
+        process.env.NEXT_PUBLIC_GOOGLE_DRIVE_FOLDER_ID ||
+        '',
+      enabled: true,
+    };
   }
-  const webhookUrl = localStorage.getItem(STORAGE_KEYS.URL) || '';
-  const folderId = localStorage.getItem(STORAGE_KEYS.FOLDER) || '';
+  const envWebhook = process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL || '';
+  const envFolder = process.env.NEXT_PUBLIC_GOOGLE_DRIVE_FOLDER_ID || '';
+  const webhookUrl = localStorage.getItem(STORAGE_KEYS.URL) || envWebhook;
+  const folderId = localStorage.getItem(STORAGE_KEYS.FOLDER) || envFolder;
   const enabledStr = localStorage.getItem(STORAGE_KEYS.ENABLED);
   const enabled = enabledStr === null ? true : enabledStr === 'true';
 
@@ -132,7 +148,6 @@ export function saveGoogleDriveConfig(config: Partial<GoogleDriveConfig>) {
 
 /**
  * Checks if Google Drive upload is properly configured and active.
- * Checks localStorage custom webhook URL, or defaults to true for server-configured webhook.
  */
 export function isGoogleDriveConfigured(): boolean {
   if (typeof window === 'undefined') return true;
@@ -141,8 +156,10 @@ export function isGoogleDriveConfigured(): boolean {
     const enabledStr = localStorage.getItem(STORAGE_KEYS.ENABLED);
     return enabledStr !== 'false';
   }
-  const serverConfigured = localStorage.getItem('notebase_gdrive_server_configured');
-  return serverConfigured !== 'false';
+  if (process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL) {
+    return true;
+  }
+  return true;
 }
 
 /**
@@ -162,6 +179,8 @@ export function fileToBase64(file: File): Promise<string> {
   });
 }
 
+export let lastGoogleDriveError: string = '';
+
 /**
  * Uploads a PDF to Google Drive:
  * 1. If admin configured a custom Webhook URL in dashboard localStorage, tries direct browser upload.
@@ -178,6 +197,7 @@ export async function uploadPdfToGoogleDrive(
   fileId: string;
   error?: string;
 }> {
+  lastGoogleDriveError = '';
   const { webhookUrl, folderId: savedFolderId } = getGoogleDriveConfig();
   const targetFolderId = folderId || savedFolderId;
 
@@ -194,28 +214,8 @@ export async function uploadPdfToGoogleDrive(
 
     let response: Response;
 
-    // If custom URL is configured in client localStorage, try direct upload to Google Apps Script
-    if (webhookUrl && webhookUrl.startsWith('https://script.google.com/')) {
-      try {
-        response = await fetch(webhookUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'text/plain;charset=utf-8',
-          },
-          body: JSON.stringify(payload),
-        });
-      } catch (directError) {
-        console.warn('Direct upload to Google Apps Script failed, routing through server gateway:', directError);
-        response = await fetch('/api/upload-drive', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-        });
-      }
-    } else {
-      // Secure server gateway: Keeps GOOGLE_DRIVE_WEBHOOK_URL completely hidden on the server!
+    // Secure server gateway routes through Next.js server with fallback to direct
+    try {
       response = await fetch('/api/upload-drive', {
         method: 'POST',
         headers: {
@@ -223,28 +223,41 @@ export async function uploadPdfToGoogleDrive(
         },
         body: JSON.stringify(payload),
       });
-    }
-
-    if (!response.ok) {
-      const errText = await response.text();
-      let parsedErr = '';
-      try {
-        const jsonErr = JSON.parse(errText);
-        parsedErr = jsonErr.error || '';
-      } catch {}
-      throw new Error(parsedErr || `Upload failed with HTTP ${response.status}: ${errText.slice(0, 200)}`);
+    } catch (serverErr) {
+      if (webhookUrl && webhookUrl.startsWith('https://script.google.com/')) {
+        response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        throw serverErr;
+      }
     }
 
     const responseText = await response.text();
-    let result: any;
+    let result: any = null;
     try {
       result = JSON.parse(responseText);
     } catch {
-      throw new Error(`Google Drive returned non-JSON response: ${responseText.slice(0, 200)}`);
+      // Check if response contains direct drive links
+      const match = responseText.match(/https:\/\/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+      if (match && match[1]) {
+        result = {
+          success: true,
+          fileId: match[1],
+          fileUrl: `https://drive.google.com/file/d/${match[1]}/view?usp=sharing`,
+          downloadUrl: `https://drive.google.com/uc?export=download&id=${match[1]}`,
+        };
+      }
     }
 
-    if (!result.success) {
-      throw new Error(result.error || 'Google Drive upload returned unsuccessful status');
+    if (!response.ok || !result || !result.success) {
+      const errMsg = result?.error || `Upload failed (Status ${response.status}): ${responseText.slice(0, 150)}`;
+      lastGoogleDriveError = errMsg;
+      throw new Error(errMsg);
     }
 
     return {
@@ -254,13 +267,15 @@ export async function uploadPdfToGoogleDrive(
       fileId: result.fileId || '',
     };
   } catch (error: any) {
-    console.error('Google Drive Upload Error:', error);
+    const msg = error?.message || 'Failed to upload to Google Drive';
+    lastGoogleDriveError = msg;
+    console.error('Google Drive Upload Error:', msg);
     return {
       success: false,
       fileUrl: '',
       downloadUrl: '',
       fileId: '',
-      error: error?.message || 'Failed to upload to Google Drive',
+      error: msg,
     };
   }
 }
@@ -284,21 +299,20 @@ export async function uploadUnifiedPdf(
   filePath: string;
   storageType: 'gdrive';
 } | null> {
-  // Upload to Google Drive
-  if (isGoogleDriveConfigured()) {
-    try {
-      const gdriveResult = await uploadPdfToGoogleDrive(file);
-      if (gdriveResult.success && gdriveResult.fileUrl) {
-        return {
-          publicUrl: gdriveResult.fileUrl,
-          filePath: `gdrive://${gdriveResult.fileId}`,
-          storageType: 'gdrive',
-        };
-      }
-      console.error('Google Drive upload error:', gdriveResult.error);
-    } catch (gdriveErr) {
-      console.error('Google Drive upload exception:', gdriveErr);
+  try {
+    const gdriveResult = await uploadPdfToGoogleDrive(file);
+    if (gdriveResult.success && gdriveResult.fileUrl) {
+      return {
+        publicUrl: gdriveResult.fileUrl,
+        filePath: `gdrive://${gdriveResult.fileId}`,
+        storageType: 'gdrive',
+      };
     }
+    lastGoogleDriveError = gdriveResult.error || 'Failed to upload to Google Drive';
+    console.error('Google Drive upload error:', lastGoogleDriveError);
+  } catch (gdriveErr: any) {
+    lastGoogleDriveError = gdriveErr?.message || 'Google Drive upload exception';
+    console.error('Google Drive upload exception:', lastGoogleDriveError);
   }
 
   return null;

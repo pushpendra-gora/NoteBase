@@ -78,7 +78,13 @@ import {
   updateSubjectInSupabase,
   deleteSubjectFromSupabase
 } from '../../lib/supabaseService';
-import { isSupabaseConfigured, getSupabaseCredentials, saveSupabaseCredentials, clearSupabaseCredentials } from '../../lib/supabase';
+import { 
+  isSupabaseConfigured, 
+  getSupabaseCredentials, 
+  saveSupabaseCredentials, 
+  clearSupabaseCredentials,
+  getSupabaseClient
+} from '../../lib/supabase';
 import { getStoredCoordinators, saveStoredCoordinators, isBranchMatch } from '../../lib/coordinatorService';
 import {
   getGoogleDriveConfig,
@@ -87,7 +93,8 @@ import {
   uploadPdfToGoogleDrive,
   uploadUnifiedPdf,
   GOOGLE_APPS_SCRIPT_TEMPLATE,
-  GoogleDriveConfig
+  GoogleDriveConfig,
+  lastGoogleDriveError
 } from '../../lib/googleDriveService';
 
 interface AdminMaterial {
@@ -440,18 +447,59 @@ export default function AdminPage() {
   const [showScriptCode, setShowScriptCode] = useState(false);
   const [copiedScript, setCopiedScript] = useState(false);
 
-  // Load Google Drive Config on mount
+  // Load Google Drive Config on mount (local storage + Supabase sync)
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      setGdriveConfig(getGoogleDriveConfig());
+      const cfg = getGoogleDriveConfig();
+      if (cfg.webhookUrl) {
+        setGdriveConfig(cfg);
+      } else if (isSupabaseConfigured()) {
+        const client = getSupabaseClient();
+        if (client) {
+          (async () => {
+            try {
+              const { data }: any = await client
+                .from('admin_credentials')
+                .select('gdrive_webhook, gdrive_folder_id')
+                .eq('id', 'admin')
+                .limit(1)
+                .single();
+              if (data?.gdrive_webhook) {
+                const cloudCfg = {
+                  webhookUrl: data.gdrive_webhook,
+                  folderId: data.gdrive_folder_id || '',
+                  enabled: true
+                };
+                setGdriveConfig(cloudCfg);
+                saveGoogleDriveConfig(cloudCfg);
+              }
+            } catch {}
+          })();
+        }
+      }
     }
   }, []);
 
   // Save Google Drive Config
-  const handleSaveGoogleDriveConfig = (e: React.FormEvent) => {
+  const handleSaveGoogleDriveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     saveGoogleDriveConfig(gdriveConfig);
-    showToast('Google Drive cloud storage configuration saved!', 'success');
+
+    const client = getSupabaseClient();
+    if (client) {
+      try {
+        await client.from('admin_credentials').upsert({
+          id: 'admin',
+          gdrive_webhook: gdriveConfig.webhookUrl.trim(),
+          gdrive_folder_id: gdriveConfig.folderId.trim() || null,
+          updated_at: new Date().toISOString()
+        });
+      } catch (err) {
+        console.warn('Could not sync drive config to Supabase:', err);
+      }
+    }
+
+    showToast('Google Drive configuration saved & synced to all coordinators!', 'success');
   };
 
   // Test Supabase Connection & Table Availability
@@ -992,21 +1040,23 @@ export default function AdminPage() {
 
       // 1. Upload PDF exclusively to Google Drive (Supabase bucket disabled)
       if (selectedUploadFile) {
-        if (isGoogleDriveConfigured()) {
-          showToast('Uploading PDF directly to Google Drive...', 'info');
-          const uploadResult = await uploadUnifiedPdf(selectedUploadFile, undefined, {
-            title: cleanTitle,
-            year: uploadYear,
-            branch: uploadBranch,
-            semester: uploadSemester
-          });
-          if (uploadResult && uploadResult.publicUrl) {
-            uploadedFileUrl = uploadResult.publicUrl;
-            uploadedFilePath = uploadResult.filePath;
-            showToast('Saved to Google Drive! Public shareable link stored in database.', 'success');
-          }
+        showToast('Uploading PDF directly to Google Drive...', 'info');
+        const uploadResult = await uploadUnifiedPdf(selectedUploadFile, undefined, {
+          title: cleanTitle,
+          year: uploadYear,
+          branch: uploadBranch,
+          semester: uploadSemester
+        });
+        if (uploadResult && uploadResult.publicUrl) {
+          uploadedFileUrl = uploadResult.publicUrl;
+          uploadedFilePath = uploadResult.filePath;
+          showToast('Saved to Google Drive! Public shareable link stored in database.', 'success');
         } else {
-          showToast('Google Drive Web App URL is not set in Statistics. Saving document data in database.', 'info');
+          setIsUploadingMaterial(false);
+          const errDetail = lastGoogleDriveError || 'Google Drive Web App URL is not set or upload failed.';
+          showToast(`⚠️ Google Drive upload failed: ${errDetail}`, 'error');
+          alert(`Google Drive Upload Error:\n${errDetail}\n\nPlease check your Google Apps Script Web App URL in Statistics or set GOOGLE_DRIVE_WEBHOOK_URL on Vercel.`);
+          return;
         }
       }
 
