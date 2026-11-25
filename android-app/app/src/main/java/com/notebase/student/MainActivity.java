@@ -109,15 +109,9 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // Cache configuration for fast offline-first loading:
-        // Caches HTML, JS, CSS, and opened PDF files in local app storage so subsequent opens are instant
+        // Caches HTML, JS, CSS, and opened PDF files in local app storage so subsequent opens are instant even without network
         try {
-            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            android.net.NetworkInfo netInfo = cm != null ? cm.getActiveNetworkInfo() : null;
-            if (netInfo != null && netInfo.isConnected()) {
-                webSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
-            } else {
-                webSettings.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
-            }
+            webSettings.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
         } catch (Exception e) {
             webSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
         }

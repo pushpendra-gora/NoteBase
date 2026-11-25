@@ -64,6 +64,22 @@ function ResultsContent() {
   const openDocModal = (doc: NoteDocument) => {
     if (typeof window !== 'undefined') {
       window.history.pushState({ modal: 'pdf' }, '');
+
+      // Save document to local device storage for instant offline reopening
+      try {
+        const raw = localStorage.getItem('notebase_cached_pdf_docs');
+        const map = raw ? JSON.parse(raw) : {};
+        map[doc.id] = doc;
+        localStorage.setItem('notebase_cached_pdf_docs', JSON.stringify(map));
+
+        const idSetRaw = localStorage.getItem('notebase_cached_pdf_ids');
+        const idSet: string[] = idSetRaw ? JSON.parse(idSetRaw) : [];
+        if (!idSet.includes(doc.id)) {
+          idSet.push(doc.id);
+          localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(idSet));
+          setCachedPdfIds(new Set(idSet));
+        }
+      } catch {}
     }
     setZoomLevel(100);
     setActiveDoc(doc);
@@ -96,6 +112,23 @@ function ResultsContent() {
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(100);
   const [subjectsVersion, setSubjectsVersion] = useState(0);
+
+  // Network online/offline monitor
+  const [isOffline, setIsOffline] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setIsOffline(!navigator.onLine);
+      const onOnline = () => setIsOffline(false);
+      const onOffline = () => setIsOffline(true);
+      window.addEventListener('online', onOnline);
+      window.addEventListener('offline', onOffline);
+      return () => {
+        window.removeEventListener('online', onOnline);
+        window.removeEventListener('offline', onOffline);
+      };
+    }
+  }, []);
 
   // Video container & fullscreen state
   const videoPlayerContainerRef = useRef<HTMLDivElement>(null);
@@ -505,6 +538,7 @@ function ResultsContent() {
 
     const loadSubjectMetadata = async () => {
       let fetchedDocs: NoteDocument[] = [];
+      let fetchSucceeded = false;
       try {
         const res = await fetch(
           `/api/documents?year=${encodeURIComponent(year)}&branch=${encodeURIComponent(branch)}&semester=${encodeURIComponent(semester)}&type=${encodeURIComponent(targetType)}&subject=${encodeURIComponent(activeSubject)}`
@@ -512,24 +546,85 @@ function ResultsContent() {
         const data = await res.json();
         if (res.ok && data.success && Array.isArray(data.documents)) {
           fetchedDocs = data.documents;
+          fetchSucceeded = true;
         } else if (isSupabaseConfigured()) {
           fetchedDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType, activeSubject);
+          fetchSucceeded = true;
         }
       } catch {
         if (isSupabaseConfigured()) {
-          fetchedDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType, activeSubject);
+          try {
+            fetchedDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType, activeSubject);
+            fetchSucceeded = true;
+          } catch {}
         }
       }
 
-      const fetchedIds = new Set(fetchedDocs.map((d) => d.id));
-      const combined = [...fetchedDocs, ...localDocs.filter((d) => !fetchedIds.has(d.id))];
+      // Sync with server: If metadata is not returned from server, remove file from local storage
+      if (fetchSucceeded) {
+        const fetchedIds = new Set(fetchedDocs.map((d) => d.id));
 
-      if (isMounted) {
-        setSubjectDocsCache((prev) => ({
-          ...prev,
-          [activeSubject]: combined
-        }));
-        setIsLoadingSubjectDocs(false);
+        try {
+          // 1. Clean up deleted docs from cached document map
+          const cachedDocsRaw = localStorage.getItem('notebase_cached_pdf_docs');
+          if (cachedDocsRaw) {
+            const cachedDocsMap: Record<string, NoteDocument> = JSON.parse(cachedDocsRaw);
+            let mapChanged = false;
+            for (const [id, doc] of Object.entries(cachedDocsMap)) {
+              if (
+                doc.subject === activeSubject &&
+                doc.year === year &&
+                doc.branch === branch &&
+                doc.semester === semester &&
+                doc.type === targetType
+              ) {
+                if (!fetchedIds.has(id)) {
+                  delete cachedDocsMap[id];
+                  mapChanged = true;
+                }
+              }
+            }
+            if (mapChanged) {
+              localStorage.setItem('notebase_cached_pdf_docs', JSON.stringify(cachedDocsMap));
+            }
+          }
+
+          // 2. Clean up cachedPdfIds
+          setCachedPdfIds((prev) => {
+            const next = new Set<string>();
+            const cachedDocsRaw = localStorage.getItem('notebase_cached_pdf_docs');
+            const cachedDocsMap: Record<string, NoteDocument> = cachedDocsRaw ? JSON.parse(cachedDocsRaw) : {};
+            
+            for (const id of Array.from(prev)) {
+              const doc = cachedDocsMap[id];
+              // If this doc belongs to the current subject and was deleted from server, drop it
+              if (doc && doc.subject === activeSubject && !fetchedIds.has(id)) {
+                // Drop from cache
+              } else {
+                next.add(id);
+              }
+            }
+            try {
+              localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
+            } catch {}
+            return next;
+          });
+        } catch {}
+
+        const combined = [...fetchedDocs, ...localDocs.filter((d) => !fetchedIds.has(d.id))];
+
+        if (isMounted) {
+          setSubjectDocsCache((prev) => ({
+            ...prev,
+            [activeSubject]: combined
+          }));
+          setIsLoadingSubjectDocs(false);
+        }
+      } else {
+        // Offline mode: Network is off, keep existing local storage documents active so student can study
+        if (isMounted) {
+          setIsLoadingSubjectDocs(false);
+        }
       }
     };
 
@@ -768,6 +863,14 @@ function ResultsContent() {
               {type === 'Notes' ? '📄 Notes' : type === 'PYQ' ? '❓ PYQs' : '🎬 Lectures'}
             </span>
           </div>
+
+          {/* Offline Mode Indicator Banner */}
+          {isOffline && (
+            <div className="bg-amber-500/15 border border-amber-500/30 rounded-2xl py-2 px-3.5 flex items-center space-x-2 text-amber-800 text-xs font-bold animate-in fade-in duration-150">
+              <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+              <span>Offline Mode Active • Saved PDFs & curriculum available without network</span>
+            </div>
+          )}
         </div>
 
         {/* 1. SUBJECTS SECTION (Right Above Notes/PYQs as requested) */}
@@ -1002,10 +1105,10 @@ function ResultsContent() {
                             {doc.title}
                           </h4>
                           {cachedPdfIds.has(doc.id) && (
-                            <span 
-                              className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 inline-block ring-2 ring-emerald-200" 
-                              title="Cached on Device" 
-                            />
+                            <span className="inline-flex items-center space-x-1 text-[9px] sm:text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
+                              <Check className="w-2.5 h-2.5" />
+                              <span>Saved Offline</span>
+                            </span>
                           )}
                         </div>
 
@@ -1039,7 +1142,7 @@ function ResultsContent() {
                         className="flex-1 sm:flex-none inline-flex items-center justify-center space-x-2 px-4 sm:px-5 py-2.5 rounded-2xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs sm:text-sm font-semibold shadow-sm hover:shadow transition-all cursor-pointer"
                       >
                         <Eye className="w-4 h-4" />
-                        <span>Open PDF</span>
+                        <span>{cachedPdfIds.has(doc.id) ? 'Open Saved PDF' : 'Open PDF'}</span>
                       </button>
 
                     </div>
