@@ -189,6 +189,36 @@ function ResultsContent() {
     setZoomLevel(100);
   };
 
+  // Real-time counter-scaling for modal header during native double-finger pinch zoom
+  const [visualScale, setVisualScale] = useState(1);
+  const [visualTop, setVisualTop] = useState(0);
+  const [visualLeft, setVisualLeft] = useState(0);
+  const [visualWidth, setVisualWidth] = useState(0);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.visualViewport) return;
+
+    const onVisualViewport = () => {
+      const vv = window.visualViewport;
+      if (!vv) return;
+      setVisualScale(vv.scale || 1);
+      setVisualTop(vv.offsetTop || 0);
+      setVisualLeft(vv.offsetLeft || 0);
+      setVisualWidth(vv.width || window.innerWidth);
+    };
+
+    window.visualViewport.addEventListener('resize', onVisualViewport);
+    window.visualViewport.addEventListener('scroll', onVisualViewport);
+    onVisualViewport();
+
+    return () => {
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', onVisualViewport);
+        window.visualViewport.removeEventListener('scroll', onVisualViewport);
+      }
+    };
+  }, [activeDoc]);
+
   // Local device storage cache for already-opened PDFs (instant offline reopening)
   const [cachedPdfIds, setCachedPdfIds] = useState<Set<string>>(() => {
     if (typeof window !== 'undefined') {
@@ -996,8 +1026,23 @@ function ResultsContent() {
         <div className="fixed inset-0 z-50 bg-white sm:bg-slate-900/80 sm:backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 md:p-6 animate-in fade-in duration-200">
           <div className="bg-white w-full h-[100dvh] sm:h-[90vh] max-w-5xl rounded-none sm:rounded-3xl border-0 sm:border border-slate-100 shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
             
-            {/* Modal Top Bar: 100% STATIC, NEVER SCALES OR SHIFTS ON PINCH */}
-            <div className="pt-[max(env(safe-area-inset-top),3.25rem)] pb-3 px-3.5 sm:py-3.5 sm:px-6 border-b border-slate-200/90 flex items-center justify-between bg-white gap-2 shrink-0 shadow-sm z-30 select-none">
+            {/* Modal Top Bar: 100% STATIC, COUNTER-SCALED IN REAL-TIME DURING PINCH ZOOM */}
+            <div 
+              style={
+                visualScale > 1.05
+                  ? {
+                      position: 'fixed',
+                      top: `${visualTop}px`,
+                      left: `${visualLeft}px`,
+                      width: `${visualWidth * visualScale}px`,
+                      transform: `scale(${1 / visualScale})`,
+                      transformOrigin: 'top left',
+                      zIndex: 60,
+                    }
+                  : undefined
+              }
+              className="pt-[max(env(safe-area-inset-top),3.25rem)] pb-3 px-3.5 sm:py-3.5 sm:px-6 border-b border-slate-200/90 flex items-center justify-between bg-white gap-2 shrink-0 shadow-sm z-30 select-none"
+            >
               <div className="space-y-0.5 min-w-0 flex-1">
                 <div className="flex items-center space-x-1.5 min-w-0">
                   <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 rounded shrink-0 ${
