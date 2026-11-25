@@ -58,8 +58,21 @@ export default function NoteBaseHome() {
         setTypeOpen(false);
       }
     }
+
+    // Close any open dropdown on mobile back button
+    const handlePopState = () => {
+      setYearOpen(false);
+      setBranchOpen(false);
+      setSemesterOpen(false);
+      setTypeOpen(false);
+    };
+
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('popstate', handlePopState);
+    };
   }, []);
 
   // Sequential Unlock Conditions (Top-to-Bottom order)

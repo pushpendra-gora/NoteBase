@@ -47,6 +47,49 @@ function ResultsContent() {
   // Active document modal state (Only loaded on-demand when student clicks a PDF)
   const [activeDoc, setActiveDoc] = useState<NoteDocument | null>(null);
   const [activeLecture, setActiveLecture] = useState<LectureItem | null>(null);
+
+  // Sync mobile native back button / gestures with modals (closes modals on back)
+  useEffect(() => {
+    const handlePopState = () => {
+      setActiveDoc(null);
+      setActiveLecture(null);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
+  const openDocModal = (doc: NoteDocument) => {
+    if (typeof window !== 'undefined') {
+      window.history.pushState({ modal: 'pdf' }, '');
+    }
+    setActiveDoc(doc);
+  };
+
+  const closeDocModal = () => {
+    if (typeof window !== 'undefined' && window.history.state?.modal) {
+      window.history.back();
+    } else {
+      setActiveDoc(null);
+    }
+  };
+
+  const openLectureModal = (lec: LectureItem) => {
+    if (typeof window !== 'undefined') {
+      window.history.pushState({ modal: 'video' }, '');
+    }
+    setActiveLecture(lec);
+  };
+
+  const closeLectureModal = () => {
+    if (typeof window !== 'undefined' && window.history.state?.modal) {
+      window.history.back();
+    } else {
+      setActiveLecture(null);
+    }
+  };
   const [isIframeLoading, setIsIframeLoading] = useState(true);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(100);
@@ -623,7 +666,7 @@ function ResultsContent() {
                 displayedLectures.map((lec) => (
                   <div
                     key={lec.id}
-                    onClick={() => lec.link && setActiveLecture(lec)}
+                    onClick={() => lec.link && openLectureModal(lec)}
                     className="bg-white rounded-3xl border border-slate-100/90 p-4 sm:p-6 shadow-[0_2px_14px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_24px_rgba(147,51,234,0.08)] hover:border-purple-200 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 sm:gap-4 group cursor-pointer"
                   >
                     {/* Left: Video Icon & Title Only (No small subtitle text) */}
@@ -647,7 +690,7 @@ function ResultsContent() {
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setActiveLecture(lec);
+                            openLectureModal(lec);
                           }}
                           className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-5 py-2.5 rounded-2xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs sm:text-sm font-semibold transition-all shadow-sm hover:shadow cursor-pointer"
                         >
@@ -710,7 +753,7 @@ function ResultsContent() {
                 displayedDocuments.map((doc) => (
                   <div
                     key={doc.id}
-                    onClick={() => setActiveDoc(doc)}
+                    onClick={() => openDocModal(doc)}
                     className="bg-white rounded-3xl border border-slate-100/90 p-4 sm:p-6 shadow-[0_2px_14px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_24px_rgba(79,70,229,0.08)] hover:border-indigo-200 transition-all cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 sm:gap-4 group"
                   >
                     {/* Left: Red PDF Icon & Document Info */}
@@ -759,7 +802,7 @@ function ResultsContent() {
                       {/* Open & View PDF */}
                       <button
                         type="button"
-                        onClick={() => setActiveDoc(doc)}
+                        onClick={() => openDocModal(doc)}
                         className="flex-1 sm:flex-none inline-flex items-center justify-center space-x-2 px-4 sm:px-5 py-2.5 rounded-2xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs sm:text-sm font-semibold shadow-sm hover:shadow transition-all cursor-pointer"
                       >
                         <Eye className="w-4 h-4" />
@@ -830,7 +873,7 @@ function ResultsContent() {
                   </button>
                 )}
                 <button
-                  onClick={() => setActiveDoc(null)}
+                  onClick={closeDocModal}
                   className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors cursor-pointer shrink-0"
                   aria-label="Close Preview"
                 >
@@ -918,7 +961,7 @@ function ResultsContent() {
 
               <button
                 type="button"
-                onClick={() => setActiveLecture(null)}
+                onClick={closeLectureModal}
                 className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors cursor-pointer shrink-0"
                 aria-label="Close Video"
               >
@@ -962,7 +1005,7 @@ function ResultsContent() {
                 )}
                 <button
                   type="button"
-                  onClick={() => setActiveLecture(null)}
+                  onClick={closeLectureModal}
                   className="px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-semibold transition-colors cursor-pointer"
                 >
                   Close Player

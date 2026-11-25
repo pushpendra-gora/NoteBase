@@ -247,6 +247,24 @@ function DashboardContent() {
   const [supabaseTesting, setSupabaseTesting] = useState(false);
   const [supabaseMessage, setSupabaseMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
 
+  // Handle mobile native back button / gestures to close open modals smoothly
+  useEffect(() => {
+    const handlePopState = () => {
+      setShowUserMenu(false);
+      setShowStorageModal(false);
+      setShowChangePasswordModal(false);
+      setShowSupabaseModal(false);
+      setPreviewFile(null);
+      setEditingFile(null);
+      setDeleteConfirm(null);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
   // Initialize Supabase & Google Drive configuration
   useEffect(() => {
     const creds = getSupabaseCredentials();

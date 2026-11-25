@@ -38,6 +38,7 @@ public class MainActivity extends AppCompatActivity {
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
     private ValueCallback<Uri[]> fileUploadCallback;
+    private long lastBackPressTime = 0;
 
     private final ActivityResultLauncher<Intent> fileChooserLauncher =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
@@ -255,10 +256,31 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
                 if (webView.canGoBack()) {
+                    String currentUrl = webView.getUrl();
+                    boolean isHome = currentUrl == null || 
+                                     currentUrl.equals(APP_URL) || 
+                                     currentUrl.equals(APP_URL + "/") || 
+                                     currentUrl.endsWith(".vercel.app") || 
+                                     currentUrl.endsWith(".vercel.app/");
+
+                    if (isHome) {
+                        if (System.currentTimeMillis() - lastBackPressTime < 2000) {
+                            finish();
+                        } else {
+                            lastBackPressTime = System.currentTimeMillis();
+                            Toast.makeText(MainActivity.this, "Press back again to exit NoteBase", Toast.LENGTH_SHORT).show();
+                        }
+                        return;
+                    }
+
                     webView.goBack();
                 } else {
-                    setEnabled(false);
-                    getOnBackPressedDispatcher().onBackPressed();
+                    if (System.currentTimeMillis() - lastBackPressTime < 2000) {
+                        finish();
+                    } else {
+                        lastBackPressTime = System.currentTimeMillis();
+                        Toast.makeText(MainActivity.this, "Press back again to exit NoteBase", Toast.LENGTH_SHORT).show();
+                    }
                 }
             }
         });
