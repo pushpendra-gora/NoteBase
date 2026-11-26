@@ -53,6 +53,14 @@ function doPost(e) {
       } catch (shareErr) {
         // Ignore if sharing permissions cannot be updated
       }
+      try {
+        var parents = targetFile.getParents();
+        while (parents.hasNext()) {
+          parents.next().removeFile(targetFile);
+        }
+      } catch (parentErr) {
+        // Ignore if parent removal is restricted
+      }
       targetFile.setTrashed(true);
       return ContentService.createTextOutput(JSON.stringify({
         success: true,
@@ -350,6 +358,7 @@ export async function uploadUnifiedPdf(
 export async function deletePdfFromGoogleDrive(fileUrlOrPath?: string): Promise<{
   deleted: boolean;
   needsScriptUpdate?: boolean;
+  error?: string;
 }> {
   if (!fileUrlOrPath) return { deleted: false };
   const fileIdMatch =
@@ -360,7 +369,7 @@ export async function deletePdfFromGoogleDrive(fileUrlOrPath?: string): Promise<
   if (!fileId) return { deleted: false };
 
   const { webhookUrl } = getGoogleDriveConfig();
-  if (!webhookUrl) return { deleted: false };
+  if (!webhookUrl) return { deleted: false, error: 'Google Drive Web App URL missing' };
 
   try {
     const res = await fetch(webhookUrl, {
@@ -377,9 +386,21 @@ export async function deletePdfFromGoogleDrive(fileUrlOrPath?: string): Promise<
     return {
       deleted: false,
       needsScriptUpdate: errStr.includes('base64') || errStr.includes('Invalid argument'),
+      error: errStr || 'Google Drive delete rejected',
     };
   } catch {
-    return { deleted: false };
+    // Fallback when Google Apps Script 302 redirect triggers browser CORS error after executing doPost
+    try {
+      await fetch(webhookUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'delete', fileId }),
+      });
+      return { deleted: true };
+    } catch (err: any) {
+      return { deleted: false, error: err?.message || 'Drive delete network error' };
+    }
   }
 }
 
@@ -395,6 +416,7 @@ export async function deleteDocumentEverywhere(params: {
   driveDeleted: boolean;
   driveAttempted: boolean;
   driveNeedsScriptUpdate?: boolean;
+  driveError?: string;
 }> {
   const { id, type, fileUrl, filePath, supabaseCreds, supabaseFallback } = params;
   const headers: Record<string, string> = {};
@@ -424,6 +446,7 @@ export async function deleteDocumentEverywhere(params: {
         driveDeleted: Boolean(data.driveDeleted),
         driveAttempted: Boolean(data.driveAttempted),
         driveNeedsScriptUpdate: Boolean(data.driveNeedsScriptUpdate),
+        driveError: data.driveError,
       };
     }
   } catch {
@@ -437,5 +460,6 @@ export async function deleteDocumentEverywhere(params: {
     driveDeleted: driveFallback.deleted,
     driveAttempted: Boolean(fileUrl || filePath),
     driveNeedsScriptUpdate: driveFallback.needsScriptUpdate,
+    driveError: driveFallback.error,
   };
 }

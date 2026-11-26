@@ -300,32 +300,36 @@ function DashboardContent() {
     };
   }, []);
 
-  // Initialize Supabase & Google Drive configuration
+  // Initialize Supabase & Google Drive configuration once authenticated
   useEffect(() => {
     const creds = getSupabaseCredentials();
     if (creds.url) setSupabaseUrlInput(creds.url);
     if (creds.key) setSupabaseKeyInput(creds.key);
     setSupabaseConnected(isSupabaseConfigured());
 
+    if (!authChecked) return;
+
     // Auto-sync Google Drive Webhook from server/Supabase
     if (typeof window !== 'undefined') {
-      const driveCfg = getGoogleDriveConfig();
-      if (!driveCfg.webhookUrl) {
-        fetch('/api/status')
-          .then((res) => res.json())
-          .then((data) => {
-            if (data?.googleDrive?.webhookUrl) {
-              saveGoogleDriveConfig({
-                webhookUrl: data.googleDrive.webhookUrl,
-                folderId: data.googleDrive.folderId || '',
-                enabled: true,
-              });
-            }
-          })
-          .catch(() => {});
+      const headers: Record<string, string> = {};
+      if (creds.url && creds.key) {
+        headers['x-supabase-url'] = creds.url;
+        headers['x-supabase-key'] = creds.key;
       }
+      fetch('/api/status', { headers })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.googleDrive?.webhookUrl) {
+            saveGoogleDriveConfig({
+              webhookUrl: data.googleDrive.webhookUrl,
+              folderId: data.googleDrive.folderId || '',
+              enabled: true,
+            });
+          }
+        })
+        .catch(() => {});
     }
-  }, []);
+  }, [authChecked]);
 
   // Lecture Upload Form State
   const [lectureTitle, setLectureTitle] = useState('');
@@ -760,7 +764,9 @@ function DashboardContent() {
         if (result.driveDeleted) {
           showToast(`🗑️ "${name}" deleted from Database & Google Drive!`);
         } else if (result.driveNeedsScriptUpdate) {
-          showToast(`🗑️ "${name}" removed from DB. Re-deploy Google Apps Script (Admin -> Statistics) to also delete Drive files.`);
+          showToast(`⚠️ "${name}" removed from DB. Re-deploy Google Apps Script (Manage deployments -> New version) for Drive delete.`);
+        } else if (result.driveAttempted && result.driveError) {
+          showToast(`⚠️ "${name}" removed from DB, Drive error: ${result.driveError}`);
         } else {
           showToast(`🗑️ "${name}" removed from repository.`);
         }

@@ -1289,7 +1289,9 @@ export default function AdminPage() {
         if (res.driveDeleted) {
           showToast(`"${fileName}" deleted from Database & Google Drive!`, 'success');
         } else if (res.driveNeedsScriptUpdate) {
-          showToast(`"${fileName}" deleted from DB. Re-deploy Google Apps Script (Statistics) for Drive delete.`, 'info');
+          showToast(`"${fileName}" deleted from DB. Re-deploy Google Apps Script (Manage deployments -> New version) for Drive delete.`, 'info');
+        } else if (res.driveAttempted && res.driveError) {
+          showToast(`"${fileName}" deleted from DB, Drive error: ${res.driveError}`, 'error');
         } else {
           showToast(`"${fileName}" deleted from database!`, 'success');
         }

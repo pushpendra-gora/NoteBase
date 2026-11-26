@@ -19,38 +19,56 @@ export function extractGoogleDriveFileId(rawUrl?: string | null): string | null 
   return null;
 }
 
-export async function resolveGoogleDriveWebhookUrl(
+function normalizeValidWebhook(raw?: string | null): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed || !isValidGoogleScriptUrl(trimmed) || trimmed.includes('/edit') || trimmed.endsWith('/dev')) {
+    return null;
+  }
+  return trimmed;
+}
+
+export async function resolveGoogleDriveWebhookCandidates(
   client?: SupabaseClient | null,
   fallbackScriptUrl?: string | null
-): Promise<string | null> {
-  let targetUrl =
-    process.env.GOOGLE_DRIVE_WEBHOOK_URL ||
-    process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL ||
-    process.env.GDRIVE_WEBHOOK_URL ||
-    fallbackScriptUrl ||
-    '';
+): Promise<string[]> {
+  const candidates: string[] = [];
+  const add = (url?: string | null) => {
+    const valid = normalizeValidWebhook(url);
+    if (valid && !candidates.includes(valid)) {
+      candidates.push(valid);
+    }
+  };
 
-  if (!targetUrl && client) {
+  add(fallbackScriptUrl);
+
+  if (client) {
     try {
       const { data } = await client
         .from('admin_credentials')
         .select('gdrive_webhook')
-        .eq('id', 'admin')
+        .not('gdrive_webhook', 'is', null)
         .limit(1)
-        .single();
-      if (data?.gdrive_webhook) {
-        targetUrl = data.gdrive_webhook;
-      }
+        .maybeSingle();
+      add(data?.gdrive_webhook);
     } catch {
       // Ignore optional lookup error
     }
   }
 
-  const trimmed = targetUrl.trim();
-  if (!trimmed || !isValidGoogleScriptUrl(trimmed) || trimmed.includes('/edit') || trimmed.endsWith('/dev')) {
-    return null;
-  }
-  return trimmed;
+  add(process.env.GOOGLE_DRIVE_WEBHOOK_URL);
+  add(process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL);
+  add(process.env.GDRIVE_WEBHOOK_URL);
+
+  return candidates;
+}
+
+export async function resolveGoogleDriveWebhookUrl(
+  client?: SupabaseClient | null,
+  fallbackScriptUrl?: string | null
+): Promise<string | null> {
+  const list = await resolveGoogleDriveWebhookCandidates(client, fallbackScriptUrl);
+  return list[0] || null;
 }
 
 export async function deleteFileFromGoogleDriveServer(
@@ -68,8 +86,8 @@ export async function deleteFileFromGoogleDriveServer(
     return { attempted: false, deleted: false };
   }
 
-  const webhookUrl = await resolveGoogleDriveWebhookUrl(client, customWebhookUrl);
-  if (!webhookUrl) {
+  const webhookUrls = await resolveGoogleDriveWebhookCandidates(client, customWebhookUrl);
+  if (webhookUrls.length === 0) {
     return {
       attempted: false,
       deleted: false,
@@ -77,41 +95,43 @@ export async function deleteFileFromGoogleDriveServer(
     };
   }
 
-  try {
-    const res = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'delete', fileId }),
-      redirect: 'follow',
-    });
-    const text = await res.text();
-    let parsed: any = null;
+  let lastError = 'Google Drive delete did not succeed.';
+  let lastNeedsUpdate = false;
+
+  for (const webhookUrl of webhookUrls) {
     try {
-      parsed = JSON.parse(text);
-    } catch {}
+      const res = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'delete', fileId }),
+        redirect: 'follow',
+      });
+      const text = await res.text();
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {}
 
-    if (parsed?.success && (parsed.deleted || parsed.deletedFileId)) {
-      return { attempted: true, deleted: true };
+      if (parsed?.success && (parsed.deleted || parsed.deletedFileId)) {
+        return { attempted: true, deleted: true };
+      }
+
+      const errMsg = parsed?.error ? String(parsed.error) : text.slice(0, 150);
+      lastNeedsUpdate =
+        errMsg.includes('base64') ||
+        errMsg.includes('Invalid argument') ||
+        text.includes('<!DOCTYPE') ||
+        text.includes('<html');
+      lastError = errMsg || lastError;
+    } catch (err: any) {
+      lastError = err?.message || 'Network error calling Google Drive Web App.';
     }
-
-    const errMsg = parsed?.error ? String(parsed.error) : text.slice(0, 150);
-    const needsUpdate =
-      errMsg.includes('base64') ||
-      errMsg.includes('Invalid argument') ||
-      text.includes('<!DOCTYPE') ||
-      text.includes('<html');
-
-    return {
-      attempted: true,
-      deleted: false,
-      needsScriptUpdate: needsUpdate,
-      error: errMsg || 'Google Drive delete did not succeed.',
-    };
-  } catch (err: any) {
-    return {
-      attempted: true,
-      deleted: false,
-      error: err?.message || 'Network error calling Google Drive Web App.',
-    };
   }
+
+  return {
+    attempted: true,
+    deleted: false,
+    needsScriptUpdate: lastNeedsUpdate,
+    error: lastError,
+  };
 }

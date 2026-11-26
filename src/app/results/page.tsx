@@ -580,6 +580,9 @@ function ResultsContent() {
 
   const handleSelectSubject = (subjTitle: string) => {
     setSelectedSubject(subjTitle);
+    if (fetchedSubjectsRef.current.has(subjTitle)) {
+      setIsLoadingSubjectDocs(false);
+    }
     if (typeof window !== 'undefined' && year && branch && semester) {
       try {
         localStorage.setItem(`notebase_active_subj_${year}_${branch}_${semester}`, subjTitle);
@@ -686,6 +689,98 @@ function ResultsContent() {
     return initial;
   });
   const [isLoadingSubjectDocs, setIsLoadingSubjectDocs] = useState<boolean>(false);
+  // Tracks subjects whose metadata has already been fetched in this session so switching back never re-loads
+  const fetchedSubjectsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    fetchedSubjectsRef.current.clear();
+  }, [year, branch, semester, type]);
+
+  // Shared helper to reconcile server docs with localStorage + Android disk cache
+  const reconcileServerDocsWithLocal = (fetchedDocs: NoteDocument[], scopedSubject?: string) => {
+    if (!year || !branch || !semester || !type) return;
+    const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+    const fetchedIds = new Set(fetchedDocs.map((d) => d.id));
+    const deletedIds = new Set<string>();
+    const bridge = getAndroidBridge();
+
+    try {
+      const subjectsToCheck = scopedSubject ? [scopedSubject] : Object.keys(subjectDocsCache);
+      for (const subj of subjectsToCheck) {
+        const prevDocs = subjectDocsCache[subj] || [];
+        for (const prevDoc of prevDocs) {
+          if (!fetchedIds.has(prevDoc.id)) {
+            deletedIds.add(prevDoc.id);
+          }
+        }
+      }
+
+      const cachedDocsRaw = localStorage.getItem('notebase_cached_pdf_docs');
+      if (cachedDocsRaw) {
+        const cachedDocsMap: Record<string, NoteDocument> = JSON.parse(cachedDocsRaw);
+        let mapChanged = false;
+        for (const [id, doc] of Object.entries(cachedDocsMap)) {
+          const matchesScope = scopedSubject ? doc.subject === scopedSubject : true;
+          if (
+            matchesScope &&
+            doc.year === year &&
+            doc.branch === branch &&
+            doc.semester === semester &&
+            doc.type === targetType &&
+            !fetchedIds.has(id)
+          ) {
+            deletedIds.add(id);
+            delete cachedDocsMap[id];
+            mapChanged = true;
+          }
+        }
+        if (mapChanged) {
+          localStorage.setItem('notebase_cached_pdf_docs', JSON.stringify(cachedDocsMap));
+        }
+      }
+
+      if (deletedIds.size > 0) {
+        for (const deletedId of Array.from(deletedIds)) {
+          deleteCustomUploadedDocument(deletedId);
+          if (bridge?.removeCachedPdf) {
+            try {
+              bridge.removeCachedPdf(deletedId);
+            } catch {}
+          }
+        }
+      }
+
+      setCachedPdfIds((prev) => {
+        const next = new Set<string>();
+        for (const id of Array.from(prev)) {
+          if (deletedIds.has(id)) continue;
+          next.add(id);
+        }
+        if (bridge?.isPdfCachedOnDisk) {
+          for (const doc of fetchedDocs) {
+            try {
+              if (bridge.isPdfCachedOnDisk(doc.id)) {
+                next.add(doc.id);
+                if (bridge.getCachedPdfMeta) {
+                  const rawMeta = bridge.getCachedPdfMeta(doc.id);
+                  if (rawMeta) {
+                    const parsed = JSON.parse(rawMeta);
+                    saveRealPdfMeta(doc.id, parsed?.pages || 0, parsed?.sizeBytes || 0);
+                  }
+                }
+              } else {
+                next.delete(doc.id);
+              }
+            } catch {}
+          }
+        }
+        try {
+          localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
+        } catch {}
+        return next;
+      });
+    } catch {}
+  };
 
   // Sync subject documents to localStorage whenever updated
   useEffect(() => {
@@ -697,36 +792,76 @@ function ResultsContent() {
     }
   }, [subjectDocsCache, year, branch, semester, type]);
 
-  // Warm cache for all subjects of this semester in background so switching subjects is instant
+  // Warm cache for all subjects of this semester ONCE so switching subjects (and back) is instant with zero reload
   useEffect(() => {
     let isMounted = true;
     if (!year || !branch || !semester || !type || type === 'Lectures') return;
 
     const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
-    if (isSupabaseConfigured()) {
-      fetchDocumentsFromSupabase(year, branch, semester, targetType)
-        .then((allDocs) => {
-          if (!isMounted || !Array.isArray(allDocs)) return;
-          const grouped: Record<string, NoteDocument[]> = {};
-          for (const doc of allDocs) {
-            if (doc.subject) {
-              if (!grouped[doc.subject]) grouped[doc.subject] = [];
-              grouped[doc.subject].push(doc);
-            }
-          }
-          setSubjectDocsCache(grouped);
-        })
-        .catch(() => {});
-    }
+
+    const warmSemesterDocs = async () => {
+      let allDocs: NoteDocument[] = [];
+      let succeeded = false;
+      try {
+        const res = await fetch(
+          `/api/documents?year=${encodeURIComponent(year)}&branch=${encodeURIComponent(branch)}&semester=${encodeURIComponent(semester)}&type=${encodeURIComponent(targetType)}`
+        );
+        const data = await res.json();
+        if (res.ok && data.success && Array.isArray(data.documents)) {
+          allDocs = data.documents;
+          succeeded = true;
+        } else if (isSupabaseConfigured()) {
+          allDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType);
+          succeeded = true;
+        }
+      } catch {
+        if (isSupabaseConfigured()) {
+          try {
+            allDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType);
+            succeeded = true;
+          } catch {}
+        }
+      }
+
+      if (!isMounted || !succeeded) return;
+
+      const grouped: Record<string, NoteDocument[]> = {};
+      for (const subj of subjectsList) {
+        if (subj.title) {
+          grouped[subj.title] = [];
+          fetchedSubjectsRef.current.add(subj.title);
+        }
+      }
+      for (const doc of allDocs) {
+        if (doc.subject) {
+          if (!grouped[doc.subject]) grouped[doc.subject] = [];
+          grouped[doc.subject].push(doc);
+          fetchedSubjectsRef.current.add(doc.subject);
+        }
+      }
+
+      reconcileServerDocsWithLocal(allDocs);
+      setSubjectDocsCache(grouped);
+      setIsLoadingSubjectDocs(false);
+    };
+
+    warmSemesterDocs();
+
     return () => {
       isMounted = false;
     };
   }, [year, branch, semester, type]);
 
-  // Progressive load metadata strictly for the active subject currently viewed by student
+  // Progressive load metadata ONLY if activeSubject has not already been fetched in this session
   useEffect(() => {
     let isMounted = true;
     if (!year || !branch || !semester || !activeSubject || type === 'Lectures') {
+      return;
+    }
+
+    // Already fetched once this session: keep cached data immediately without re-loading
+    if (fetchedSubjectsRef.current.has(activeSubject)) {
+      setIsLoadingSubjectDocs(false);
       return;
     }
 
@@ -743,9 +878,9 @@ function ResultsContent() {
       }));
     }
 
-    // Only trigger network spinner if absolutely zero files exist for this subject
-    const alreadyHasDocs = (subjectDocsCache[activeSubject] && subjectDocsCache[activeSubject].length > 0) || localDocs.length > 0;
-    if (!alreadyHasDocs) {
+    // Only trigger network spinner if absolutely zero cached entry exists for this subject
+    const alreadyHasEntry = activeSubject in subjectDocsCache || localDocs.length > 0;
+    if (!alreadyHasEntry) {
       setIsLoadingSubjectDocs(true);
     }
 
@@ -773,89 +908,9 @@ function ResultsContent() {
         }
       }
 
-      // Sync with server: If metadata is not returned from server, remove file from both localStorage and native Android disk cache
       if (fetchSucceeded) {
-        const fetchedIds = new Set(fetchedDocs.map((d) => d.id));
-        const deletedIds = new Set<string>();
-        const bridge = getAndroidBridge();
-
-        try {
-          // 0. Check docs previously known for this subject
-          const prevSubjectDocs = subjectDocsCache[activeSubject] || [];
-          for (const prevDoc of prevSubjectDocs) {
-            if (!fetchedIds.has(prevDoc.id)) {
-              deletedIds.add(prevDoc.id);
-            }
-          }
-
-          // 1. Collect & clean up deleted docs from cached document map
-          const cachedDocsRaw = localStorage.getItem('notebase_cached_pdf_docs');
-          if (cachedDocsRaw) {
-            const cachedDocsMap: Record<string, NoteDocument> = JSON.parse(cachedDocsRaw);
-            let mapChanged = false;
-            for (const [id, doc] of Object.entries(cachedDocsMap)) {
-              if (
-                doc.subject === activeSubject &&
-                doc.year === year &&
-                doc.branch === branch &&
-                doc.semester === semester &&
-                doc.type === targetType
-              ) {
-                if (!fetchedIds.has(id)) {
-                  deletedIds.add(id);
-                  delete cachedDocsMap[id];
-                  mapChanged = true;
-                }
-              }
-            }
-            if (mapChanged) {
-              localStorage.setItem('notebase_cached_pdf_docs', JSON.stringify(cachedDocsMap));
-            }
-          }
-
-          // 2. Evict physical .pdf files from native Android cache & local custom docs if removed on server
-          if (deletedIds.size > 0) {
-            for (const deletedId of Array.from(deletedIds)) {
-              deleteCustomUploadedDocument(deletedId);
-              if (bridge?.removeCachedPdf) {
-                try {
-                  bridge.removeCachedPdf(deletedId);
-                } catch {}
-              }
-            }
-          }
-
-          // 3. Clean up cachedPdfIds accurately (and verify disk cache on Android)
-          setCachedPdfIds((prev) => {
-            const next = new Set<string>();
-            for (const id of Array.from(prev)) {
-              if (deletedIds.has(id)) continue;
-              next.add(id);
-            }
-            if (bridge?.isPdfCachedOnDisk) {
-              for (const doc of fetchedDocs) {
-                try {
-                  if (bridge.isPdfCachedOnDisk(doc.id)) {
-                    next.add(doc.id);
-                    if (bridge.getCachedPdfMeta) {
-                      const rawMeta = bridge.getCachedPdfMeta(doc.id);
-                      if (rawMeta) {
-                        const parsed = JSON.parse(rawMeta);
-                        saveRealPdfMeta(doc.id, parsed?.pages || 0, parsed?.sizeBytes || 0);
-                      }
-                    }
-                  } else {
-                    next.delete(doc.id);
-                  }
-                } catch {}
-              }
-            }
-            try {
-              localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
-            } catch {}
-            return next;
-          });
-        } catch {}
+        fetchedSubjectsRef.current.add(activeSubject);
+        reconcileServerDocsWithLocal(fetchedDocs, activeSubject);
 
         if (isMounted) {
           setSubjectDocsCache((prev) => ({
@@ -899,13 +954,14 @@ function ResultsContent() {
     return subjectDocsCache[activeSubject] || [];
   }, [subjectDocsCache, activeSubject]);
 
-  // Check if documents for active subject are loading - never blocks if files are already showing!
+  // Check if documents for active subject are loading - never blocks if files are already showing or already fetched!
   const isDocLoadingForActive = useMemo(() => {
     if (type === 'Lectures') return false;
     if (displayedDocuments.length > 0) return false;
     if (isLoadingSubjects && subjectsList.length === 0) return true;
     if (!activeSubject) return false;
-    return isLoadingSubjectDocs && (!subjectDocsCache[activeSubject] || subjectDocsCache[activeSubject].length === 0);
+    if (fetchedSubjectsRef.current.has(activeSubject)) return false;
+    return isLoadingSubjectDocs && !(activeSubject in subjectDocsCache);
   }, [type, displayedDocuments.length, isLoadingSubjects, subjectsList.length, activeSubject, isLoadingSubjectDocs, subjectDocsCache]);
 
   // Helper to convert Google Drive or direct link to embeddable preview iframe URL
