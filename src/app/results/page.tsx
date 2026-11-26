@@ -47,6 +47,8 @@ function ResultsContent() {
   // Active document modal state (Only loaded on-demand when student clicks a PDF)
   const [activeDoc, setActiveDoc] = useState<NoteDocument | null>(null);
   const [activeLecture, setActiveLecture] = useState<LectureItem | null>(null);
+  const [useWebPdfFallback, setUseWebPdfFallback] = useState(false);
+  const [nativePdfProgress, setNativePdfProgress] = useState(0);
 
   // Sync mobile native back button / gestures with modals (closes modals on back)
   useEffect(() => {
@@ -61,38 +63,80 @@ function ResultsContent() {
     };
   }, []);
 
+  const getAndroidBridge = () => {
+    if (typeof window !== 'undefined' && (window as any).NoteBaseAndroid) {
+      return (window as any).NoteBaseAndroid;
+    }
+    return null;
+  };
+
+  const resolveRawPdfSourceUrl = (doc: NoteDocument): string => {
+    const candidate = doc.file_url || doc.file_path || '';
+    if (candidate.startsWith('gdrive://')) {
+      const fId = candidate.replace('gdrive://', '');
+      return `https://drive.google.com/file/d/${fId}/view?usp=sharing`;
+    }
+    return candidate;
+  };
+
   const openDocModal = (doc: NoteDocument) => {
     if (typeof window !== 'undefined') {
       window.history.pushState({ modal: 'pdf' }, '');
 
-      // Save document to local device storage for instant offline reopening
+      // Save document metadata to local device storage for offline listing
       try {
         const raw = localStorage.getItem('notebase_cached_pdf_docs');
         const map = raw ? JSON.parse(raw) : {};
         map[doc.id] = doc;
         localStorage.setItem('notebase_cached_pdf_docs', JSON.stringify(map));
 
-        const idSetRaw = localStorage.getItem('notebase_cached_pdf_ids');
-        const idSet: string[] = idSetRaw ? JSON.parse(idSetRaw) : [];
-        if (!idSet.includes(doc.id)) {
-          idSet.push(doc.id);
-          localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(idSet));
-          setCachedPdfIds(new Set(idSet));
+        // Only mark cached immediately in browser mode; in Android App, mark after actual PDF file is cached
+        if (!getAndroidBridge()) {
+          const idSetRaw = localStorage.getItem('notebase_cached_pdf_ids');
+          const idSet: string[] = idSetRaw ? JSON.parse(idSetRaw) : [];
+          if (!idSet.includes(doc.id)) {
+            idSet.push(doc.id);
+            localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(idSet));
+            setCachedPdfIds(new Set(idSet));
+          }
         }
       } catch {}
     }
+    setUseWebPdfFallback(false);
+    setNativePdfProgress(0);
     setZoomLevel(100);
     setPanPosition({ x: 0, y: 0 });
     setActiveDoc(doc);
   };
 
   const closeDocModal = () => {
+    const bridge = getAndroidBridge();
+    if (bridge?.closeNativePdf) {
+      try {
+        bridge.closeNativePdf();
+      } catch {}
+    }
     if (typeof window !== 'undefined' && window.history.state?.modal) {
       window.history.back();
     } else {
       setActiveDoc(null);
     }
   };
+
+  // Expose synchronous close helper for Android hardware back button
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    (window as any).__closeNoteBasePdfIfOpen = () => {
+      if (activeDoc) {
+        closeDocModal();
+        return true;
+      }
+      return false;
+    };
+    return () => {
+      delete (window as any).__closeNoteBasePdfIfOpen;
+    };
+  }, [activeDoc]);
 
   const openLectureModal = (lec: LectureItem) => {
     if (typeof window !== 'undefined') {
@@ -119,7 +163,9 @@ function ResultsContent() {
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      setIsOffline(!navigator.onLine);
+      const bridge = getAndroidBridge();
+      const online = navigator.onLine && (!bridge?.isNetworkConnected || bridge.isNetworkConnected());
+      setIsOffline(!online);
       const onOnline = () => setIsOffline(false);
       const onOffline = () => setIsOffline(true);
       window.addEventListener('online', onOnline);
@@ -299,13 +345,101 @@ function ResultsContent() {
     return new Set<string>();
   });
 
-  // Reset iframe loading state whenever student opens a new PDF
+  // Reset iframe / native PDF loading state whenever student opens a new PDF
   useEffect(() => {
-    if (activeDoc) {
-      // If already cached locally, skip waiting spinner
+    if (!activeDoc) return;
+    const bridge = getAndroidBridge();
+    const rawUrl = resolveRawPdfSourceUrl(activeDoc);
+
+    if (!bridge || !bridge.openNativePdf || !rawUrl) {
+      setUseWebPdfFallback(true);
       setIsIframeLoading(!cachedPdfIds.has(activeDoc.id));
+      return;
     }
-  }, [activeDoc, cachedPdfIds]);
+
+    // Native Android PdfRenderer path: downloads & caches real PDF binary on disk
+    setUseWebPdfFallback(false);
+    setNativePdfProgress(0);
+    const alreadyOnDisk = bridge.isPdfCachedOnDisk ? bridge.isPdfCachedOnDisk(activeDoc.id) : false;
+    setIsIframeLoading(!alreadyOnDisk);
+
+    const computeRatios = () => {
+      const el = pdfContainerRef.current;
+      const vw = window.innerWidth || 1;
+      const vh = window.innerHeight || 1;
+      if (!el) return { left: 0.03, top: 0.14, width: 0.94, height: 0.8 };
+      const r = el.getBoundingClientRect();
+      return {
+        left: Math.max(0, r.left / vw),
+        top: Math.max(0, r.top / vh),
+        width: Math.max(0.05, r.width / vw),
+        height: Math.max(0.05, r.height / vh),
+      };
+    };
+
+    (window as any).onNativePdfProgress = (docId: string, pct: number) => {
+      if (docId === activeDoc.id) {
+        setNativePdfProgress(Math.max(0, Math.min(100, pct)));
+      }
+    };
+
+    (window as any).onNativePdfReady = (docId: string) => {
+      if (docId !== activeDoc.id) return;
+      setIsIframeLoading(false);
+      setUseWebPdfFallback(false);
+      setCachedPdfIds((prev) => {
+        if (prev.has(docId)) return prev;
+        const next = new Set(prev);
+        next.add(docId);
+        try {
+          localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
+        } catch {}
+        return next;
+      });
+    };
+
+    (window as any).onNativePdfFallback = (docId: string) => {
+      if (docId !== activeDoc.id) return;
+      setUseWebPdfFallback(true);
+      setIsIframeLoading(true);
+    };
+
+    const rafId = window.requestAnimationFrame(() => {
+      const ratios = computeRatios();
+      try {
+        bridge.openNativePdf(activeDoc.id, rawUrl, ratios.left, ratios.top, ratios.width, ratios.height);
+      } catch {
+        setUseWebPdfFallback(true);
+      }
+    });
+
+    const syncBounds = () => {
+      if (!pdfContainerRef.current || !bridge.updatePdfBounds) return;
+      const ratios = computeRatios();
+      try {
+        bridge.updatePdfBounds(ratios.left, ratios.top, ratios.width, ratios.height);
+      } catch {}
+    };
+
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && pdfContainerRef.current) {
+      ro = new ResizeObserver(syncBounds);
+      ro.observe(pdfContainerRef.current);
+    }
+    window.addEventListener('resize', syncBounds);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', syncBounds);
+      if (ro) ro.disconnect();
+      delete (window as any).onNativePdfProgress;
+      delete (window as any).onNativePdfReady;
+      delete (window as any).onNativePdfFallback;
+      try {
+        bridge.closeNativePdf?.();
+      } catch {}
+    };
+  }, [activeDoc]);
 
   // Listen for dynamic subject updates made by coordinators
   useEffect(() => {
@@ -599,12 +733,22 @@ function ResultsContent() {
         }
       }
 
-      // Sync with server: If metadata is not returned from server, remove file from local storage
+      // Sync with server: If metadata is not returned from server, remove file from both localStorage and native Android disk cache
       if (fetchSucceeded) {
         const fetchedIds = new Set(fetchedDocs.map((d) => d.id));
+        const deletedIds = new Set<string>();
+        const bridge = getAndroidBridge();
 
         try {
-          // 1. Clean up deleted docs from cached document map
+          // 0. Check docs previously known for this subject
+          const prevSubjectDocs = subjectDocsCache[activeSubject] || [];
+          for (const prevDoc of prevSubjectDocs) {
+            if (!fetchedIds.has(prevDoc.id)) {
+              deletedIds.add(prevDoc.id);
+            }
+          }
+
+          // 1. Collect & clean up deleted docs from cached document map
           const cachedDocsRaw = localStorage.getItem('notebase_cached_pdf_docs');
           if (cachedDocsRaw) {
             const cachedDocsMap: Record<string, NoteDocument> = JSON.parse(cachedDocsRaw);
@@ -618,6 +762,7 @@ function ResultsContent() {
                 doc.type === targetType
               ) {
                 if (!fetchedIds.has(id)) {
+                  deletedIds.add(id);
                   delete cachedDocsMap[id];
                   mapChanged = true;
                 }
@@ -628,19 +773,31 @@ function ResultsContent() {
             }
           }
 
-          // 2. Clean up cachedPdfIds
+          // 2. Evict physical .pdf files from native Android cache if removed on server
+          if (bridge?.removeCachedPdf && deletedIds.size > 0) {
+            for (const deletedId of Array.from(deletedIds)) {
+              try {
+                bridge.removeCachedPdf(deletedId);
+              } catch {}
+            }
+          }
+
+          // 3. Clean up cachedPdfIds accurately (and verify disk cache on Android)
           setCachedPdfIds((prev) => {
             const next = new Set<string>();
-            const cachedDocsRaw = localStorage.getItem('notebase_cached_pdf_docs');
-            const cachedDocsMap: Record<string, NoteDocument> = cachedDocsRaw ? JSON.parse(cachedDocsRaw) : {};
-            
             for (const id of Array.from(prev)) {
-              const doc = cachedDocsMap[id];
-              // If this doc belongs to the current subject and was deleted from server, drop it
-              if (doc && doc.subject === activeSubject && !fetchedIds.has(id)) {
-                // Drop from cache
-              } else {
-                next.add(id);
+              if (deletedIds.has(id)) continue;
+              next.add(id);
+            }
+            if (bridge?.isPdfCachedOnDisk) {
+              for (const doc of fetchedDocs) {
+                try {
+                  if (bridge.isPdfCachedOnDisk(doc.id)) {
+                    next.add(doc.id);
+                  } else {
+                    next.delete(doc.id);
+                  }
+                } catch {}
               }
             }
             try {
@@ -724,35 +881,29 @@ function ResultsContent() {
     return url;
   };
 
+  const extractYouTubeVideoId = (url?: string): string => {
+    if (!url) return '';
+    const trimmed = url.trim();
+    const watchMatch = trimmed.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+    if (watchMatch && watchMatch[1]) return watchMatch[1];
+    const pathMatch = trimmed.match(/(?:youtu\.be\/|youtube(?:-nocookie)?\.com\/(?:embed|shorts|live)\/)([a-zA-Z0-9_-]{11})/);
+    if (pathMatch && pathMatch[1]) return pathMatch[1];
+    return '';
+  };
+
   // Helper to convert any YouTube URL into a seamless embedded in-app player URL
   const getYouTubeEmbedUrl = (url?: string): string => {
     if (!url) return '';
     const trimmed = url.trim();
-
-    // Already an embed URL
-    if (trimmed.includes('youtube.com/embed/')) {
-      const glue = trimmed.includes('?') ? '&' : '?';
-      return `${trimmed}${glue}autoplay=1&rel=0&modestbranding=1&fs=1&enablejsapi=1`;
-    }
-
-    let videoId = '';
-    const watchMatch = trimmed.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
-    if (watchMatch && watchMatch[1]) {
-      videoId = watchMatch[1];
-    } else {
-      const shortMatch = trimmed.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
-      if (shortMatch && shortMatch[1]) {
-        videoId = shortMatch[1];
-      } else {
-        const shortsMatch = trimmed.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/);
-        if (shortsMatch && shortsMatch[1]) {
-          videoId = shortsMatch[1];
-        }
-      }
-    }
+    const videoId = extractYouTubeVideoId(trimmed);
 
     if (videoId) {
       return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1&fs=1`;
+    }
+
+    if (trimmed.includes('youtube.com/embed/')) {
+      const glue = trimmed.includes('?') ? '&' : '?';
+      return `${trimmed}${glue}autoplay=1&rel=0&modestbranding=1&fs=1&enablejsapi=1`;
     }
 
     return trimmed;
@@ -760,29 +911,16 @@ function ResultsContent() {
 
   const handleOpenInYouTubeApp = (link?: string) => {
     if (!link) return;
-    const trimmed = link.trim();
-    let videoId = '';
-    const watchMatch = trimmed.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
-    const shortMatch = trimmed.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
-    const embedMatch = trimmed.match(/embed\/([a-zA-Z0-9_-]{11})/);
+    const bridge = getAndroidBridge();
+    if (bridge?.openYouTubeVideo) {
+      bridge.openYouTubeVideo(link);
+      return;
+    }
 
-    if (watchMatch && watchMatch[1]) videoId = watchMatch[1];
-    else if (shortMatch && shortMatch[1]) videoId = shortMatch[1];
-    else if (embedMatch && embedMatch[1]) videoId = embedMatch[1];
-
+    const videoId = extractYouTubeVideoId(link);
     if (videoId) {
-      // In Android devices, intent: scheme opens the native YouTube app immediately
       const intentUrl = `intent://www.youtube.com/watch?v=${videoId}#Intent;package=com.google.android.youtube;scheme=https;end`;
-      const webUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-      try {
-        window.location.href = intentUrl;
-      } catch {
-        window.open(webUrl, '_blank');
-      }
-      setTimeout(() => {
-        window.open(webUrl, '_blank');
-      }, 500);
+      window.location.href = intentUrl;
     } else {
       window.open(link, '_blank');
     }
@@ -798,18 +936,24 @@ function ResultsContent() {
       targetUrl = `https://drive.google.com/file/d/${fId}/view?usp=sharing`;
     }
 
-    // If real PDF URL exists, open direct download link
-    if (targetUrl) {
+    // If real PDF URL exists or document is cached locally on Android, initiate direct download
+    if (targetUrl || getAndroidBridge()?.isPdfCachedOnDisk?.(doc.id)) {
       const safeTitle = (doc.title || 'document').replace(/[/\\?%*:|"<>]/g, '_');
       const filename = safeTitle.toLowerCase().endsWith('.pdf') ? safeTitle : `${safeTitle}.pdf`;
 
-      let downloadUrl = targetUrl;
-      const fileIdMatch = targetUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+      let downloadUrl = targetUrl || '';
+      const fileIdMatch = downloadUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
       if (fileIdMatch && fileIdMatch[1]) {
         downloadUrl = `https://drive.google.com/uc?export=download&id=${fileIdMatch[1]}&filename=${encodeURIComponent(filename)}&title=${encodeURIComponent(filename)}`;
       }
 
       setDownloadSuccess(true);
+      const bridge = getAndroidBridge();
+      if (bridge?.downloadPdf) {
+        bridge.downloadPdf(doc.id, downloadUrl, filename);
+        setTimeout(() => setDownloadSuccess(false), 2500);
+        return;
+      }
 
       // Trigger direct download via invisible anchor tag for mobile browsers & WebView
       const link = document.createElement('a');
@@ -1276,54 +1420,68 @@ function ResultsContent() {
                       <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shadow-sm">
                         <Loader2 className="w-5 h-5 sm:w-6 sm:h-6 animate-spin" />
                       </div>
-                      <div className="space-y-1 text-center">
-                        <p className="text-xs sm:text-sm font-bold text-slate-800">Streaming Verified PDF...</p>
-                        <p className="text-[10px] sm:text-[11px] text-slate-400">Loading document securely from Google Drive</p>
+                      <div className="space-y-1 text-center px-4">
+                        <p className="text-xs sm:text-sm font-bold text-slate-800">
+                          {cachedPdfIds.has(activeDoc.id)
+                            ? 'Opening Cached PDF...'
+                            : nativePdfProgress > 0
+                            ? `Caching Verified PDF (${nativePdfProgress}%)...`
+                            : 'Streaming Verified PDF...'}
+                        </p>
+                        <p className="text-[10px] sm:text-[11px] text-slate-400">
+                          {cachedPdfIds.has(activeDoc.id)
+                            ? 'Loading instantaneously from local device storage'
+                            : 'Saving securely for instant offline access'}
+                        </p>
                       </div>
                     </div>
                   )}
 
-                  {/* Scaled PDF Document Container */}
-                  <div 
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      transform: `scale(${zoomLevel / 100}) translate(${panPosition.x}px, ${panPosition.y}px)`,
-                      transformOrigin: 'center center',
-                      transition: isPinchingRef.current ? 'none' : 'transform 0.08s ease-out',
-                    }}
-                    className="flex-1 w-full h-full flex flex-col"
-                  >
-                    <iframe
-                      src={getPdfEmbedUrl(activeDoc.file_url || activeDoc.file_path)}
-                      title={activeDoc.title}
-                      loading="eager"
-                      onLoad={() => {
-                        setIsIframeLoading(false);
-                        if (activeDoc && typeof window !== 'undefined') {
-                          setCachedPdfIds((prev) => {
-                            const next = new Set(prev);
-                            next.add(activeDoc.id);
-                            try {
-                              localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
-                            } catch {}
-                            return next;
-                          });
-                        }
-                      }}
-                      className="w-full h-full flex-1 border-0 bg-white"
-                      allow="autoplay; fullscreen; clipboard-read; clipboard-write"
-                    />
-                  </div>
+                  {/* Web Fallback Viewer (Used on browsers or non-direct Drive files; native Android renders directly via PdfRenderer) */}
+                  {useWebPdfFallback && (
+                    <>
+                      <div 
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          transform: `scale(${zoomLevel / 100}) translate(${panPosition.x}px, ${panPosition.y}px)`,
+                          transformOrigin: 'center center',
+                          transition: isPinchingRef.current ? 'none' : 'transform 0.08s ease-out',
+                        }}
+                        className="flex-1 w-full h-full flex flex-col"
+                      >
+                        <iframe
+                          src={getPdfEmbedUrl(activeDoc.file_url || activeDoc.file_path)}
+                          title={activeDoc.title}
+                          loading="eager"
+                          onLoad={() => {
+                            setIsIframeLoading(false);
+                            if (activeDoc && typeof window !== 'undefined' && !getAndroidBridge()) {
+                              setCachedPdfIds((prev) => {
+                                const next = new Set(prev);
+                                next.add(activeDoc.id);
+                                try {
+                                  localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
+                                } catch {}
+                                return next;
+                              });
+                            }
+                          }}
+                          className="w-full h-full flex-1 border-0 bg-white"
+                          allow="autoplay; fullscreen; clipboard-read; clipboard-write"
+                        />
+                      </div>
 
-                  {/* Transparent Multi-Touch Gesture Capture Layer (Intercepts 2-finger pinch directly over PDF) */}
-                  <div 
-                    onTouchStart={handlePdfTouchStart}
-                    onTouchMove={handlePdfTouchMove}
-                    onTouchEnd={handlePdfTouchEnd}
-                    className="absolute inset-0 z-20 cursor-grab active:cursor-grabbing"
-                    style={{ touchAction: 'none' }}
-                  />
+                      {/* Web Pinch/Pan Overlay: Allows native iframe scrolling at 100% zoom and handles drag pan when zoomed */}
+                      <div 
+                        onTouchStart={handlePdfTouchStart}
+                        onTouchMove={handlePdfTouchMove}
+                        onTouchEnd={handlePdfTouchEnd}
+                        className={`absolute inset-0 z-20 cursor-grab active:cursor-grabbing ${zoomLevel <= 100 ? 'pointer-events-none' : ''}`}
+                        style={{ touchAction: 'none' }}
+                      />
+                    </>
+                  )}
                 </>
               ) : (
                 <div className="flex-1 p-6 sm:p-16 flex flex-col items-center justify-center text-center space-y-4 bg-slate-50">

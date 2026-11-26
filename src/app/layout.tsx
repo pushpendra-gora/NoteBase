@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import ServiceWorkerRegistrar from '../components/ServiceWorkerRegistrar';
 
 export const metadata: Metadata = {
   title: 'NoteBase | Student Resource & Notes Portal',
@@ -32,6 +33,7 @@ export default function RootLayout({
         <link rel="apple-touch-icon" href="/logo.png?v=2" />
       </head>
       <body className="min-h-screen bg-slate-50 text-slate-800 antialiased selection:bg-slate-200">
+        <ServiceWorkerRegistrar />
         {children}
       </body>
     </html>

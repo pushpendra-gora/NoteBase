@@ -83,10 +83,13 @@ export default function NoteBaseHome() {
     }
   }, [selectedYear, selectedBranch, selectedSemester, selectedType]);
 
-  // Reset search button spinner when returning back to Home
+  // Reset search button spinner when returning back to Home and prefetch results shell for offline speed
   useEffect(() => {
     setIsSearching(false);
-  }, []);
+    try {
+      router.prefetch('/results');
+    } catch {}
+  }, [router]);
 
   // Dropdown open states
   const [yearOpen, setYearOpen] = useState(false);
@@ -211,7 +214,17 @@ export default function NoteBaseHome() {
       type: selectedType
     }).toString();
 
-    router.push(`/results?${query}`);
+    const targetUrl = `/results?${query}`;
+    const bridge = typeof window !== 'undefined' ? (window as any).NoteBaseAndroid : null;
+    const isOffline =
+      typeof navigator !== 'undefined' && (!navigator.onLine || (bridge?.isNetworkConnected && !bridge.isNetworkConnected()));
+
+    if (isOffline) {
+      window.location.assign(targetUrl);
+      return;
+    }
+
+    router.push(targetUrl);
   };
 
   // Branch button label text
