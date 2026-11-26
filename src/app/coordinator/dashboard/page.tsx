@@ -39,7 +39,8 @@ import {
   Database,
   Cloud,
   RefreshCw,
-  Settings
+  Settings,
+  Menu
 } from 'lucide-react';
 import { 
   getDocumentsFor, 
@@ -152,8 +153,9 @@ function DashboardContent() {
     return found ? found.name : 'Coordinator';
   }, [searchParams, yearParam, branchParam]);
 
-  // Left sidebar active navigation tab
+  // Left sidebar active navigation tab & mobile drawer state
   const [activeNav, setActiveNav] = useState<'Dashboard' | 'Upload' | 'Notes' | 'PYQs' | 'Lectures' | 'Add Subject'>('Dashboard');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   // Lecture Edit & Search State
   const [editingLecture, setEditingLecture] = useState<LectureItem | null>(null);
@@ -1051,6 +1053,7 @@ function DashboardContent() {
   // Navigation handlers
   const navigateToSection = (section: 'Dashboard' | 'Upload' | 'Notes' | 'PYQs' | 'Lectures' | 'Add Subject') => {
     setActiveNav(section);
+    setIsMobileSidebarOpen(false);
     if (section === 'Notes') {
       setManageTab('Notes');
     } else if (section === 'PYQs') {
@@ -1068,7 +1071,7 @@ function DashboardContent() {
   }
 
   return (
-    <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f8fafc] flex flex-col md:flex-row text-slate-800 selection:bg-purple-200 overflow-y-auto md:overflow-hidden">
+    <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f8fafc] flex flex-col md:flex-row text-slate-800 selection:bg-purple-200 overflow-hidden">
       
       {/* GLOBAL TOAST NOTIFICATION */}
       {toastMessage && (
@@ -1084,24 +1087,66 @@ function DashboardContent() {
         </div>
       )}
 
+      {/* MOBILE COMPACT TOP BAR (Minimized Sidebar Header on Mobile) */}
+      <div className="md:hidden bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between shrink-0 z-30 shadow-xs">
+        <Link href="/" className="flex items-center space-x-2.5">
+          <img src="/logo.png?v=2" alt="NoteBase Logo" className="w-8 h-8 object-contain" />
+          <span className="text-lg font-extrabold tracking-tight text-slate-900">
+            Note<span className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text text-transparent">Base</span>
+          </span>
+        </Link>
+        <div className="flex items-center space-x-2">
+          <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+            {activeNav}
+          </span>
+          <button
+            type="button"
+            onClick={() => setIsMobileSidebarOpen((v) => !v)}
+            aria-label={isMobileSidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
+            className="w-10 h-10 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center transition-colors cursor-pointer"
+          >
+            {isMobileSidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+        </div>
+      </div>
 
-      {/* 1. LEFT SIDEBAR (Matching reference image) */}
-      <aside className="w-full md:w-64 bg-white border-r border-slate-100 p-6 flex flex-col justify-between shrink-0 shadow-sm">
+      {/* MOBILE BACKDROP OVERLAY */}
+      {isMobileSidebarOpen && (
+        <div
+          onClick={() => setIsMobileSidebarOpen(false)}
+          className="fixed inset-0 bg-slate-900/40 backdrop-blur-[1px] z-40 md:hidden"
+        />
+      )}
+
+      {/* 1. LEFT SIDEBAR (Collapsible Drawer on Mobile, Static Sidebar on Desktop) */}
+      <aside className={`fixed inset-y-0 left-0 z-50 w-72 md:w-64 md:static bg-white border-r border-slate-100 p-6 flex flex-col justify-between shrink-0 shadow-xl md:shadow-sm overflow-y-auto transition-transform duration-200 ease-out ${
+        isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+      }`}>
         
         <div className="space-y-8">
-          {/* Top Logo */}
-          <Link href="/" className="flex items-center space-x-3 group">
-            <div className="w-10 h-10 flex items-center justify-center transition-transform group-hover:scale-105">
-              <img 
-                src="/logo.png?v=2" 
-                alt="NoteBase Logo" 
-                className="w-10 h-10 object-contain"
-              />
-            </div>
-            <span className="text-2xl font-extrabold tracking-tight text-slate-900">
-              Note<span className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text text-transparent">Base</span>
-            </span>
-          </Link>
+          {/* Top Logo + Mobile Close Button */}
+          <div className="flex items-center justify-between">
+            <Link href="/" className="flex items-center space-x-3 group">
+              <div className="w-10 h-10 flex items-center justify-center transition-transform group-hover:scale-105">
+                <img 
+                  src="/logo.png?v=2" 
+                  alt="NoteBase Logo" 
+                  className="w-10 h-10 object-contain"
+                />
+              </div>
+              <span className="text-2xl font-extrabold tracking-tight text-slate-900">
+                Note<span className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text text-transparent">Base</span>
+              </span>
+            </Link>
+            <button
+              type="button"
+              onClick={() => setIsMobileSidebarOpen(false)}
+              aria-label="Minimize sidebar"
+              className="md:hidden w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
 
           {/* Navigation Links - All 100% Clickable with Active Highlighting */}
           <nav className="space-y-1.5">
@@ -1188,7 +1233,10 @@ function DashboardContent() {
         {/* Bottom Profile Widget with Quick Logout & Details */}
         <div className="pt-6 border-t border-slate-100 flex items-center justify-between">
           <button 
-            onClick={() => setShowUserMenu(!showUserMenu)}
+            onClick={() => {
+              setShowUserMenu(!showUserMenu);
+              setIsMobileSidebarOpen(false);
+            }}
             className="flex items-center space-x-3 text-left hover:opacity-80 transition-opacity cursor-pointer flex-1"
           >
             <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-700 flex items-center justify-center shrink-0">

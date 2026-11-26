@@ -44,7 +44,8 @@ import {
   Cloud,
   Copy,
   RefreshCw,
-  Loader2
+  Loader2,
+  Menu
 } from 'lucide-react';
 import { 
   getSubjectsFor, 
@@ -142,10 +143,18 @@ export default function AdminPage() {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [passwordChangeError, setPasswordChangeError] = useState('');
 
-  // Active Navigation Tab State
+  // Active Navigation Tab State & Mobile Drawer Toggle
   const [activeNav, setActiveNav] = useState<
     'Dashboard' | 'Coordinators' | 'All Materials' | 'Upload Material' | 'Add Subject' | 'Manage by Year' | 'Manage by Branch' | 'Statistics' | 'Settings'
   >('Dashboard');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+
+  const selectAdminNav = (
+    nav: 'Dashboard' | 'Coordinators' | 'All Materials' | 'Upload Material' | 'Add Subject' | 'Manage by Year' | 'Manage by Branch' | 'Statistics' | 'Settings'
+  ) => {
+    setActiveNav(nav);
+    setIsMobileSidebarOpen(false);
+  };
 
   // Admin Add / Manage Subjects State
   const [subjYear, setSubjYear] = useState<YearOption>('2nd Year');
@@ -1807,27 +1816,70 @@ export default function AdminPage() {
   // "login ke baas esa dasbhaord ho aabhi esa bna do phir aabhi kuch bhi clcikable na ho"
   // =========================================================================
   return (
-    <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f8fafc] text-slate-800 flex flex-col md:flex-row antialiased selection:bg-purple-100 overflow-y-auto md:overflow-hidden">
+    <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f8fafc] text-slate-800 flex flex-col md:flex-row antialiased selection:bg-purple-100 overflow-hidden">
       
+      {/* MOBILE COMPACT TOP BAR (Minimized Sidebar Header on Mobile) */}
+      <div className="md:hidden bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between shrink-0 z-30 shadow-xs">
+        <Link href="/" className="flex items-center space-x-2.5">
+          <img src="/logo.png?v=2" alt="NoteBase Logo" className="w-8 h-8 object-contain" />
+          <span className="text-lg font-black text-slate-900 tracking-tight">
+            Note<span className="text-indigo-600">Base</span>
+          </span>
+        </Link>
+        <div className="flex items-center space-x-2">
+          <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+            {activeNav}
+          </span>
+          <button
+            type="button"
+            onClick={() => setIsMobileSidebarOpen((v) => !v)}
+            aria-label={isMobileSidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
+            className="w-10 h-10 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center transition-colors cursor-pointer"
+          >
+            {isMobileSidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+        </div>
+      </div>
+
+      {/* MOBILE BACKDROP OVERLAY */}
+      {isMobileSidebarOpen && (
+        <div
+          onClick={() => setIsMobileSidebarOpen(false)}
+          className="fixed inset-0 bg-slate-900/40 backdrop-blur-[1px] z-40 md:hidden"
+        />
+      )}
+
       {/* -------------------------------------------------------------------
-          LEFT SIDEBAR (Brand + Navigation Links + Admin Profile)
+          LEFT SIDEBAR (Collapsible Drawer on Mobile, Static Sidebar on Desktop)
          ------------------------------------------------------------------- */}
-      <aside className="w-full md:w-64 bg-white border-r border-slate-100/90 flex flex-col justify-between shrink-0 p-5 md:py-6 md:px-5 space-y-6">
+      <aside className={`fixed inset-y-0 left-0 z-50 w-72 md:w-64 md:static bg-white border-r border-slate-100/90 flex flex-col justify-between shrink-0 p-5 md:py-6 md:px-5 space-y-6 shadow-xl md:shadow-none overflow-y-auto transition-transform duration-200 ease-out ${
+        isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+      }`}>
         
-        {/* Top: Brand Logo */}
+        {/* Top: Brand Logo + Mobile Minimize Button */}
         <div className="space-y-6">
-          <Link href="/" className="flex items-center space-x-3 px-2 group">
-            <div className="w-10 h-10 flex items-center justify-center transition-transform group-hover:scale-105">
-              <img 
-                src="/logo.png?v=2" 
-                alt="NoteBase Logo" 
-                className="w-10 h-10 object-contain" 
-              />
-            </div>
-            <span className="text-xl font-black text-slate-900 tracking-tight">
-              Note<span className="text-indigo-600">Base</span>
-            </span>
-          </Link>
+          <div className="flex items-center justify-between px-2">
+            <Link href="/" className="flex items-center space-x-3 group">
+              <div className="w-10 h-10 flex items-center justify-center transition-transform group-hover:scale-105">
+                <img 
+                  src="/logo.png?v=2" 
+                  alt="NoteBase Logo" 
+                  className="w-10 h-10 object-contain" 
+                />
+              </div>
+              <span className="text-xl font-black text-slate-900 tracking-tight">
+                Note<span className="text-indigo-600">Base</span>
+              </span>
+            </Link>
+            <button
+              type="button"
+              onClick={() => setIsMobileSidebarOpen(false)}
+              aria-label="Minimize sidebar"
+              className="md:hidden w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
 
           {/* Navigation Menu Links */}
           <nav className="space-y-1.5 text-xs font-semibold">
@@ -1835,7 +1887,7 @@ export default function AdminPage() {
             {/* 1. Dashboard */}
             <button
               type="button"
-              onClick={() => setActiveNav('Dashboard')}
+              onClick={() => selectAdminNav('Dashboard')}
               className={`w-full flex items-center space-x-3.5 px-4 py-3 rounded-2xl transition-all cursor-pointer text-left ${
                 activeNav === 'Dashboard'
                   ? 'bg-[#3b49df] text-white font-bold shadow-md shadow-indigo-100'
@@ -1849,7 +1901,7 @@ export default function AdminPage() {
             {/* 2. Coordinators */}
             <button
               type="button"
-              onClick={() => setActiveNav('Coordinators')}
+              onClick={() => selectAdminNav('Coordinators')}
               className={`w-full flex items-center space-x-3.5 px-4 py-3 rounded-2xl transition-all cursor-pointer text-left ${
                 activeNav === 'Coordinators'
                   ? 'bg-[#3b49df] text-white font-bold shadow-md shadow-indigo-100'
@@ -1863,7 +1915,7 @@ export default function AdminPage() {
             {/* 3. All Materials */}
             <button
               type="button"
-              onClick={() => setActiveNav('All Materials')}
+              onClick={() => selectAdminNav('All Materials')}
               className={`w-full flex items-center space-x-3.5 px-4 py-3 rounded-2xl transition-all cursor-pointer text-left ${
                 activeNav === 'All Materials'
                   ? 'bg-[#3b49df] text-white font-bold shadow-md shadow-indigo-100'
@@ -1877,7 +1929,7 @@ export default function AdminPage() {
             {/* 4. Upload Material */}
             <button
               type="button"
-              onClick={() => setActiveNav('Upload Material')}
+              onClick={() => selectAdminNav('Upload Material')}
               className={`w-full flex items-center space-x-3.5 px-4 py-3 rounded-2xl transition-all cursor-pointer text-left ${
                 activeNav === 'Upload Material'
                   ? 'bg-[#3b49df] text-white font-bold shadow-md shadow-indigo-100'
@@ -1891,7 +1943,7 @@ export default function AdminPage() {
             {/* 5. Add Subject */}
             <button
               type="button"
-              onClick={() => setActiveNav('Add Subject')}
+              onClick={() => selectAdminNav('Add Subject')}
               className={`w-full flex items-center space-x-3.5 px-4 py-3 rounded-2xl transition-all cursor-pointer text-left ${
                 activeNav === 'Add Subject'
                   ? 'bg-[#3b49df] text-white font-bold shadow-md shadow-indigo-100'
@@ -1905,7 +1957,7 @@ export default function AdminPage() {
             {/* 5. Manage by Year */}
             <button
               type="button"
-              onClick={() => setActiveNav('Manage by Year')}
+              onClick={() => selectAdminNav('Manage by Year')}
               className={`w-full flex items-center space-x-3.5 px-4 py-3 rounded-2xl transition-all cursor-pointer text-left ${
                 activeNav === 'Manage by Year'
                   ? 'bg-[#3b49df] text-white font-bold shadow-md shadow-indigo-100'
@@ -1919,7 +1971,7 @@ export default function AdminPage() {
             {/* 6. Manage by Branch */}
             <button
               type="button"
-              onClick={() => setActiveNav('Manage by Branch')}
+              onClick={() => selectAdminNav('Manage by Branch')}
               className={`w-full flex items-center space-x-3.5 px-4 py-3 rounded-2xl transition-all cursor-pointer text-left ${
                 activeNav === 'Manage by Branch'
                   ? 'bg-[#3b49df] text-white font-bold shadow-md shadow-indigo-100'
@@ -1933,7 +1985,7 @@ export default function AdminPage() {
             {/* 7. Statistics */}
             <button
               type="button"
-              onClick={() => setActiveNav('Statistics')}
+              onClick={() => selectAdminNav('Statistics')}
               className={`w-full flex items-center space-x-3.5 px-4 py-3 rounded-2xl transition-all cursor-pointer text-left ${
                 activeNav === 'Statistics'
                   ? 'bg-[#3b49df] text-white font-bold shadow-md shadow-indigo-100'
@@ -1951,7 +2003,10 @@ export default function AdminPage() {
         <div className="pt-6 border-t border-slate-100 flex items-center justify-between">
           <button 
             type="button"
-            onClick={() => setShowProfileMenu(!showProfileMenu)}
+            onClick={() => {
+              setShowProfileMenu(!showProfileMenu);
+              setIsMobileSidebarOpen(false);
+            }}
             className="flex items-center space-x-3 text-left hover:opacity-80 transition-opacity cursor-pointer flex-1"
           >
             <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-700 flex items-center justify-center shrink-0">
