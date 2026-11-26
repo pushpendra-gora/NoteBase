@@ -37,8 +37,8 @@ public class NativePdfViewerView extends View {
 
     private static final float MIN_SCALE = 1.0f;
     private static final float MAX_SCALE = 4.0f;
-    private static final int MAX_RENDER_WIDTH_PX = 1600;
-    private static final int MAX_RENDER_HEIGHT_PX = 2260;
+    private static final int MAX_RENDER_WIDTH_PX = 1440;
+    private static final int MAX_RENDER_HEIGHT_PX = 2040;
 
     private final ExecutorService renderExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -106,9 +106,9 @@ public class NativePdfViewerView extends View {
         this.pagePaddingPx = 8f * density;
         this.pageGapPx = 10f * density;
 
-        // Allocate up to 1/4th of JVM heap (16 MB - 64 MB) so zoomed multi-page tiers never thrash
+        // Allocate up to 1/3rd of JVM heap (24 MB - 72 MB) so zoomed ARGB_8888 pages never thrash
         int maxMemKb = (int) (Runtime.getRuntime().maxMemory() / 1024L);
-        int cacheSizeKb = Math.min(64 * 1024, Math.max(16 * 1024, maxMemKb / 4));
+        int cacheSizeKb = Math.min(72 * 1024, Math.max(24 * 1024, maxMemKb / 3));
         this.bitmapCache = new LruCache<String, Bitmap>(cacheSizeKb) {
             @Override
             protected int sizeOf(String key, Bitmap bitmap) {
@@ -643,7 +643,8 @@ public class NativePdfViewerView extends View {
             Bitmap bmp = null;
             PdfRenderer.Page page = null;
             try {
-                bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.RGB_565);
+                // PdfRenderer strictly requires ARGB_8888 (RGB_565 throws IllegalArgumentException)
+                bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888);
                 bmp.eraseColor(Color.WHITE);
                 page = renderer.openPage(pageIndex);
                 page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);

@@ -79,6 +79,7 @@ import {
   getGoogleDriveConfig,
   saveGoogleDriveConfig
 } from '../../../lib/googleDriveService';
+import { extractPdfPageCount, formatFileSize } from '../../../lib/pdfMetadata';
 
 interface CoordinatorFile {
   id: string;
@@ -631,9 +632,8 @@ function DashboardContent() {
         }
       }
 
-      const calculatedSize = selectedFileObj 
-        ? `${(selectedFileObj.size / (1024 * 1024)).toFixed(1)} MB`
-        : `${(Math.random() * 3 + 2.5).toFixed(1)} MB`;
+      const calculatedSize = selectedFileObj ? formatFileSize(selectedFileObj.size) : '';
+      const realPageCount = selectedFileObj ? await extractPdfPageCount(selectedFileObj) : 0;
 
       const newId = `doc-${Date.now()}`;
 
@@ -655,12 +655,12 @@ function DashboardContent() {
         id: newFile.id,
         title: newFile.name,
         subject: finalSubject,
-        code: finalSubject.slice(0, 4).toUpperCase().replace(/[^A-Z]/g, '') + '101',
+        code: (finalSubject.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4) || 'SUB') + '101',
         year: yearParam,
         branch: branchParam,
         semester: finalSem,
         type: finalType,
-        pages: 24 + Math.floor(Math.random() * 20),
+        pages: realPageCount,
         size: calculatedSize,
         owner: finalOwner,
         file_url: uploadedFileUrl,

@@ -33,6 +33,7 @@ import { getDocumentsFor, getSubjectsFor, saveSubjectsFor, deleteCustomUploadedD
 import { BranchOption, NoteDocument, SemesterOption, YearOption, LectureItem } from '../../types';
 import { isSupabaseConfigured } from '../../lib/supabase';
 import { fetchDocumentsFromSupabase, fetchLecturesFromSupabase, fetchSubjectsFromSupabase } from '../../lib/supabaseService';
+import { formatFileSize } from '../../lib/pdfMetadata';
 
 function ResultsContent() {
   const searchParams = useSearchParams();
@@ -123,9 +124,20 @@ function ResultsContent() {
     }
   };
 
-  // Expose synchronous close helper for Android hardware back button
+  // Expose synchronous close helper for Android hardware back button (closes PDF or Video modal)
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    (window as any).__closeNoteBaseModalIfOpen = () => {
+      if (activeDoc) {
+        closeDocModal();
+        return true;
+      }
+      if (activeLecture) {
+        closeLectureModal();
+        return true;
+      }
+      return false;
+    };
     (window as any).__closeNoteBasePdfIfOpen = () => {
       if (activeDoc) {
         closeDocModal();
@@ -134,9 +146,10 @@ function ResultsContent() {
       return false;
     };
     return () => {
+      delete (window as any).__closeNoteBaseModalIfOpen;
       delete (window as any).__closeNoteBasePdfIfOpen;
     };
-  }, [activeDoc]);
+  }, [activeDoc, activeLecture]);
 
   const openLectureModal = (lec: LectureItem) => {
     if (typeof window !== 'undefined') {
@@ -348,6 +361,35 @@ function ResultsContent() {
     return new Set<string>();
   });
 
+  // Real PDF metadata (exact page count & size measured from actual PDF files)
+  const [realPdfMeta, setRealPdfMeta] = useState<Record<string, { pages: number; size: string }>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('notebase_real_pdf_meta');
+        if (saved) return JSON.parse(saved);
+      } catch {}
+    }
+    return {};
+  });
+
+  const saveRealPdfMeta = (docId: string, pages: number, fileSizeBytes?: number) => {
+    if (!docId || (pages <= 0 && (!fileSizeBytes || fileSizeBytes <= 0))) return;
+    const formattedSize = fileSizeBytes && fileSizeBytes > 0 ? formatFileSize(fileSizeBytes) : '';
+    setRealPdfMeta((prev) => {
+      const existing = prev[docId] || { pages: 0, size: '' };
+      const nextEntry = {
+        pages: pages > 0 ? pages : existing.pages,
+        size: formattedSize || existing.size,
+      };
+      if (existing.pages === nextEntry.pages && existing.size === nextEntry.size) return prev;
+      const next = { ...prev, [docId]: nextEntry };
+      try {
+        localStorage.setItem('notebase_real_pdf_meta', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
   // Reset iframe / native PDF loading state whenever student opens a new PDF
   useEffect(() => {
     if (!activeDoc) return;
@@ -386,10 +428,13 @@ function ResultsContent() {
       }
     };
 
-    (window as any).onNativePdfReady = (docId: string) => {
+    (window as any).onNativePdfReady = (docId: string, _fromCache?: boolean, pageCount?: number, fileSizeBytes?: number) => {
       if (docId !== activeDoc.id) return;
       setIsIframeLoading(false);
       setUseWebPdfFallback(false);
+      if (typeof pageCount === 'number' || typeof fileSizeBytes === 'number') {
+        saveRealPdfMeta(docId, pageCount || 0, fileSizeBytes || 0);
+      }
       setCachedPdfIds((prev) => {
         if (prev.has(docId)) return prev;
         const next = new Set(prev);
@@ -792,6 +837,13 @@ function ResultsContent() {
                 try {
                   if (bridge.isPdfCachedOnDisk(doc.id)) {
                     next.add(doc.id);
+                    if (bridge.getCachedPdfMeta) {
+                      const rawMeta = bridge.getCachedPdfMeta(doc.id);
+                      if (rawMeta) {
+                        const parsed = JSON.parse(rawMeta);
+                        saveRealPdfMeta(doc.id, parsed?.pages || 0, parsed?.sizeBytes || 0);
+                      }
+                    }
                   } else {
                     next.delete(doc.id);
                   }
@@ -1293,7 +1345,12 @@ function ResultsContent() {
 
                         <p className="text-[11px] sm:text-xs text-slate-500 font-medium flex items-center gap-x-1.5 gap-y-1 flex-wrap">
                           <strong className="text-slate-700 font-semibold">{doc.owner || 'Department Faculty'}</strong>
-                          <span>• {doc.pages} Pages • {doc.size}</span>
+                          {(realPdfMeta[doc.id]?.pages || doc.pages) > 0 && (
+                            <span>• {realPdfMeta[doc.id]?.pages || doc.pages} Pages</span>
+                          )}
+                          {(realPdfMeta[doc.id]?.size || doc.size) && (
+                            <span>• {realPdfMeta[doc.id]?.size || doc.size}</span>
+                          )}
                         </p>
                       </div>
                     </div>
@@ -1317,7 +1374,10 @@ function ResultsContent() {
                       {/* Open & View PDF */}
                       <button
                         type="button"
-                        onClick={() => openDocModal(doc)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openDocModal(doc);
+                        }}
                         className="flex-1 sm:flex-none inline-flex items-center justify-center space-x-2 px-4 sm:px-5 py-2.5 rounded-2xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs sm:text-sm font-semibold shadow-sm hover:shadow transition-all cursor-pointer"
                       >
                         <Eye className="w-4 h-4" />
@@ -1368,6 +1428,8 @@ function ResultsContent() {
                   </span>
                   <span className="text-[10px] sm:text-xs font-medium text-slate-500 truncate">
                     {activeDoc.year} • {activeDoc.branch} • {activeDoc.semester}
+                    {(realPdfMeta[activeDoc.id]?.pages || activeDoc.pages) > 0 && ` • ${realPdfMeta[activeDoc.id]?.pages || activeDoc.pages} Pages`}
+                    {(realPdfMeta[activeDoc.id]?.size || activeDoc.size) && ` • ${realPdfMeta[activeDoc.id]?.size || activeDoc.size}`}
                   </span>
                   {cachedPdfIds.has(activeDoc.id) && (
                     <span 

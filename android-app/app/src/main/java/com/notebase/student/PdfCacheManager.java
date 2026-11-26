@@ -126,14 +126,52 @@ public class PdfCacheManager {
         if (docId == null || docId.isEmpty()) return false;
         File file = getCachedFile(docId);
         File tmpFile = new File(cacheDir, sanitizeDocId(docId) + ".tmp");
+        File metaFile = new File(cacheDir, sanitizeDocId(docId) + ".meta");
         if (tmpFile.exists()) {
             //noinspection ResultOfMethodCallIgnored
             tmpFile.delete();
+        }
+        if (metaFile.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            metaFile.delete();
         }
         if (file.exists()) {
             return file.delete();
         }
         return false;
+    }
+
+    public void savePdfMeta(String docId, int pageCount, long sizeBytes) {
+        if (docId == null || docId.trim().isEmpty() || pageCount <= 0) return;
+        File metaFile = new File(cacheDir, sanitizeDocId(docId) + ".meta");
+        String content = pageCount + ":" + Math.max(0L, sizeBytes);
+        try (FileOutputStream out = new FileOutputStream(metaFile)) {
+            out.write(content.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException ignored) {}
+    }
+
+    public String getCachedPdfMetaJson(String docId) {
+        if (docId == null || docId.trim().isEmpty()) return null;
+        File pdfFile = getCachedFile(docId);
+        if (!pdfFile.exists() || pdfFile.length() <= 100) return null;
+
+        long sizeBytes = pdfFile.length();
+        int pages = 0;
+        File metaFile = new File(cacheDir, sanitizeDocId(docId) + ".meta");
+        if (metaFile.exists()) {
+            try (FileInputStream in = new FileInputStream(metaFile)) {
+                byte[] buf = new byte[64];
+                int n = in.read(buf);
+                if (n > 0) {
+                    String raw = new String(buf, 0, n, StandardCharsets.UTF_8).trim();
+                    String[] parts = raw.split(":");
+                    if (parts.length >= 1) {
+                        pages = Integer.parseInt(parts[0].trim());
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        return "{\"pages\":" + pages + ",\"sizeBytes\":" + sizeBytes + "}";
     }
 
     public void getOrDownloadPdf(String docId, String rawUrl, LoadCallback callback) {

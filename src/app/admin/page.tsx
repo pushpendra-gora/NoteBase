@@ -96,6 +96,7 @@ import {
   GoogleDriveConfig,
   lastGoogleDriveError
 } from '../../lib/googleDriveService';
+import { extractPdfPageCount, formatFileSize } from '../../lib/pdfMetadata';
 
 interface AdminMaterial {
   id: string;
@@ -1084,9 +1085,8 @@ export default function AdminPage() {
     const finalOwner = uploadOwnerName.trim() || 'Pushpendra Gora';
     const finalFileName = cleanTitle.toLowerCase().endsWith('.pdf') ? cleanTitle : `${cleanTitle}.pdf`;
     const finalType: 'Notes' | 'PYQ' = uploadType === 'PYQ' ? 'PYQ' : 'Notes';
-    const calculatedSize = selectedUploadFile 
-      ? `${(selectedUploadFile.size / (1024 * 1024)).toFixed(1)} MB`
-      : '3.4 MB';
+    const calculatedSize = selectedUploadFile ? formatFileSize(selectedUploadFile.size) : '';
+    const realPageCount = selectedUploadFile ? await extractPdfPageCount(selectedUploadFile) : 0;
 
     setIsUploadingMaterial(true);
 
@@ -1127,7 +1127,7 @@ export default function AdminPage() {
         branch: uploadBranch,
         semester: uploadSemester,
         type: finalType,
-        pages: 28,
+        pages: realPageCount,
         size: calculatedSize,
         owner: finalOwner,
         file_url: uploadedFileUrl,

@@ -337,41 +337,32 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
 
-                if (pdfNativeContainer.getVisibility() == View.VISIBLE) {
-                    webView.evaluateJavascript(
-                            "if (window.__closeNoteBasePdfIfOpen) { window.__closeNoteBasePdfIfOpen(); } else { false; }",
-                            value -> {
-                                if (!"true".equals(value)) {
+                webView.evaluateJavascript(
+                        "window.__closeNoteBaseModalIfOpen ? window.__closeNoteBaseModalIfOpen() : false",
+                        value -> {
+                            if ("true".equals(value)) {
+                                if (pdfNativeContainer != null && pdfNativeContainer.getVisibility() == View.VISIBLE) {
                                     pdfSessionToken++;
                                     pdfNativeContainer.setVisibility(View.GONE);
                                     if (nativePdfViewerView != null) {
                                         nativePdfViewerView.closeDocument();
                                     }
-                                    if (webView.canGoBack()) {
-                                        webView.goBack();
-                                    }
                                 }
+                                return;
                             }
-                    );
-                    return;
-                }
 
-                if (webView.canGoBack()) {
-                    String currentUrl = webView.getUrl();
-                    boolean isHome = currentUrl == null
-                            || currentUrl.equals(APP_URL)
-                            || currentUrl.equals(APP_URL + "/")
-                            || currentUrl.endsWith(".vercel.app")
-                            || currentUrl.endsWith(".vercel.app/");
+                            if (pdfNativeContainer != null && pdfNativeContainer.getVisibility() == View.VISIBLE) {
+                                pdfSessionToken++;
+                                pdfNativeContainer.setVisibility(View.GONE);
+                                if (nativePdfViewerView != null) {
+                                    nativePdfViewerView.closeDocument();
+                                }
+                                return;
+                            }
 
-                    if (isHome) {
-                        handleExitPrompt();
-                        return;
-                    }
-                    webView.goBack();
-                } else {
-                    handleExitPrompt();
-                }
+                            navigateBackFromWebView();
+                        }
+                );
             }
         });
 
@@ -395,6 +386,50 @@ public class MainActivity extends AppCompatActivity {
                     }
                 })
                 .start();
+    }
+
+    private boolean isHomeUrl(String url) {
+        if (url == null) return true;
+        try {
+            Uri uri = Uri.parse(url);
+            String path = uri.getPath();
+            return path == null || path.isEmpty() || "/".equals(path);
+        } catch (Exception e) {
+            return url.equals(APP_URL) || url.equals(APP_URL + "/");
+        }
+    }
+
+    private void navigateBackFromWebView() {
+        if (webView == null) {
+            handleExitPrompt();
+            return;
+        }
+        String currentUrl = webView.getUrl();
+        if (isHomeUrl(currentUrl)) {
+            handleExitPrompt();
+            return;
+        }
+
+        // If on /results (or subpage), jump directly back to the Home filter page in 1 press
+        if (currentUrl != null && currentUrl.contains("/results")) {
+            android.webkit.WebBackForwardList list = webView.copyBackForwardList();
+            int currentIdx = list.getCurrentIndex();
+            for (int i = currentIdx - 1; i >= 0; i--) {
+                String itemUrl = list.getItemAtIndex(i).getUrl();
+                if (isHomeUrl(itemUrl)) {
+                    webView.goBackOrForward(i - currentIdx);
+                    return;
+                }
+            }
+            webView.loadUrl(APP_URL);
+            return;
+        }
+
+        if (webView.canGoBack()) {
+            webView.goBack();
+        } else {
+            webView.loadUrl(APP_URL);
+        }
     }
 
     private void handleExitPrompt() {
@@ -709,11 +744,15 @@ public class MainActivity extends AppCompatActivity {
                             @Override
                             public void onOpened(int pageCount) {
                                 if (token != pdfSessionToken || isFinishing() || isDestroyed()) return;
+                                long fileBytes = pdfFile != null && pdfFile.exists() ? pdfFile.length() : 0L;
+                                if (pdfCacheManager != null) {
+                                    ioExecutor.execute(() -> pdfCacheManager.savePdfMeta(docId, pageCount, fileBytes));
+                                }
                                 pdfNativeContainer.setVisibility(View.VISIBLE);
                                 if (webView != null) {
                                     webView.evaluateJavascript(
                                             "if (window.onNativePdfReady) { window.onNativePdfReady("
-                                                    + JSONObject.quote(docId) + ", " + fromCache + ", " + pageCount + "); }",
+                                                    + JSONObject.quote(docId) + ", " + fromCache + ", " + pageCount + ", " + fileBytes + "); }",
                                             null
                                     );
                                 }
@@ -772,6 +811,11 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public boolean isPdfCachedOnDisk(String docId) {
             return pdfCacheManager != null && pdfCacheManager.isCached(docId);
+        }
+
+        @JavascriptInterface
+        public String getCachedPdfMeta(String docId) {
+            return pdfCacheManager != null ? pdfCacheManager.getCachedPdfMetaJson(docId) : null;
         }
 
         @JavascriptInterface
