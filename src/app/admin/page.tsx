@@ -99,6 +99,7 @@ import {
   deleteDocumentEverywhere
 } from '../../lib/googleDriveService';
 import { extractPdfPageCount, formatFileSize } from '../../lib/pdfMetadata';
+import PdfPreviewModal from '../../components/PdfPreviewModal';
 
 interface AdminMaterial {
   id: string;
@@ -111,6 +112,7 @@ interface AdminMaterial {
   uploadedBy: string;
   link?: string;
   file_url?: string;
+  file_path?: string;
 }
 
 type CoordinatorItem = CoordinatorRecord;
@@ -207,7 +209,8 @@ export default function AdminPage() {
             subject: d.subject,
             type: (d.type === 'PYQ' ? 'PYQs' : 'Notes') as 'Notes' | 'PYQs',
             uploadedBy: d.owner || 'Department',
-            file_url: d.file_url
+            file_url: d.file_url,
+            file_path: d.file_path
           })),
           ...lecs.map((l) => ({
             id: l.id,
@@ -249,7 +252,8 @@ export default function AdminPage() {
               subject: d.subject,
               type: (d.type === 'PYQ' ? 'PYQs' : 'Notes') as 'Notes' | 'PYQs',
               uploadedBy: d.owner || 'Department',
-              file_url: d.file_url
+              file_url: d.file_url,
+              file_path: d.file_path
             }));
 
             const newLecs: AdminMaterial[] = (supaLecs || []).map((l) => ({
@@ -1191,7 +1195,8 @@ export default function AdminPage() {
         subject: finalSubject,
         type: finalType === 'PYQ' ? 'PYQs' : 'Notes',
         uploadedBy: finalOwner,
-        file_url: uploadedFileUrl
+        file_url: uploadedFileUrl,
+        file_path: uploadedFilePath
       };
 
       setMaterials(prev => [newAdminMat, ...prev]);
@@ -4540,73 +4545,32 @@ export default function AdminPage() {
       </main>
 
       {/* =================================================================
-          MODAL: PREVIEW MATERIAL (Real PDF iframe)
+          MODAL: PREVIEW MATERIAL (Exact same Student PDF Viewer with 4-sided border, static header & pinch zoom)
          ================================================================= */}
-      {previewMaterial && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-4xl w-full h-[85vh] p-5 sm:p-6 shadow-2xl border border-slate-100 flex flex-col space-y-3">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 shrink-0">
-              <div className="flex items-center space-x-2.5 min-w-0">
-                <div className="w-8 h-8 rounded-xl bg-red-50 text-red-600 font-bold text-xs flex items-center justify-center border border-red-100 shrink-0">
-                  PDF
-                </div>
-                <div className="min-w-0">
-                  <h3 className="text-sm font-bold text-slate-900 truncate max-w-md">
-                    {previewMaterial.fileName}
-                  </h3>
-                  <p className="text-[11px] text-slate-400 truncate">
-                    {previewMaterial.subject} • {previewMaterial.branch} ({previewMaterial.year})
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setPreviewMaterial(null)}
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center cursor-pointer transition-colors shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="flex-1 w-full bg-slate-100 rounded-2xl overflow-hidden flex flex-col">
-              {previewMaterial.file_url ? (
-                <iframe
-                  src={previewMaterial.file_url.replace(/\/view(\?.*)?$/, '/preview')}
-                  title={previewMaterial.fileName}
-                  className="w-full h-full flex-1 border-0 bg-white"
-                  allow="autoplay; fullscreen"
-                />
-              ) : (
-                <div className="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-2">
-                  <FileText className="w-12 h-12 text-slate-400 mx-auto" />
-                  <p className="text-sm font-bold text-slate-700">No PDF File Attached</p>
-                  <p className="text-xs text-slate-400">
-                    Uploaded by {previewMaterial.uploadedBy} • Type: {previewMaterial.type}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-end space-x-2 pt-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => handleDownloadSingle(previewMaterial)}
-                className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold transition-all cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>{previewMaterial.file_url ? 'Download / View PDF' : 'Download'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setPreviewMaterial(null)}
-                className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <PdfPreviewModal
+        doc={
+          previewMaterial
+            ? {
+                id: previewMaterial.id,
+                title: previewMaterial.fileName,
+                type: previewMaterial.type,
+                subtitle: [
+                  previewMaterial.year,
+                  previewMaterial.branch,
+                  previewMaterial.semester,
+                  previewMaterial.subject,
+                ]
+                  .filter(Boolean)
+                  .join(' • '),
+                file_url: previewMaterial.file_url || previewMaterial.link,
+                file_path: previewMaterial.file_path,
+                missingAttachmentMessage: `Uploaded by ${previewMaterial.uploadedBy} • Type: ${previewMaterial.type}`,
+              }
+            : null
+        }
+        onClose={() => setPreviewMaterial(null)}
+        onDownload={previewMaterial ? () => handleDownloadSingle(previewMaterial) : undefined}
+      />
 
       {/* =================================================================
           MODAL: EDIT NOTE NAME

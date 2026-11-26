@@ -83,6 +83,7 @@ import {
   deleteDocumentEverywhere
 } from '../../../lib/googleDriveService';
 import { extractPdfPageCount, formatFileSize } from '../../../lib/pdfMetadata';
+import PdfPreviewModal from '../../../components/PdfPreviewModal';
 
 interface CoordinatorFile {
   id: string;
@@ -2495,58 +2496,32 @@ function DashboardContent() {
       )}
 
 
-      {/* View Preview Modal (Real PDF iframe) */}
-      {previewFile && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl p-5 sm:p-6 max-w-4xl w-full h-[85vh] shadow-2xl border border-slate-100 flex flex-col space-y-3">
-            <div className="flex items-start justify-between border-b border-slate-100 pb-3 shrink-0">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
-                  {previewFile.type}
-                </span>
-                <h4 className="text-base sm:text-lg font-bold text-slate-900 mt-1">{previewFile.name}</h4>
-                <p className="text-xs text-slate-500">{previewFile.semester} • {previewFile.subject} • {previewFile.size}</p>
-              </div>
-              <button onClick={() => setPreviewFile(null)} className="text-slate-400 hover:text-slate-700 p-1 cursor-pointer">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="flex-1 w-full bg-slate-100 rounded-2xl overflow-hidden flex flex-col">
-              {previewFile.file_url ? (
-                <iframe
-                  src={previewFile.file_url.replace(/\/view(\?.*)?$/, '/preview')}
-                  title={previewFile.name}
-                  className="w-full h-full flex-1 border-0 bg-white"
-                  allow="autoplay; fullscreen"
-                />
-              ) : (
-                <div className="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-2">
-                  <p className="text-sm font-bold text-slate-700">No PDF File Attached</p>
-                  <p className="text-xs text-slate-500">This record was created without an attached Google Drive PDF.</p>
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-between pt-2 shrink-0">
-              <button
-                onClick={() => handleDownloadFile(previewFile)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors flex items-center space-x-1.5 cursor-pointer"
-              >
-                <Download className="w-4 h-4" />
-                <span>{previewFile.file_url ? 'Download / View PDF' : 'No PDF'}</span>
-              </button>
-
-              <button
-                onClick={() => setPreviewFile(null)}
-                className="px-5 py-2 rounded-xl text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800 shadow-sm cursor-pointer"
-              >
-                Close Preview
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* View Preview Modal (Exact same Student PDF Viewer with 4-sided border, static header & pinch zoom) */}
+      <PdfPreviewModal
+        doc={
+          previewFile
+            ? {
+                id: previewFile.id,
+                title: previewFile.name,
+                type: previewFile.type,
+                subtitle: [
+                  yearParam,
+                  branchParam,
+                  previewFile.semester,
+                  previewFile.subject,
+                  previewFile.size,
+                ]
+                  .filter(Boolean)
+                  .join(' • '),
+                file_url: previewFile.file_url,
+                file_path: previewFile.file_path,
+                missingAttachmentMessage: 'This record was created without an attached Google Drive PDF.',
+              }
+            : null
+        }
+        onClose={() => setPreviewFile(null)}
+        onDownload={previewFile ? () => handleDownloadFile(previewFile) : undefined}
+      />
 
 
       {/* Change Password Modal */}
