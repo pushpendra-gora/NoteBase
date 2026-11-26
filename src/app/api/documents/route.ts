@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
 import { getStaffSession } from '@/lib/serverAuth';
+import { deleteFileFromGoogleDriveServer } from '@/lib/serverDrive';
 
 export const dynamic = 'force-dynamic';
 
@@ -228,6 +229,9 @@ export async function DELETE(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
     const type = searchParams.get('type');
+    const paramFileUrl = searchParams.get('fileUrl');
+    const paramFilePath = searchParams.get('filePath');
+    const customWebhook = req.headers.get('x-gdrive-webhook');
 
     if (!id) {
       return NextResponse.json(
@@ -244,6 +248,31 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
+    // Look up existing file_url / file_path before deleting DB row so Drive file can also be deleted
+    let fileRefToDelete: string | null = paramFileUrl || paramFilePath || null;
+    if (!fileRefToDelete) {
+      try {
+        if (type === 'PYQ' || type === 'PYQs') {
+          const { data } = await client.from('pyqs').select('file_url, file_path').eq('id', id).limit(1).maybeSingle();
+          fileRefToDelete = data?.file_url || data?.file_path || null;
+        } else if (type === 'Notes') {
+          const { data } = await client.from('notes').select('file_url, file_path').eq('id', id).limit(1).maybeSingle();
+          fileRefToDelete = data?.file_url || data?.file_path || null;
+        } else {
+          const [nRes, pRes] = await Promise.all([
+            client.from('notes').select('file_url, file_path').eq('id', id).limit(1).maybeSingle(),
+            client.from('pyqs').select('file_url, file_path').eq('id', id).limit(1).maybeSingle(),
+          ]);
+          fileRefToDelete = nRes.data?.file_url || nRes.data?.file_path || pRes.data?.file_url || pRes.data?.file_path || null;
+        }
+      } catch {
+        // Ignore lookup error and proceed
+      }
+    }
+
+    // Delete file from Google Drive first (best-effort, never blocks DB cleanup if Drive URL isn't set)
+    const driveResult = await deleteFileFromGoogleDriveServer(fileRefToDelete, client, customWebhook);
+
     // If type is known, delete from specific table. Otherwise delete from both.
     if (type === 'PYQ' || type === 'PYQs') {
       const { error } = await client.from('pyqs').delete().eq('id', id);
@@ -258,7 +287,14 @@ export async function DELETE(req: NextRequest) {
       ]);
     }
 
-    return NextResponse.json({ success: true, deletedId: id });
+    return NextResponse.json({
+      success: true,
+      deletedId: id,
+      driveAttempted: driveResult.attempted,
+      driveDeleted: driveResult.deleted,
+      driveNeedsScriptUpdate: driveResult.needsScriptUpdate,
+      driveError: driveResult.error,
+    });
   } catch (err: any) {
     console.error('API /api/documents DELETE error:', err);
     return NextResponse.json(

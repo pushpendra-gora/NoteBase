@@ -95,7 +95,8 @@ import {
   uploadUnifiedPdf,
   GOOGLE_APPS_SCRIPT_TEMPLATE,
   GoogleDriveConfig,
-  lastGoogleDriveError
+  lastGoogleDriveError,
+  deleteDocumentEverywhere
 } from '../../lib/googleDriveService';
 import { extractPdfPageCount, formatFileSize } from '../../lib/pdfMetadata';
 
@@ -1249,7 +1250,7 @@ export default function AdminPage() {
   const handleDeleteSingle = (id: string, fileName: string) => {
     setDeleteConfirm({
       title: 'Delete Material',
-      message: `Are you sure you want to delete "${fileName}"?`,
+      message: `Are you sure you want to delete "${fileName}" from database and Google Drive?`,
       onConfirm: async () => {
         const target = materials.find(m => m.id === id);
         setMaterials(prev => prev.filter(m => m.id !== id));
@@ -1265,33 +1266,33 @@ export default function AdminPage() {
               }
             } catch {}
           }
+          if (isSupabaseConfigured()) {
+            await deleteLectureFromSupabase(id);
+          }
+          showToast(`"${fileName}" deleted from database!`, 'success');
+          return;
+        }
+
+        deleteCustomUploadedDocument(id);
+        const docType = target?.type === 'PYQs' ? 'PYQ' : 'Notes';
+        const res = await deleteDocumentEverywhere({
+          id,
+          type: target?.type,
+          fileUrl: target?.file_url,
+          supabaseCreds: getSupabaseCredentials(),
+          supabaseFallback: () =>
+            isSupabaseConfigured()
+              ? deleteDocumentFromSupabase(id, undefined, docType)
+              : Promise.resolve(false),
+        });
+
+        if (res.driveDeleted) {
+          showToast(`"${fileName}" deleted from Database & Google Drive!`, 'success');
+        } else if (res.driveNeedsScriptUpdate) {
+          showToast(`"${fileName}" deleted from DB. Re-deploy Google Apps Script (Statistics) for Drive delete.`, 'info');
         } else {
-          deleteCustomUploadedDocument(id);
+          showToast(`"${fileName}" deleted from database!`, 'success');
         }
-
-        try {
-          const creds = getSupabaseCredentials();
-          const delHeaders: Record<string, string> = {};
-          if (creds.url && creds.key) {
-            delHeaders['x-supabase-url'] = creds.url;
-            delHeaders['x-supabase-key'] = creds.key;
-          }
-          if (target?.type === 'Lectures') {
-            if (isSupabaseConfigured()) await deleteLectureFromSupabase(id);
-          } else {
-            await fetch(`/api/documents?id=${encodeURIComponent(id)}&type=${target?.type || ''}`, {
-              method: 'DELETE',
-              headers: delHeaders,
-            });
-          }
-        } catch {
-          if (isSupabaseConfigured() && target && target.type !== 'Lectures') {
-            const docType = target.type === 'PYQs' ? 'PYQ' : 'Notes';
-            await deleteDocumentFromSupabase(id, undefined, docType);
-          }
-        }
-
-        showToast(`"${fileName}" deleted from database!`, 'success');
       }
     });
   };
@@ -1343,34 +1344,36 @@ export default function AdminPage() {
         }
 
         const creds = getSupabaseCredentials();
-        const delHeaders: Record<string, string> = {};
-        if (creds.url && creds.key) {
-          delHeaders['x-supabase-url'] = creds.url;
-          delHeaders['x-supabase-key'] = creds.key;
-        }
-        await Promise.all(
+        const results = await Promise.all(
           targets.map(async (t) => {
             if (t.type === 'Lectures') {
               if (isSupabaseConfigured()) await deleteLectureFromSupabase(t.id);
-              return;
+              return { driveDeleted: false, driveNeedsScriptUpdate: false };
             }
-            try {
-              const res = await fetch(`/api/documents?id=${encodeURIComponent(t.id)}&type=${encodeURIComponent(t.type)}`, {
-                method: 'DELETE',
-                headers: delHeaders,
-              });
-              if (!res.ok && isSupabaseConfigured()) {
-                await deleteDocumentFromSupabase(t.id, undefined, t.type === 'PYQs' ? 'PYQ' : 'Notes');
-              }
-            } catch {
-              if (isSupabaseConfigured()) {
-                await deleteDocumentFromSupabase(t.id, undefined, t.type === 'PYQs' ? 'PYQ' : 'Notes');
-              }
-            }
+            const docType = t.type === 'PYQs' ? 'PYQ' : 'Notes';
+            return deleteDocumentEverywhere({
+              id: t.id,
+              type: t.type,
+              fileUrl: t.file_url,
+              supabaseCreds: creds,
+              supabaseFallback: () =>
+                isSupabaseConfigured()
+                  ? deleteDocumentFromSupabase(t.id, undefined, docType)
+                  : Promise.resolve(false),
+            });
           })
         );
 
-        showToast(`${count} files deleted from database!`, 'success');
+        const driveDeletedCount = results.filter((r) => r.driveDeleted).length;
+        const needsScriptUpdate = results.some((r) => r.driveNeedsScriptUpdate);
+
+        if (driveDeletedCount > 0) {
+          showToast(`${count} files deleted from Database & ${driveDeletedCount} from Google Drive!`, 'success');
+        } else if (needsScriptUpdate) {
+          showToast(`${count} files deleted from DB. Re-deploy Google Apps Script (Statistics) for Drive delete.`, 'info');
+        } else {
+          showToast(`${count} files deleted from database!`, 'success');
+        }
       }
     });
   };

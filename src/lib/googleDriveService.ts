@@ -37,6 +37,29 @@ function doPost(e) {
   try {
     var rawData = e.postData.contents;
     var data = JSON.parse(rawData);
+
+    // Handle Delete Request from NoteBase Admin / Coordinator
+    if (data.action === 'delete') {
+      if (!data.fileId || String(data.fileId).trim() === "") {
+        return ContentService.createTextOutput(JSON.stringify({
+          success: false,
+          error: "Missing fileId for deletion"
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      var targetId = String(data.fileId).trim();
+      var targetFile = DriveApp.getFileById(targetId);
+      try {
+        targetFile.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);
+      } catch (shareErr) {
+        // Ignore if sharing permissions cannot be updated
+      }
+      targetFile.setTrashed(true);
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        deleted: true,
+        deletedFileId: targetId
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
     
     // Decode base64 PDF
     var decoded = Utilities.base64Decode(data.base64);
@@ -322,4 +345,97 @@ export async function uploadUnifiedPdf(
   }
 
   return null;
+}
+
+export async function deletePdfFromGoogleDrive(fileUrlOrPath?: string): Promise<{
+  deleted: boolean;
+  needsScriptUpdate?: boolean;
+}> {
+  if (!fileUrlOrPath) return { deleted: false };
+  const fileIdMatch =
+    fileUrlOrPath.match(/^gdrive:\/\/([a-zA-Z0-9_-]+)/) ||
+    fileUrlOrPath.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) ||
+    fileUrlOrPath.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  const fileId = fileIdMatch?.[1];
+  if (!fileId) return { deleted: false };
+
+  const { webhookUrl } = getGoogleDriveConfig();
+  if (!webhookUrl) return { deleted: false };
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'delete', fileId }),
+    });
+    const text = await res.text();
+    const parsed = JSON.parse(text);
+    if (parsed?.success && (parsed.deleted || parsed.deletedFileId)) {
+      return { deleted: true };
+    }
+    const errStr = String(parsed?.error || '');
+    return {
+      deleted: false,
+      needsScriptUpdate: errStr.includes('base64') || errStr.includes('Invalid argument'),
+    };
+  } catch {
+    return { deleted: false };
+  }
+}
+
+export async function deleteDocumentEverywhere(params: {
+  id: string;
+  type?: 'Notes' | 'PYQ' | 'PYQs';
+  fileUrl?: string;
+  filePath?: string;
+  supabaseCreds?: { url?: string; key?: string };
+  supabaseFallback?: () => Promise<boolean>;
+}): Promise<{
+  success: boolean;
+  driveDeleted: boolean;
+  driveAttempted: boolean;
+  driveNeedsScriptUpdate?: boolean;
+}> {
+  const { id, type, fileUrl, filePath, supabaseCreds, supabaseFallback } = params;
+  const headers: Record<string, string> = {};
+  if (supabaseCreds?.url && supabaseCreds?.key) {
+    headers['x-supabase-url'] = supabaseCreds.url;
+    headers['x-supabase-key'] = supabaseCreds.key;
+  }
+  const driveCfg = getGoogleDriveConfig();
+  if (driveCfg.webhookUrl) {
+    headers['x-gdrive-webhook'] = driveCfg.webhookUrl;
+  }
+
+  const query = new URLSearchParams({ id });
+  if (type) query.set('type', type);
+  if (fileUrl) query.set('fileUrl', fileUrl);
+  if (filePath) query.set('filePath', filePath);
+
+  try {
+    const res = await fetch(`/api/documents?${query.toString()}`, {
+      method: 'DELETE',
+      headers,
+    });
+    const data = await res.json();
+    if (res.ok && data?.success) {
+      return {
+        success: true,
+        driveDeleted: Boolean(data.driveDeleted),
+        driveAttempted: Boolean(data.driveAttempted),
+        driveNeedsScriptUpdate: Boolean(data.driveNeedsScriptUpdate),
+      };
+    }
+  } catch {
+    // Fall through to client fallback
+  }
+
+  const driveFallback = await deletePdfFromGoogleDrive(fileUrl || filePath);
+  const dbFallbackOk = supabaseFallback ? await supabaseFallback() : false;
+  return {
+    success: dbFallbackOk,
+    driveDeleted: driveFallback.deleted,
+    driveAttempted: Boolean(fileUrl || filePath),
+    driveNeedsScriptUpdate: driveFallback.needsScriptUpdate,
+  };
 }

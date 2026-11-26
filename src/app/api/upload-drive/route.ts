@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
 import { getStaffSession, isValidGoogleScriptUrl } from '@/lib/serverAuth';
+import { deleteFileFromGoogleDriveServer } from '@/lib/serverDrive';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -212,4 +213,45 @@ export async function GET() {
     configured: isConfigured,
     service: 'Google Drive PDF Upload Gateway',
   });
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    if (!getStaffSession(req)) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized. Please log in as Admin or Coordinator.' },
+        { status: 401 }
+      );
+    }
+
+    const body = await req.json();
+    const { fileUrl, filePath, fileId, scriptUrl } = body;
+    const candidate = fileUrl || filePath || (fileId ? `gdrive://${fileId}` : '');
+    const client = getSupabaseClient();
+
+    const result = await deleteFileFromGoogleDriveServer(candidate, client, scriptUrl);
+    if (!result.attempted && !result.deleted) {
+      return NextResponse.json(
+        { success: false, error: result.error || 'No valid Google Drive file ID provided.' },
+        { status: 400 }
+      );
+    }
+    if (!result.deleted) {
+      return NextResponse.json(
+        {
+          success: false,
+          needsScriptUpdate: result.needsScriptUpdate,
+          error: result.error || 'Failed to delete file from Google Drive.',
+        },
+        { status: 502 }
+      );
+    }
+
+    return NextResponse.json({ success: true, deleted: true });
+  } catch (error: any) {
+    return NextResponse.json(
+      { success: false, error: error?.message || 'Error deleting file from Google Drive.' },
+      { status: 500 }
+    );
+  }
 }

@@ -79,7 +79,8 @@ import {
   isGoogleDriveConfigured, 
   lastGoogleDriveError,
   getGoogleDriveConfig,
-  saveGoogleDriveConfig
+  saveGoogleDriveConfig,
+  deleteDocumentEverywhere
 } from '../../../lib/googleDriveService';
 import { extractPdfPageCount, formatFileSize } from '../../../lib/pdfMetadata';
 
@@ -734,36 +735,35 @@ function DashboardContent() {
     }
   };
 
-  // Handle Delete
+  // Handle Delete (Deletes from Database AND Google Drive)
   const handleDelete = (id: string, name: string) => {
     setDeleteConfirm({
       title: 'Delete File',
-      message: `Are you sure you want to delete "${name}"? This will remove it from the database.`,
+      message: `Are you sure you want to delete "${name}"? This will remove it from the database and Google Drive.`,
       onConfirm: async () => {
         const fileToDelete = files.find((f) => f.id === id);
         setFiles((prev) => prev.filter((f) => f.id !== id));
         deleteCustomUploadedDocument(id);
 
-        try {
-          const creds = getSupabaseCredentials();
-          const delHeaders: Record<string, string> = {};
-          if (creds.url && creds.key) {
-            delHeaders['x-supabase-url'] = creds.url;
-            delHeaders['x-supabase-key'] = creds.key;
-          }
-          const res = await fetch(`/api/documents?id=${encodeURIComponent(id)}&type=${fileToDelete?.type || ''}`, {
-            method: 'DELETE',
-            headers: delHeaders,
-          });
-          if (!res.ok && isSupabaseConfigured() && fileToDelete) {
-            await deleteDocumentFromSupabase(id, fileToDelete.file_path, fileToDelete.type);
-          }
-        } catch {
-          if (isSupabaseConfigured() && fileToDelete) {
-            await deleteDocumentFromSupabase(id, fileToDelete.file_path, fileToDelete.type);
-          }
+        const result = await deleteDocumentEverywhere({
+          id,
+          type: fileToDelete?.type,
+          fileUrl: fileToDelete?.file_url,
+          filePath: fileToDelete?.file_path,
+          supabaseCreds: getSupabaseCredentials(),
+          supabaseFallback: () =>
+            isSupabaseConfigured() && fileToDelete
+              ? deleteDocumentFromSupabase(id, fileToDelete.file_path, fileToDelete.type)
+              : Promise.resolve(false),
+        });
+
+        if (result.driveDeleted) {
+          showToast(`🗑️ "${name}" deleted from Database & Google Drive!`);
+        } else if (result.driveNeedsScriptUpdate) {
+          showToast(`🗑️ "${name}" removed from DB. Re-deploy Google Apps Script (Admin -> Statistics) to also delete Drive files.`);
+        } else {
+          showToast(`🗑️ "${name}" removed from repository.`);
         }
-        showToast(`🗑️ "${name}" removed from repository.`);
       }
     });
   };
