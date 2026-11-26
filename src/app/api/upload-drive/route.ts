@@ -1,11 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
+import { getStaffSession, isValidGoogleScriptUrl } from '@/lib/serverAuth';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
+    if (!getStaffSession(req)) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized. Please log in as Admin or Coordinator.' },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
     const { scriptUrl, fileName, mimeType, base64, folderId } = body;
 
@@ -72,6 +80,16 @@ export async function POST(req: NextRequest) {
         {
           success: false,
           error: 'Invalid URL: Your URL ends with /dev (test deployment), which forces Google login. Please click "Deploy" -> "New Deployment" -> select "Web app" -> set "Who has access" to "Anyone" -> Deploy, and copy the URL ending with /exec.'
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!isValidGoogleScriptUrl(targetScriptUrl)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid Google Apps Script URL. Only https://script.google.com/ URLs are allowed.'
         },
         { status: 400 }
       );

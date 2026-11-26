@@ -95,6 +95,8 @@ public class NativePdfViewerView extends View {
 
     // Guards against stale callbacks when switching/closing documents
     private long documentGeneration = 0L;
+    private volatile boolean isViewDestroyed = false;
+    private boolean touchMoved = false;
 
     public NativePdfViewerView(Context context) {
         super(context);
@@ -252,6 +254,10 @@ public class NativePdfViewerView extends View {
     }
 
     public void openPdfFile(File file, OpenListener listener) {
+        if (isViewDestroyed || renderExecutor.isShutdown()) {
+            if (listener != null) listener.onOpenFailed("Viewer destroyed");
+            return;
+        }
         closeDocumentInternal(false);
         final long gen = ++documentGeneration;
 
@@ -260,7 +266,8 @@ public class NativePdfViewerView extends View {
             return;
         }
 
-        renderExecutor.execute(() -> {
+        try {
+            renderExecutor.execute(() -> {
             ParcelFileDescriptor pfd = null;
             PdfRenderer renderer = null;
             try {
@@ -316,6 +323,7 @@ public class NativePdfViewerView extends View {
                 });
             }
         });
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {}
     }
 
     public void closeDocument() {
@@ -352,13 +360,22 @@ public class NativePdfViewerView extends View {
     }
 
     public void destroy() {
+        isViewDestroyed = true;
         closeDocumentInternal(false);
         renderExecutor.shutdownNow();
     }
 
     private void closeQuietlyOnExecutor(PdfRenderer r, ParcelFileDescriptor pfd) {
         if (r == null && pfd == null) return;
-        renderExecutor.execute(() -> closeQuietly(r, pfd));
+        if (isViewDestroyed || renderExecutor.isShutdown()) {
+            closeQuietly(r, pfd);
+            return;
+        }
+        try {
+            renderExecutor.execute(() -> closeQuietly(r, pfd));
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            closeQuietly(r, pfd);
+        }
     }
 
     private static void closeQuietly(PdfRenderer r, ParcelFileDescriptor pfd) {
@@ -441,7 +458,12 @@ public class NativePdfViewerView extends View {
         if (getParent() != null) {
             getParent().requestDisallowInterceptTouchEvent(true);
         }
-        if (event.getAction() == MotionEvent.ACTION_UP) {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            touchMoved = false;
+        } else if (action == MotionEvent.ACTION_MOVE || action == MotionEvent.ACTION_POINTER_DOWN) {
+            touchMoved = true;
+        } else if (action == MotionEvent.ACTION_UP && !touchMoved && !isScaling) {
             performClick();
         }
         boolean handled = scaleDetector.onTouchEvent(event);
@@ -567,6 +589,7 @@ public class NativePdfViewerView extends View {
     }
 
     private void requestPageRender(final int pageIndex, final int tier) {
+        if (isViewDestroyed || renderExecutor.isShutdown()) return;
         final String key = pageIndex + "_" + tier;
         if (inFlightKeys.contains(key)) return;
         final PdfRenderer renderer = this.pdfRenderer;
@@ -594,7 +617,8 @@ public class NativePdfViewerView extends View {
         final int bmpW = targetW;
         final int bmpH = targetH;
 
-        renderExecutor.execute(() -> {
+        try {
+            renderExecutor.execute(() -> {
             if (gen != documentGeneration || pdfRenderer != renderer) {
                 mainHandler.post(() -> inFlightKeys.remove(key));
                 return;
@@ -630,6 +654,9 @@ public class NativePdfViewerView extends View {
                 }
             });
         });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            inFlightKeys.remove(key);
+        }
     }
 
     private void triggerHud() {

@@ -111,6 +111,28 @@ function DashboardContent() {
   const yearParam = (searchParams.get('year') as YearOption) || '2nd Year';
   const branchParam = (searchParams.get('branch') as BranchOption) || 'CSE(AI&ML)';
 
+  // Auth Guard: Verify signed coordinator session cookie on mount
+  const [authChecked, setAuthChecked] = useState(false);
+  useEffect(() => {
+    let active = true;
+    fetch('/api/coordinator/auth')
+      .then((res) => res.json())
+      .then((data) => {
+        if (!active) return;
+        if (!data?.authenticated) {
+          router.replace('/coordinator');
+        } else {
+          setAuthChecked(true);
+        }
+      })
+      .catch(() => {
+        if (active) router.replace('/coordinator');
+      });
+    return () => {
+      active = false;
+    };
+  }, [router]);
+
   // Active logged-in coordinator name
   const coordinatorDisplayName = useMemo(() => {
     const nameInUrl = searchParams.get('name');
@@ -490,7 +512,10 @@ function DashboardContent() {
 
       const { createClient } = await import('@supabase/supabase-js');
       const testClient = createClient(cleanUrl, cleanKey);
-      await testClient.from('documents').select('id').limit(1);
+      const { error } = await testClient.from('notes').select('id').limit(1);
+      if (error) {
+        throw error;
+      }
 
       setSupabaseConnected(true);
       setSupabaseMessage({ text: 'Connected successfully to Supabase Database & Storage!', type: 'success' });
@@ -722,61 +747,56 @@ function DashboardContent() {
     });
   };
 
-  // Handle Edit Save
-  const handleSaveEdit = () => {
+  // Handle Edit Save (Persists to Supabase + localStorage + React state)
+  const handleSaveEdit = async () => {
     if (!editingFile || !newEditName.trim()) return;
-    const cleanName = newEditName.trim();
-    const formatted = cleanName;
+    const formatted = newEditName.trim();
+    const targetId = editingFile.id;
+    const targetType = editingFile.type;
 
     setFiles((prev) =>
-      prev.map((f) => (f.id === editingFile.id ? { ...f, name: formatted } : f))
+      prev.map((f) => (f.id === targetId ? { ...f, name: formatted } : f))
     );
+
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('notehub_custom_documents');
+        if (raw) {
+          const docs: NoteDocument[] = JSON.parse(raw);
+          const updated = docs.map((d) => (d.id === targetId ? { ...d, title: formatted } : d));
+          localStorage.setItem('notehub_custom_documents', JSON.stringify(updated));
+        }
+      } catch {}
+    }
+
+    try {
+      const creds = getSupabaseCredentials();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (creds.url && creds.key) {
+        headers['x-supabase-url'] = creds.url;
+        headers['x-supabase-key'] = creds.key;
+      }
+      await fetch('/api/documents', {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ id: targetId, title: formatted, type: targetType }),
+      });
+    } catch {}
+
     showToast(`✏️ Renamed to "${formatted}"`);
     setEditingFile(null);
     setNewEditName('');
   };
 
-  // Handle Password Change (Syncs to Supabase database table `coordinators`)
+  // Handle Password Change (Processed securely on server via PATCH /api/coordinator/auth)
   const handleChangePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setPasswordError('');
 
-    // Retrieve active coordinator identifier
-    let activeCoordId = '';
-    if (typeof window !== 'undefined') {
-      try {
-        const raw = sessionStorage.getItem('notehub_active_coordinator');
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          activeCoordId = parsed.id || '';
-        }
-      } catch {}
+    if (!currentPassword.trim()) {
+      setPasswordError('Please enter your current password.');
+      return;
     }
-
-    // Fetch latest coordinator list to verify current password
-    let currentList = getStoredCoordinators();
-    if (isSupabaseConfigured()) {
-      try {
-        const cloud = await fetchCoordinatorsFromSupabase();
-        if (cloud && cloud.length > 0) {
-          currentList = cloud;
-          saveStoredCoordinators(cloud);
-        }
-      } catch {}
-    }
-
-    const currentCoord = currentList.find((c) => {
-      if (activeCoordId && c.id === activeCoordId) return true;
-      return c.year === yearParam && isBranchMatch(c.branch, branchParam);
-    });
-
-    if (currentCoord && currentCoord.password) {
-      if (currentPassword.trim() !== currentCoord.password.trim()) {
-        setPasswordError('Current password does not match.');
-        return;
-      }
-    }
-
     if (!newPassword || newPassword.length < 4) {
       setPasswordError('New password must be at least 4 characters long.');
       return;
@@ -786,40 +806,29 @@ function DashboardContent() {
       return;
     }
 
-    const cleanNewPassword = newPassword.trim();
-    const targetId = currentCoord?.id || activeCoordId;
-
-    // 1. Update in Supabase PostgreSQL `coordinators` table
-    if (isSupabaseConfigured()) {
-      try {
-        await updateCoordinatorPasswordInSupabase(
-          { id: targetId, year: yearParam, branch: branchParam },
-          cleanNewPassword
-        );
-      } catch (err) {
-        console.error('Failed to update coordinator password in Supabase:', err);
-      }
-    }
-
-    // 2. Update local state and storage
     try {
-      const updated = currentList.map((c) => {
-        const isMatch = targetId ? c.id === targetId : (c.year === yearParam && isBranchMatch(c.branch, branchParam));
-        if (isMatch) {
-          return { ...c, password: cleanNewPassword };
-        }
-        return c;
+      const res = await fetch('/api/coordinator/auth', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          currentPassword: currentPassword.trim(),
+          newPassword: newPassword.trim(),
+        }),
       });
-      saveStoredCoordinators(updated);
-    } catch (err) {
-      console.error('Failed to sync updated coordinator password in localStorage', err);
-    }
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setPasswordError(data.error || 'Failed to update password.');
+        return;
+      }
 
-    setShowChangePasswordModal(false);
-    setCurrentPassword('');
-    setNewPassword('');
-    setConfirmPassword('');
-    showToast('🔐 Password updated successfully in Supabase database!');
+      setShowChangePasswordModal(false);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      showToast('🔐 Password updated successfully in Supabase database!');
+    } catch {
+      setPasswordError('Network error while updating password.');
+    }
   };
 
   // Handle PDF Download / Direct Open (Real PDF directly from Google Drive / Supabase)
@@ -949,7 +958,8 @@ function DashboardContent() {
       showToast('⚠️ Please enter subject title!');
       return;
     }
-    const cleanCode = newSubjectCode.trim() || cleanTitle.slice(0, 4).toUpperCase().replace(/[^A-Z]/g, '') + '101';
+    const alphaPrefix = cleanTitle.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4) || 'SUB';
+    const cleanCode = newSubjectCode.trim() || `${alphaPrefix}101`;
 
     const newSubj: SubjectMeta = {
       title: cleanTitle,
@@ -1003,7 +1013,8 @@ function DashboardContent() {
     if (!editingSubject || !editSubjectTitle.trim()) return;
     const oldTitle = editingSubject.title;
     const cleanTitle = editSubjectTitle.trim();
-    const cleanCode = editSubjectCode.trim() || cleanTitle.slice(0, 4).toUpperCase().replace(/[^A-Z]/g, '') + '101';
+    const alphaPrefix = cleanTitle.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4) || 'SUB';
+    const cleanCode = editSubjectCode.trim() || `${alphaPrefix}101`;
 
     updateSubjectFor(yearParam, branchParam, activeSubjectSemester, oldTitle, {
       title: cleanTitle,
@@ -1038,8 +1049,16 @@ function DashboardContent() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  if (!authChecked) {
+    return (
+      <div className="h-[100dvh] w-full bg-[#f8fafc] flex items-center justify-center text-slate-500 text-sm font-semibold">
+        Verifying coordinator session...
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-[#f8fafc] flex flex-col md:flex-row text-slate-800 selection:bg-purple-200">
+    <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f8fafc] flex flex-col md:flex-row text-slate-800 selection:bg-purple-200 overflow-y-auto md:overflow-hidden">
       
       {/* GLOBAL TOAST NOTIFICATION */}
       {toastMessage && (
@@ -1175,13 +1194,20 @@ function DashboardContent() {
             </div>
           </button>
 
-          <Link
-            href="/coordinator"
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                await fetch('/api/coordinator/auth', { method: 'DELETE' });
+                sessionStorage.removeItem('notehub_active_coordinator');
+              } catch {}
+              router.push('/coordinator');
+            }}
             title="Logout / Change Branch"
             className="w-9 h-9 rounded-xl hover:bg-red-50 text-slate-400 hover:text-red-600 flex items-center justify-center transition-colors cursor-pointer shrink-0"
           >
             <LogOut className="w-4 h-4" />
-          </Link>
+          </button>
         </div>
 
       </aside>

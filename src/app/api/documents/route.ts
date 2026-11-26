@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
+import { getStaffSession } from '@/lib/serverAuth';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +23,7 @@ export async function GET(req: NextRequest) {
     const subject = searchParams.get('subject');
     const type = searchParams.get('type'); // 'Notes' or 'PYQ' or 'All'
 
-    const client = resolveClient(req);
+    const client = getSupabaseClient();
     if (!client) {
       return NextResponse.json(
         { success: false, error: 'Database service is unreachable on the server.' },
@@ -78,6 +79,13 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
+    if (!getStaffSession(req)) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized. Staff sign-in required.' },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
     const { id, title, subject, code, year, branch, semester, type, pages, size, owner, file_url, file_path } = body;
 
@@ -157,8 +165,66 @@ export async function POST(req: NextRequest) {
  * DELETE /api/documents
  * Deletes a document from Supabase
  */
+export async function PATCH(req: NextRequest) {
+  try {
+    if (!getStaffSession(req)) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized. Staff sign-in required.' },
+        { status: 401 }
+      );
+    }
+
+    const body = await req.json();
+    const { id, title, type } = body;
+
+    if (!id || !title || !title.trim()) {
+      return NextResponse.json(
+        { success: false, error: 'Document ID and Title are required.' },
+        { status: 400 }
+      );
+    }
+
+    const client = resolveClient(req);
+    if (!client) {
+      return NextResponse.json(
+        { success: false, error: 'Supabase client is not connected.' },
+        { status: 503 }
+      );
+    }
+
+    const cleanTitle = title.trim();
+    if (type === 'PYQ' || type === 'PYQs') {
+      const { error } = await client.from('pyqs').update({ title: cleanTitle }).eq('id', id);
+      if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    } else if (type === 'Notes') {
+      const { error } = await client.from('notes').update({ title: cleanTitle }).eq('id', id);
+      if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    } else {
+      await Promise.all([
+        client.from('notes').update({ title: cleanTitle }).eq('id', id),
+        client.from('pyqs').update({ title: cleanTitle }).eq('id', id),
+      ]);
+    }
+
+    return NextResponse.json({ success: true, id, title: cleanTitle });
+  } catch (err: any) {
+    console.error('API /api/documents PATCH error:', err);
+    return NextResponse.json(
+      { success: false, error: err?.message || 'Internal server error while updating document.' },
+      { status: 500 }
+    );
+  }
+}
+
 export async function DELETE(req: NextRequest) {
   try {
+    if (!getStaffSession(req)) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized. Staff sign-in required.' },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
     const type = searchParams.get('type');

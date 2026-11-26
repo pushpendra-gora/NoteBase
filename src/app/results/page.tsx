@@ -29,7 +29,7 @@ import {
   AlertCircle,
   Loader2
 } from 'lucide-react';
-import { getDocumentsFor, getSubjectsFor, saveSubjectsFor, SubjectMeta } from '../../data/notesData';
+import { getDocumentsFor, getSubjectsFor, saveSubjectsFor, deleteCustomUploadedDocument, SubjectMeta } from '../../data/notesData';
 import { BranchOption, NoteDocument, SemesterOption, YearOption, LectureItem } from '../../types';
 import { isSupabaseConfigured } from '../../lib/supabase';
 import { fetchDocumentsFromSupabase, fetchLecturesFromSupabase, fetchSubjectsFromSupabase } from '../../lib/supabaseService';
@@ -280,9 +280,12 @@ function ResultsContent() {
       const deltaY = e.touches[0].clientY - lastTouchPosRef.current.y;
       lastTouchPosRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
 
+      const currentZoom = zoomLevelFloatRef.current;
+      const maxPanX = Math.max(0, ((currentZoom - 100) / 100) * 220);
+      const maxPanY = Math.max(120, ((currentZoom - 100) / 100) * 320);
       setPanPosition((prev) => ({
-        x: zoomLevel > 100 ? prev.x + deltaX : 0,
-        y: prev.y + deltaY,
+        x: currentZoom > 100 ? Math.max(-maxPanX, Math.min(maxPanX, prev.x + deltaX)) : 0,
+        y: Math.max(-maxPanY, Math.min(maxPanY, prev.y + deltaY)),
       }));
     }
   };
@@ -539,9 +542,6 @@ function ResultsContent() {
     }
   };
 
-  // Supabase cloud documents
-  const [supabaseDocs, setSupabaseDocs] = useState<NoteDocument[]>([]);
-
   // Lecture items (from LocalStorage and Supabase Cloud)
   const [localLectures, setLocalLectures] = useState<LectureItem[]>([]);
   const [cloudLectures, setCloudLectures] = useState<LectureItem[]>([]);
@@ -661,20 +661,15 @@ function ResultsContent() {
     if (isSupabaseConfigured()) {
       fetchDocumentsFromSupabase(year, branch, semester, targetType)
         .then((allDocs) => {
-          if (!isMounted || !allDocs || allDocs.length === 0) return;
-          setSubjectDocsCache((prev) => {
-            const next = { ...prev };
-            for (const doc of allDocs) {
-              const subj = doc.subject;
-              if (subj) {
-                const existing = next[subj] || [];
-                if (!existing.some((d) => d.id === doc.id)) {
-                  next[subj] = [...existing, doc];
-                }
-              }
+          if (!isMounted || !Array.isArray(allDocs)) return;
+          const grouped: Record<string, NoteDocument[]> = {};
+          for (const doc of allDocs) {
+            if (doc.subject) {
+              if (!grouped[doc.subject]) grouped[doc.subject] = [];
+              grouped[doc.subject].push(doc);
             }
-            return next;
-          });
+          }
+          setSubjectDocsCache(grouped);
         })
         .catch(() => {});
     }
@@ -773,12 +768,15 @@ function ResultsContent() {
             }
           }
 
-          // 2. Evict physical .pdf files from native Android cache if removed on server
-          if (bridge?.removeCachedPdf && deletedIds.size > 0) {
+          // 2. Evict physical .pdf files from native Android cache & local custom docs if removed on server
+          if (deletedIds.size > 0) {
             for (const deletedId of Array.from(deletedIds)) {
-              try {
-                bridge.removeCachedPdf(deletedId);
-              } catch {}
+              deleteCustomUploadedDocument(deletedId);
+              if (bridge?.removeCachedPdf) {
+                try {
+                  bridge.removeCachedPdf(deletedId);
+                } catch {}
+              }
             }
           }
 
@@ -807,12 +805,10 @@ function ResultsContent() {
           });
         } catch {}
 
-        const combined = [...fetchedDocs, ...localDocs.filter((d) => !fetchedIds.has(d.id))];
-
         if (isMounted) {
           setSubjectDocsCache((prev) => ({
             ...prev,
-            [activeSubject]: combined
+            [activeSubject]: fetchedDocs
           }));
           setIsLoadingSubjectDocs(false);
         }

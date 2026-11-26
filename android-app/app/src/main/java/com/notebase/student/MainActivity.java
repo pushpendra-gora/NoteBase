@@ -154,7 +154,7 @@ public class MainActivity extends AppCompatActivity {
         webSettings.setBuiltInZoomControls(false);
         webSettings.setDisplayZoomControls(false);
         webSettings.setMediaPlaybackRequiresUserGesture(false);
-        webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+        webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
 
         updateWebViewCacheMode(isDeviceOnline());
         registerLiveNetworkMonitor();
@@ -317,8 +317,19 @@ public class MainActivity extends AppCompatActivity {
 
                 if (pdfNativeContainer.getVisibility() == View.VISIBLE) {
                     webView.evaluateJavascript(
-                            "if (window.__closeNoteBasePdfIfOpen) { window.__closeNoteBasePdfIfOpen(); } else { history.back(); }",
-                            null
+                            "if (window.__closeNoteBasePdfIfOpen) { window.__closeNoteBasePdfIfOpen(); } else { false; }",
+                            value -> {
+                                if (!"true".equals(value)) {
+                                    pdfSessionToken++;
+                                    pdfNativeContainer.setVisibility(View.GONE);
+                                    if (nativePdfViewerView != null) {
+                                        nativePdfViewerView.closeDocument();
+                                    }
+                                    if (webView.canGoBack()) {
+                                        webView.goBack();
+                                    }
+                                }
+                            }
                     );
                     return;
                 }

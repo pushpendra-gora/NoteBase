@@ -106,7 +106,7 @@ export default function CoordinatorLoginPage() {
       return;
     }
 
-    // 1. First authenticate securely via server-side /api/coordinator/auth (No passwords exposed to browser)
+    // Authenticate securely via server-side /api/coordinator/auth (No passwords exposed to browser)
     try {
       const response = await fetch('/api/coordinator/auth', {
         method: 'POST',
@@ -140,64 +140,18 @@ export default function CoordinatorLoginPage() {
         }).toString();
         router.push(`/coordinator/dashboard?${query}`);
         return;
-      } else if (response.status === 401 || response.status === 403 || response.status === 404) {
-        setErrorMsg(data.error || 'Authentication failed.');
-        return;
       }
+
+      setErrorMsg(data.error || 'Authentication failed.');
+      return;
     } catch {
-      // If server route is unreachable (e.g. offline dev), fall back to local validation
-    }
-
-    // 2. Offline fallback (only if server was unreachable)
-    const coordinatorsList = getStoredCoordinators();
-    const matchingCoord = coordinatorsList.find((c) => {
-      const yearMatch = c.year === selectedYear;
-      const branchMatch = isBranchMatch(c.branch, selectedBranch);
-      return yearMatch && branchMatch;
-    });
-
-    if (!matchingCoord) {
-      setErrorMsg(`No coordinator account found for ${selectedYear} - ${selectedBranch}. Please ask Admin to register you first.`);
+      setErrorMsg('Unable to reach authentication server. Please check your internet connection and try again.');
       return;
     }
-
-    if (matchingCoord.status === 'Inactive') {
-      setErrorMsg('Your coordinator account is currently set to Inactive. Please contact Admin.');
-      return;
-    }
-
-    const inputPassword = password.trim();
-    const correctPassword = (matchingCoord.password || '').trim();
-
-    if (!correctPassword || inputPassword !== correctPassword) {
-      setErrorMsg('Incorrect password! Please enter the valid coordinator password assigned by Admin.');
-      return;
-    }
-
-    // Success! Store active coordinator session
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem('notehub_active_coordinator', JSON.stringify({
-        id: matchingCoord.id,
-        name: matchingCoord.name,
-        branch: selectedBranch,
-        year: selectedYear
-      }));
-    }
-
-    setLoginSuccess(true);
-
-    // Redirect to the Coordinator Dashboard for this Year & Branch with Coordinator Name
-    const query = new URLSearchParams({
-      year: selectedYear,
-      branch: selectedBranch,
-      name: matchingCoord.name
-    }).toString();
-
-    router.push(`/coordinator/dashboard?${query}`);
   };
 
   return (
-    <div className="min-h-screen bg-[#f3effb] relative flex flex-col items-center justify-center pt-[max(env(safe-area-inset-top),1.5rem)] pb-[max(env(safe-area-inset-bottom),1.5rem)] px-4 sm:p-6 overflow-x-hidden selection:bg-purple-200">
+    <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f3effb] relative flex flex-col items-center justify-center pt-[max(env(safe-area-inset-top),1.5rem)] pb-[max(env(safe-area-inset-bottom),1.5rem)] px-4 sm:p-6 overflow-y-auto overflow-x-hidden selection:bg-purple-200">
       
       {/* Background Soft Pastel Blobs matching the theme */}
       <div className="absolute top-[-80px] left-[-80px] w-96 h-96 bg-[#e8dcfa]/60 rounded-full blur-3xl pointer-events-none" />

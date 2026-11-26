@@ -727,7 +727,7 @@ export default function AdminPage() {
     setEditMaterialName(m.fileName);
   };
 
-  const handleSaveMaterialEdit = (e: React.FormEvent) => {
+  const handleSaveMaterialEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingMaterial) return;
     if (!editMaterialName.trim()) {
@@ -735,8 +735,11 @@ export default function AdminPage() {
       return;
     }
     const newName = editMaterialName.trim();
+    const targetId = editingMaterial.id;
+    const targetType = editingMaterial.type;
+
     setMaterials(prev => prev.map(m => {
-      if (m.id === editingMaterial.id) {
+      if (m.id === targetId) {
         return {
           ...m,
           fileName: newName
@@ -744,6 +747,37 @@ export default function AdminPage() {
       }
       return m;
     }));
+
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('notehub_custom_documents');
+        if (raw) {
+          const docs: NoteDocument[] = JSON.parse(raw);
+          const cleanTitle = newName.replace(/\.pdf$/i, '');
+          const updated = docs.map(d => d.id === targetId ? { ...d, title: cleanTitle } : d);
+          localStorage.setItem('notehub_custom_documents', JSON.stringify(updated));
+        }
+      } catch {}
+    }
+
+    try {
+      const creds = getSupabaseCredentials();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (creds.url && creds.key) {
+        headers['x-supabase-url'] = creds.url;
+        headers['x-supabase-key'] = creds.key;
+      }
+      await fetch('/api/documents', {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({
+          id: targetId,
+          title: newName.replace(/\.pdf$/i, ''),
+          type: targetType === 'PYQs' ? 'PYQ' : 'Notes',
+        }),
+      });
+    } catch {}
+
     showToast(`Note name updated to "${newName}"`, 'success');
     setEditingMaterial(null);
   };
@@ -783,7 +817,8 @@ export default function AdminPage() {
       return;
     }
 
-    const cleanCode = newAdminSubjectCode.trim() || cleanTitle.slice(0, 4).toUpperCase().replace(/[^A-Z]/g, '') + '101';
+    const alphaPrefix = cleanTitle.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4) || 'SUB';
+    const cleanCode = newAdminSubjectCode.trim() || `${alphaPrefix}101`;
     const newSubj: SubjectMeta = {
       title: cleanTitle,
       code: cleanCode,
@@ -900,7 +935,7 @@ export default function AdminPage() {
       // Ignore
     }
     return [];
-  }, [uploadYear, uploadBranch, uploadSemester]);
+  }, [uploadYear, uploadBranch, uploadSemester, adminSubjectsVersion]);
 
   // Change Year: reset downstream fields without auto-filling
   const handleUploadYearChange = (newYear: YearOption | '') => {
@@ -1079,7 +1114,7 @@ export default function AdminPage() {
         preview: [
           `Uploaded by: ${finalOwner}`,
           `Verified academic resource for ${finalSubject} (${uploadSemester}) in ${uploadBranch} (${uploadYear}).`,
-          uploadedFileUrl ? 'Official verified PDF hosted on Supabase Storage.' : 'Academic curriculum resource ready for viewing and download.'
+          uploadedFileUrl ? 'Official verified PDF hosted on Google Drive.' : 'Academic curriculum resource ready for viewing and download.'
         ]
       };
 
@@ -1176,7 +1211,20 @@ export default function AdminPage() {
         const target = materials.find(m => m.id === id);
         setMaterials(prev => prev.filter(m => m.id !== id));
         setSelectedMaterialIds(prev => prev.filter(item => item !== id));
-        deleteCustomUploadedDocument(id);
+
+        if (target?.type === 'Lectures') {
+          if (typeof window !== 'undefined') {
+            try {
+              const raw = localStorage.getItem('notehub_custom_lectures');
+              if (raw) {
+                const lecs = JSON.parse(raw);
+                localStorage.setItem('notehub_custom_lectures', JSON.stringify(lecs.filter((l: any) => l.id !== id)));
+              }
+            } catch {}
+          }
+        } else {
+          deleteCustomUploadedDocument(id);
+        }
 
         try {
           if (target?.type === 'Lectures') {
@@ -1187,7 +1235,7 @@ export default function AdminPage() {
             });
           }
         } catch {
-          if (isSupabaseConfigured() && target) {
+          if (isSupabaseConfigured() && target && target.type !== 'Lectures') {
             const docType = target.type === 'PYQs' ? 'PYQ' : 'Notes';
             await deleteDocumentFromSupabase(id, undefined, docType);
           }
@@ -1203,7 +1251,17 @@ export default function AdminPage() {
       showToast('Please select at least one file to download.', 'error');
       return;
     }
-    showToast(`Downloading archive for ${selectedMaterialIds.length} files...`, 'info');
+    const targets = materials.filter(m => selectedMaterialIds.includes(m.id));
+    const downloadable = targets.filter(m => m.file_url || m.link);
+    if (downloadable.length === 0) {
+      showToast('None of the selected files have downloadable attachments.', 'error');
+      return;
+    }
+    downloadable.forEach((m) => {
+      const url = m.file_url || m.link;
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+    });
+    showToast(`Opened ${downloadable.length} selected file(s).`, 'success');
   };
 
   const handleBulkDelete = () => {
@@ -1217,10 +1275,23 @@ export default function AdminPage() {
       message: `Are you sure you want to delete ${count} selected files from the database?`,
       onConfirm: async () => {
         const targets = materials.filter(m => selectedMaterialIds.includes(m.id));
-        setMaterials(prev => prev.filter(m => !selectedMaterialIds.includes(m.id)));
+        const targetIds = new Set(targets.map(t => t.id));
+        setMaterials(prev => prev.filter(m => !targetIds.has(m.id)));
         setSelectedMaterialIds([]);
 
-        targets.forEach(t => deleteCustomUploadedDocument(t.id));
+        targets.forEach(t => {
+          if (t.type !== 'Lectures') deleteCustomUploadedDocument(t.id);
+        });
+        if (typeof window !== 'undefined' && targets.some(t => t.type === 'Lectures')) {
+          try {
+            const raw = localStorage.getItem('notehub_custom_lectures');
+            if (raw) {
+              const lecs = JSON.parse(raw);
+              localStorage.setItem('notehub_custom_lectures', JSON.stringify(lecs.filter((l: any) => !targetIds.has(l.id))));
+            }
+          } catch {}
+        }
+
         if (isSupabaseConfigured()) {
           await Promise.all(
             targets.map(t =>
@@ -1560,7 +1631,7 @@ export default function AdminPage() {
   // =========================================================================
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen bg-[#f3effb] relative flex flex-col items-center justify-center p-4 sm:p-6 overflow-hidden selection:bg-purple-200">
+      <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f3effb] relative flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto overflow-x-hidden selection:bg-purple-200">
         
         {/* Ambient Background Glows */}
         <div className="absolute top-[-100px] left-[-100px] w-96 h-96 bg-[#e8dcfa]/70 rounded-full blur-3xl pointer-events-none" />
@@ -1671,7 +1742,7 @@ export default function AdminPage() {
   // "login ke baas esa dasbhaord ho aabhi esa bna do phir aabhi kuch bhi clcikable na ho"
   // =========================================================================
   return (
-    <div className="min-h-screen bg-[#f8fafc] text-slate-800 flex flex-col md:flex-row antialiased selection:bg-purple-100">
+    <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f8fafc] text-slate-800 flex flex-col md:flex-row antialiased selection:bg-purple-100 overflow-y-auto md:overflow-hidden">
       
       {/* -------------------------------------------------------------------
           LEFT SIDEBAR (Brand + Navigation Links + Admin Profile)

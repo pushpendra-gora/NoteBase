@@ -150,7 +150,13 @@ export function saveGoogleDriveConfig(config: Partial<GoogleDriveConfig>) {
  * Checks if Google Drive upload is properly configured and active.
  */
 export function isGoogleDriveConfigured(): boolean {
-  if (typeof window === 'undefined') return true;
+  if (typeof window === 'undefined') {
+    return Boolean(
+      process.env.GOOGLE_DRIVE_WEBHOOK_URL ||
+      process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL ||
+      process.env.GDRIVE_WEBHOOK_URL
+    );
+  }
   const customUrl = localStorage.getItem(STORAGE_KEYS.URL);
   if (customUrl && customUrl.startsWith('https://script.google.com/')) {
     const enabledStr = localStorage.getItem(STORAGE_KEYS.ENABLED);
@@ -159,7 +165,7 @@ export function isGoogleDriveConfigured(): boolean {
   if (process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL) {
     return true;
   }
-  return true;
+  return localStorage.getItem('notebase_gdrive_server_configured') === 'true';
 }
 
 /**

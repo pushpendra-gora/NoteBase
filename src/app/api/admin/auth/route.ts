@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
+import {
+  ADMIN_COOKIE_NAME,
+  createSignedSessionToken,
+  getAdminSession,
+  hashPassword,
+  verifyPassword,
+} from '@/lib/serverAuth';
 
 export const dynamic = 'force-dynamic';
-
-const ADMIN_COOKIE_NAME = 'notebase_admin_session';
 
 /**
  * Helper to fetch credentials securely on the server
@@ -60,7 +65,7 @@ export async function POST(req: NextRequest) {
       const creds = await getAdminServerCredentials();
 
       const isIdMatch = id.trim() === creds.id.trim();
-      const isPassMatch = password.trim() === creds.password.trim();
+      const isPassMatch = verifyPassword(password, creds.password);
 
       if (!isIdMatch || !isPassMatch) {
         return NextResponse.json(
@@ -69,7 +74,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Login success: Set secure session cookie
+      // Login success: Set signed secure session cookie
       const response = NextResponse.json({
         success: true,
         adminId: creds.id,
@@ -77,7 +82,7 @@ export async function POST(req: NextRequest) {
 
       response.cookies.set({
         name: ADMIN_COOKIE_NAME,
-        value: `auth_${Buffer.from(creds.id).toString('base64')}_${Date.now()}`,
+        value: createSignedSessionToken('admin', { id: creds.id }),
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'lax',
@@ -88,8 +93,16 @@ export async function POST(req: NextRequest) {
       return response;
     }
 
-    // 2. ACTION: CHANGE PASSWORD
+    // 2. ACTION: CHANGE PASSWORD (Requires active verified admin session)
     if (action === 'change-password') {
+      const session = getAdminSession(req);
+      if (!session) {
+        return NextResponse.json(
+          { success: false, error: 'Unauthorized. Please sign in as Admin first.' },
+          { status: 401 }
+        );
+      }
+
       if (!currentPassword || !newPassword) {
         return NextResponse.json(
           { success: false, error: 'Current password and new password are required.' },
@@ -99,21 +112,21 @@ export async function POST(req: NextRequest) {
 
       const creds = await getAdminServerCredentials();
 
-      if (currentPassword.trim() !== creds.password.trim()) {
+      if (!verifyPassword(currentPassword, creds.password)) {
         return NextResponse.json(
           { success: false, error: 'Current password does not match.' },
           { status: 400 }
         );
       }
 
-      const cleanNewPassword = newPassword.trim();
+      const hashedNewPassword = hashPassword(newPassword.trim());
       const client = getSupabaseClient();
       if (client) {
         await client
           .from('admin_credentials')
           .upsert({
             id: creds.id,
-            password: cleanNewPassword,
+            password: hashedNewPassword,
             updated_at: new Date().toISOString(),
           });
       }
@@ -145,9 +158,9 @@ export async function POST(req: NextRequest) {
  * GET handler to check session status
  */
 export async function GET(req: NextRequest) {
-  const cookie = req.cookies.get(ADMIN_COOKIE_NAME);
-  if (cookie && cookie.value) {
-    return NextResponse.json({ authenticated: true });
+  const session = getAdminSession(req);
+  if (session) {
+    return NextResponse.json({ authenticated: true, adminId: session.id });
   }
   return NextResponse.json({ authenticated: false });
 }

@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient, getSupabaseCredentials } from '@/lib/supabase';
+import { getStaffSession } from '@/lib/serverAuth';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const customUrl = req.headers.get('x-supabase-url') || undefined;
-  const customKey = req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined;
+  const isStaff = Boolean(getStaffSession(req));
+  const customUrl = isStaff ? (req.headers.get('x-supabase-url') || undefined) : undefined;
+  const customKey = isStaff ? (req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined) : undefined;
 
   const creds = getSupabaseCredentials(customUrl, customKey);
   let driveWebhookUrl = process.env.GOOGLE_DRIVE_WEBHOOK_URL || process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL || '';
@@ -19,8 +21,7 @@ export async function GET(req: NextRequest) {
       tables: {},
       googleDrive: { 
         configured: Boolean(driveWebhookUrl),
-        webhookUrl: driveWebhookUrl || undefined,
-        folderId: driveFolderId || undefined,
+        ...(isStaff ? { webhookUrl: driveWebhookUrl || undefined, folderId: driveFolderId || undefined } : {}),
       },
     });
   }
@@ -95,13 +96,12 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     success: !hasAnyTableError,
     connected: !hasAnyTableError,
-    supabaseUrl: creds.url,
+    ...(isStaff ? { supabaseUrl: creds.url } : {}),
     error: hasAnyTableError ? (primaryError || 'One or more Supabase tables are missing. Please run supabase-schema.sql in Supabase SQL Editor.') : null,
     tables: tablesStatus,
     googleDrive: { 
       configured: Boolean(driveWebhookUrl),
-      webhookUrl: driveWebhookUrl || undefined,
-      folderId: driveFolderId || undefined,
+      ...(isStaff ? { webhookUrl: driveWebhookUrl || undefined, folderId: driveFolderId || undefined } : {}),
     },
   });
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
+import { getAdminSession, hashPassword } from '@/lib/serverAuth';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,10 +12,17 @@ function resolveClient(req: NextRequest) {
 
 /**
  * GET /api/coordinators
- * Fetches all coordinators directly from Supabase
+ * Fetches all coordinators directly from Supabase (Admin only, never exposes passwords)
  */
 export async function GET(req: NextRequest) {
   try {
+    if (!getAdminSession(req)) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized. Admin sign-in required.' },
+        { status: 401 }
+      );
+    }
+
     const client = resolveClient(req);
     if (!client) {
       return NextResponse.json(
@@ -25,7 +33,7 @@ export async function GET(req: NextRequest) {
 
     const { data, error } = await client
       .from('coordinators')
-      .select('*')
+      .select('id, name, branch, year, initials, status, created_at')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -55,6 +63,13 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
+    if (!getAdminSession(req)) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized. Admin sign-in required.' },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
     const { id, name, branch, year, password, initials, status } = body;
 
@@ -93,7 +108,7 @@ export async function POST(req: NextRequest) {
       name: name.trim(),
       branch: branch.trim(),
       year: year.trim(),
-      password: password.trim(),
+      password: hashPassword(password.trim()),
       initials: cleanInitials,
       status: status || 'Active',
     };
@@ -135,7 +150,14 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      coordinator: record,
+      coordinator: {
+        id: record.id,
+        name: record.name,
+        branch: record.branch,
+        year: record.year,
+        initials: record.initials,
+        status: record.status,
+      },
       data,
     });
   } catch (err: any) {
@@ -153,6 +175,13 @@ export async function POST(req: NextRequest) {
  */
 export async function PUT(req: NextRequest) {
   try {
+    if (!getAdminSession(req)) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized. Admin sign-in required.' },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
     const { id, name, branch, year, password, initials, status } = body;
 
@@ -175,7 +204,7 @@ export async function PUT(req: NextRequest) {
     if (name) updatePayload.name = name.trim();
     if (branch) updatePayload.branch = branch.trim();
     if (year) updatePayload.year = year.trim();
-    if (password) updatePayload.password = password.trim();
+    if (password && password.trim()) updatePayload.password = hashPassword(password.trim());
     if (initials) updatePayload.initials = initials;
     if (status) updatePayload.status = status;
 
@@ -208,6 +237,13 @@ export async function PUT(req: NextRequest) {
  */
 export async function DELETE(req: NextRequest) {
   try {
+    if (!getAdminSession(req)) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized. Admin sign-in required.' },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
 
