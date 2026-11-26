@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
     const subject = searchParams.get('subject');
     const type = searchParams.get('type'); // 'Notes' or 'PYQ' or 'All'
 
-    const client = getSupabaseClient();
+    const client = resolveClient(req);
     if (!client) {
       return NextResponse.json(
         { success: false, error: 'Database service is unreachable on the server.' },
@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
     }
 
     const METADATA_COLUMNS = 'id, title, year, branch, semester, subject, code, pages, size, owner, file_url, file_path, created_at';
-    let allDocs: any[] = [];
+    const allDocs: any[] = [];
 
     // Query notes (only lightweight metadata from Supabase database)
     if (type !== 'PYQ') {
@@ -43,7 +43,10 @@ export async function GET(req: NextRequest) {
       if (semester && semester !== 'All') query = query.eq('semester', semester);
       if (subject && subject !== 'All') query = query.eq('subject', subject);
       const { data, error } = await query.order('created_at', { ascending: false });
-      if (!error && data) {
+      if (error) {
+        return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+      }
+      if (data) {
         allDocs.push(...data.map((d) => ({ ...d, type: 'Notes' })));
       }
     }
@@ -56,7 +59,10 @@ export async function GET(req: NextRequest) {
       if (semester && semester !== 'All') query = query.eq('semester', semester);
       if (subject && subject !== 'All') query = query.eq('subject', subject);
       const { data, error } = await query.order('created_at', { ascending: false });
-      if (!error && data) {
+      if (error) {
+        return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+      }
+      if (data) {
         allDocs.push(...data.map((d) => ({ ...d, type: 'PYQ' })));
       }
     }

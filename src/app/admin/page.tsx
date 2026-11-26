@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { 
   BookOpen, 
@@ -230,50 +230,142 @@ export default function AdminPage() {
     return [];
   });
 
-  // Fetch all real uploaded materials from Supabase Cloud on mount
+  // Sync authoritative uploaded materials from Cloud/Supabase (never resurrect deleted localStorage records)
+  const syncAllMaterials = useCallback(async () => {
+    let cloudDocs: NoteDocument[] | null = null;
+    let cloudLecs: any[] | null = null;
+
+    try {
+      const creds = getSupabaseCredentials();
+      const headers: Record<string, string> = {};
+      if (creds.url && creds.key) {
+        headers['x-supabase-url'] = creds.url;
+        headers['x-supabase-key'] = creds.key;
+      }
+      const res = await fetch('/api/documents', { cache: 'no-store', headers });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.success && Array.isArray(data.documents)) {
+          cloudDocs = data.documents;
+        }
+      }
+    } catch {
+      // Fallback to direct Supabase query below
+    }
+
+    if (cloudDocs === null && isSupabaseConfigured()) {
+      try {
+        cloudDocs = await fetchAllDocumentsFromSupabase();
+      } catch (err) {
+        console.warn('Could not load documents from Supabase:', err);
+      }
+    }
+
+    if (isSupabaseConfigured()) {
+      try {
+        cloudLecs = await fetchAllLecturesFromSupabase();
+      } catch (err) {
+        console.warn('Could not load lectures from Supabase:', err);
+      }
+    }
+
+    if (cloudDocs === null && cloudLecs === null) return;
+
+    if (cloudDocs !== null && typeof window !== 'undefined') {
+      try {
+        const normalizedDocs: NoteDocument[] = cloudDocs.map((d: any) => ({
+          id: d.id,
+          title: d.title,
+          subject: d.subject,
+          code: d.code || (d.type === 'PYQ' ? 'PYQ101' : 'DOC101'),
+          year: d.year,
+          branch: d.branch,
+          semester: d.semester,
+          type: (d.type === 'PYQ' ? 'PYQ' : 'Notes') as 'Notes' | 'PYQ',
+          pages: typeof d.pages === 'number' && d.pages > 0 ? d.pages : 0,
+          size: typeof d.size === 'string' ? d.size : '',
+          owner: d.owner || 'Department Faculty',
+          file_url: d.file_url || undefined,
+          file_path: d.file_path || undefined,
+          preview: d.preview || [],
+          created_at: d.created_at,
+        }));
+        localStorage.setItem('notehub_custom_documents', JSON.stringify(normalizedDocs));
+      } catch {}
+    }
+
+    if (cloudLecs !== null && typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('notehub_custom_lectures', JSON.stringify(cloudLecs));
+      } catch {}
+    }
+
+    const newDocs: AdminMaterial[] | null =
+      cloudDocs !== null
+        ? cloudDocs.map((d: any) => ({
+            id: d.id,
+            fileName: d.title?.endsWith('.pdf') ? d.title : `${d.title}.pdf`,
+            year: d.year,
+            branch: d.branch,
+            semester: d.semester,
+            subject: d.subject,
+            type: (d.type === 'PYQ' ? 'PYQs' : 'Notes') as 'Notes' | 'PYQs',
+            uploadedBy: d.owner || 'Department',
+            file_url: d.file_url,
+            file_path: d.file_path,
+          }))
+        : null;
+
+    const newLecs: AdminMaterial[] | null =
+      cloudLecs !== null
+        ? cloudLecs.map((l: any) => ({
+            id: l.id,
+            fileName: l.title,
+            year: l.year || '2nd Year',
+            branch: l.branch || 'CSE(AI&ML)',
+            semester: l.semester,
+            subject: l.subject,
+            type: 'Lectures' as const,
+            uploadedBy: l.faculty || 'Coordinator',
+            link: l.link,
+          }))
+        : null;
+
+    setMaterials((prev) => {
+      const docsPart = newDocs !== null ? newDocs : prev.filter((m) => m.type !== 'Lectures');
+      const lecsPart = newLecs !== null ? newLecs : prev.filter((m) => m.type === 'Lectures');
+      return [...docsPart, ...lecsPart];
+    });
+  }, []);
+
+  // Re-sync materials on mount, login, tab focus, or when switching views so Academic Overview & KPIs always reflect deletions
+  useEffect(() => {
+    syncAllMaterials();
+  }, [syncAllMaterials, isLoggedIn]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    if (
+      activeNav === 'Dashboard' ||
+      activeNav === 'All Materials' ||
+      activeNav === 'Manage by Year' ||
+      activeNav === 'Manage by Branch'
+    ) {
+      syncAllMaterials();
+    }
+  }, [activeNav, isLoggedIn, syncAllMaterials]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    const handleFocus = () => {
+      syncAllMaterials();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [isLoggedIn, syncAllMaterials]);
+
   useEffect(() => {
     if (isSupabaseConfigured()) {
-      Promise.all([
-        fetchAllDocumentsFromSupabase(),
-        fetchAllLecturesFromSupabase()
-      ]).then(([supaDocs, supaLecs]) => {
-        if ((supaDocs && supaDocs.length > 0) || (supaLecs && supaLecs.length > 0)) {
-          setMaterials((prev) => {
-            const supaDocIds = new Set((supaDocs || []).map((d) => d.id));
-            const supaLecIds = new Set((supaLecs || []).map((l) => l.id));
-            const uniquePrev = prev.filter((m) => !supaDocIds.has(m.id) && !supaLecIds.has(m.id));
-
-            const newDocs: AdminMaterial[] = (supaDocs || []).map((d) => ({
-              id: d.id,
-              fileName: d.title.endsWith('.pdf') ? d.title : `${d.title}.pdf`,
-              year: d.year,
-              branch: d.branch,
-              semester: d.semester,
-              subject: d.subject,
-              type: (d.type === 'PYQ' ? 'PYQs' : 'Notes') as 'Notes' | 'PYQs',
-              uploadedBy: d.owner || 'Department',
-              file_url: d.file_url,
-              file_path: d.file_path
-            }));
-
-            const newLecs: AdminMaterial[] = (supaLecs || []).map((l) => ({
-              id: l.id,
-              fileName: l.title,
-              year: l.year || '2nd Year',
-              branch: l.branch || 'CSE(AI&ML)',
-              semester: l.semester,
-              subject: l.subject,
-              type: 'Lectures' as const,
-              uploadedBy: l.faculty || 'Coordinator',
-              link: l.link
-            }));
-
-            return [...newDocs, ...newLecs, ...uniquePrev];
-          });
-        }
-      }).catch((err) => {
-        console.warn('Could not load materials from Supabase:', err);
-      });
 
       // Also sync all custom subjects from Supabase to local storage (authoritative source of truth)
       fetchAllSubjectsFromSupabase().then((allSubjs) => {

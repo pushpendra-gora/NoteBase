@@ -404,64 +404,136 @@ function DashboardContent() {
   // Initial files generated corresponding to coordinator's year & branch
   const [files, setFiles] = useState<CoordinatorFile[]>([]);
 
-  // Synchronize files whenever subjects or coordinator parameters update or Supabase connects
+  // Synchronize files whenever subjects or coordinator parameters update, Supabase connects, or window refocuses
   useEffect(() => {
     let isMounted = true;
     const sem1 = coordinatorSemesters[0] || 'Semester 1';
     const sem2 = coordinatorSemesters[1] || 'Semester 2';
 
-    const docs1 = getDocumentsFor(yearParam, branchParam, sem1);
-    const docs2 = getDocumentsFor(yearParam, branchParam, sem2);
-    const localAll = [...docs1, ...docs2];
+    const getLocalFiles = (): CoordinatorFile[] => {
+      const docs1 = getDocumentsFor(yearParam, branchParam, sem1);
+      const docs2 = getDocumentsFor(yearParam, branchParam, sem2);
+      return [...docs1, ...docs2].map((d, i) => ({
+        id: d.id || `coord-${i + 1}`,
+        name: d.title,
+        subject: d.subject,
+        semester: d.semester,
+        size: d.size,
+        type: d.type === 'PYQ' ? 'PYQ' : 'Notes',
+        date: '2024-11-20',
+        owner: d.owner,
+        file_url: d.file_url,
+        file_path: d.file_path,
+      }));
+    };
 
-    const localFiles: CoordinatorFile[] = localAll.map((d, i) => ({
-      id: d.id || `coord-${i + 1}`,
-      name: d.title,
-      subject: d.subject,
-      semester: d.semester,
-      size: d.size,
-      type: d.type === 'PYQ' ? 'PYQ' : 'Notes',
-      date: '2024-11-20',
-      owner: d.owner,
-      file_url: d.file_url,
-      file_path: d.file_path
-    }));
+    const syncCoordinatorFiles = async () => {
+      let supaAll: NoteDocument[] | null = null;
 
-    if (isSupabaseConfigured()) {
-      Promise.all([
-        fetchDocumentsFromSupabase(yearParam, branchParam, sem1),
-        fetchDocumentsFromSupabase(yearParam, branchParam, sem2)
-      ]).then(([supa1, supa2]) => {
-        if (!isMounted) return;
-        const supaAll = [...supa1, ...supa2];
-        if (supaAll.length > 0) {
-          const supaFileIds = new Set(supaAll.map((d) => d.id));
-          const uniqueLocal = localFiles.filter((f) => !supaFileIds.has(f.id));
-          const supaFiles: CoordinatorFile[] = supaAll.map((d) => ({
-            id: d.id,
-            name: d.title,
-            subject: d.subject,
-            semester: d.semester,
-            size: d.size,
-            type: d.type === 'PYQ' ? 'PYQ' : 'Notes',
-            date: d.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
-            owner: d.owner,
-            file_url: d.file_url,
-            file_path: d.file_path
-          }));
-          setFiles([...supaFiles, ...uniqueLocal]);
-          return;
+      try {
+        const creds = getSupabaseCredentials();
+        const headers: Record<string, string> = {};
+        if (creds.url && creds.key) {
+          headers['x-supabase-url'] = creds.url;
+          headers['x-supabase-key'] = creds.key;
         }
-        setFiles(localFiles);
-      }).catch(() => {
-        if (isMounted) setFiles(localFiles);
-      });
-    } else {
-      setFiles(localFiles);
-    }
+        const query = new URLSearchParams({ year: yearParam, branch: branchParam });
+        const res = await fetch(`/api/documents?${query.toString()}`, {
+          cache: 'no-store',
+          headers,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.success && Array.isArray(data.documents)) {
+            supaAll = data.documents.filter(
+              (d: any) => d.semester === sem1 || d.semester === sem2
+            );
+          }
+        }
+      } catch {
+        // Fallback to direct Supabase query below
+      }
+
+      if (supaAll === null && isSupabaseConfigured()) {
+        try {
+          const [supa1, supa2] = await Promise.all([
+            fetchDocumentsFromSupabase(yearParam, branchParam, sem1),
+            fetchDocumentsFromSupabase(yearParam, branchParam, sem2),
+          ]);
+          supaAll = [...supa1, ...supa2];
+        } catch {
+          supaAll = null;
+        }
+      }
+
+      if (!isMounted) return;
+
+      if (supaAll !== null) {
+        // Authoritative cloud list (even when empty) — sync localStorage for this coordinator slice so deleted files never resurrect
+        if (typeof window !== 'undefined') {
+          try {
+            const raw = localStorage.getItem('notehub_custom_documents');
+            const existing: NoteDocument[] = raw ? JSON.parse(raw) : [];
+            const otherDocs = existing.filter(
+              (d) =>
+                !(
+                  d.year === yearParam &&
+                  d.branch === branchParam &&
+                  (d.semester === sem1 || d.semester === sem2)
+                )
+            );
+            const normalizedSupa: NoteDocument[] = supaAll.map((d: any) => ({
+              id: d.id,
+              title: d.title,
+              subject: d.subject,
+              code: d.code || (d.type === 'PYQ' ? 'PYQ101' : 'DOC101'),
+              year: d.year,
+              branch: d.branch,
+              semester: d.semester,
+              type: (d.type === 'PYQ' ? 'PYQ' : 'Notes') as 'Notes' | 'PYQ',
+              pages: typeof d.pages === 'number' && d.pages > 0 ? d.pages : 0,
+              size: typeof d.size === 'string' ? d.size : '',
+              owner: d.owner || 'Department Faculty',
+              file_url: d.file_url || undefined,
+              file_path: d.file_path || undefined,
+              preview: d.preview || [],
+            }));
+            localStorage.setItem(
+              'notehub_custom_documents',
+              JSON.stringify([...normalizedSupa, ...otherDocs])
+            );
+          } catch {}
+        }
+
+        const supaFiles: CoordinatorFile[] = supaAll.map((d: any) => ({
+          id: d.id,
+          name: d.title,
+          subject: d.subject,
+          semester: d.semester,
+          size: d.size,
+          type: d.type === 'PYQ' ? 'PYQ' : 'Notes',
+          date: d.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
+          owner: d.owner,
+          file_url: d.file_url,
+          file_path: d.file_path,
+        }));
+        setFiles(supaFiles);
+        return;
+      }
+
+      setFiles(getLocalFiles());
+    };
+
+    syncCoordinatorFiles();
+
+    const handleFocus = () => {
+      syncCoordinatorFiles();
+    };
+    window.addEventListener('focus', handleFocus);
 
     return () => {
       isMounted = false;
+      window.removeEventListener('focus', handleFocus);
     };
   }, [yearParam, branchParam, coordinatorSemesters, subjectsVersion, supabaseConnected]);
 
