@@ -36,6 +36,8 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -103,6 +105,18 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        FrameLayout contentContainer = findViewById(R.id.contentContainer);
+        if (contentContainer != null) {
+            ViewCompat.setOnApplyWindowInsetsListener(contentContainer, (v, windowInsets) -> {
+                Insets bars = windowInsets.getInsets(
+                        WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout()
+                );
+                v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                return WindowInsetsCompat.CONSUMED;
+            });
+            ViewCompat.requestApplyInsets(contentContainer);
+        }
 
         webView = findViewById(R.id.webView);
         progressBar = findViewById(R.id.progressBar);
@@ -480,8 +494,8 @@ public class MainActivity extends AppCompatActivity {
         int webH = webView.getHeight();
         if (webW <= 0 || webH <= 0) return;
 
-        int leftPx = webView.getLeft() + Math.max(0, Math.round(leftRatio * webW));
-        int topPx = webView.getTop() + Math.max(0, Math.round(topRatio * webH));
+        int leftPx = Math.max(0, Math.round(leftRatio * webW));
+        int topPx = Math.max(0, Math.round(topRatio * webH));
         int widthPx = Math.max(1, Math.round(widthRatio * webW));
         int heightPx = Math.max(1, Math.round(heightRatio * webH));
 

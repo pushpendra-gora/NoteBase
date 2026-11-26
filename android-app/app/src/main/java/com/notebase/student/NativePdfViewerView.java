@@ -37,8 +37,8 @@ public class NativePdfViewerView extends View {
 
     private static final float MIN_SCALE = 1.0f;
     private static final float MAX_SCALE = 4.0f;
-    private static final int MAX_RENDER_WIDTH_PX = 2048;
-    private static final int MAX_RENDER_HEIGHT_PX = 2896;
+    private static final int MAX_RENDER_WIDTH_PX = 1600;
+    private static final int MAX_RENDER_HEIGHT_PX = 2260;
 
     private final ExecutorService renderExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -106,13 +106,13 @@ public class NativePdfViewerView extends View {
         this.pagePaddingPx = 8f * density;
         this.pageGapPx = 10f * density;
 
-        // Allocate ~1/8th of JVM heap (up to 48 MB) for crisp PDF page caching
+        // Allocate up to 1/4th of JVM heap (16 MB - 64 MB) so zoomed multi-page tiers never thrash
         int maxMemKb = (int) (Runtime.getRuntime().maxMemory() / 1024L);
-        int cacheSizeKb = Math.min(48 * 1024, Math.max(8 * 1024, maxMemKb / 8));
+        int cacheSizeKb = Math.min(64 * 1024, Math.max(16 * 1024, maxMemKb / 4));
         this.bitmapCache = new LruCache<String, Bitmap>(cacheSizeKb) {
             @Override
             protected int sizeOf(String key, Bitmap bitmap) {
-                return bitmap.getByteCount() / 1024;
+                return Math.max(1, bitmap.getByteCount() / 1024);
             }
         };
 
@@ -151,7 +151,10 @@ public class NativePdfViewerView extends View {
 
                 float prevScale = scaleFactor;
                 float nextScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, prevScale * factor));
-                if (Math.abs(nextScale - prevScale) < 0.001f) {
+                if (nextScale >= MAX_SCALE - 0.01f && prevScale >= MAX_SCALE - 0.01f && factor >= 0.985f) {
+                    return true;
+                }
+                if (Math.abs(nextScale - prevScale) < 0.003f) {
                     return true;
                 }
 
@@ -550,15 +553,18 @@ public class NativePdfViewerView extends View {
             }
             canvas.drawRect(drawRect, pageBorderPaint);
 
-            // Request desired sharp resolution tier asynchronously
+            // While actively pinching, reuse cached bitmaps for 60fps zero-flicker scaling;
+            // only request new high-res tiles after gesture settles (or if page has no bitmap at all)
             String desiredKey = i + "_" + desiredTier;
-            if (bitmapCache.get(desiredKey) == null) {
+            if (bmp == null) {
+                requestPageRender(i, 1);
+            } else if (!isScaling && bitmapCache.get(desiredKey) == null) {
                 requestPageRender(i, desiredTier);
             }
         }
 
-        // Pre-render 1 upcoming page cleanly for smooth scrolling
-        if (firstVisiblePage > 0 && firstVisiblePage < pageCount) {
+        // Pre-render 1 upcoming page cleanly only at base zoom and when cache has headroom
+        if (!isScaling && desiredTier == 1 && firstVisiblePage > 0 && firstVisiblePage < pageCount) {
             String nextKey = firstVisiblePage + "_1";
             if (bitmapCache.get(nextKey) == null) {
                 requestPageRender(firstVisiblePage, 1);
@@ -637,7 +643,7 @@ public class NativePdfViewerView extends View {
             Bitmap bmp = null;
             PdfRenderer.Page page = null;
             try {
-                bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888);
+                bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.RGB_565);
                 bmp.eraseColor(Color.WHITE);
                 page = renderer.openPage(pageIndex);
                 page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);

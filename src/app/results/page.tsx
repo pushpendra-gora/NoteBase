@@ -1004,7 +1004,7 @@ function ResultsContent() {
       <div className="absolute bottom-[-100px] right-[-100px] w-[450px] h-[450px] bg-[#dfd4f6]/50 rounded-full blur-3xl pointer-events-none" />
 
       {/* Main Container */}
-      <div className="w-full max-w-4xl mx-auto space-y-4 sm:space-y-6 relative z-10 pt-[max(env(safe-area-inset-top),3.5rem)] pb-8 px-3.5 sm:px-8">
+      <div className="w-full max-w-4xl mx-auto space-y-4 sm:space-y-6 relative z-10 pt-[max(env(safe-area-inset-top),1.25rem)] pb-8 px-3.5 sm:px-8">
         
         {/* Top NoteBase Branding & Filter Badges Bar */}
         <div className="space-y-3 py-1 sm:py-2 px-1">
@@ -1350,10 +1350,10 @@ function ResultsContent() {
           onTouchStart={handlePdfTouchStart}
           onTouchMove={handlePdfTouchMove}
           onTouchEnd={handlePdfTouchEnd}
-          className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-2.5 sm:p-5 md:p-8 animate-in fade-in duration-200 select-none overflow-hidden"
+          className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center pt-[max(env(safe-area-inset-top),0.75rem)] pb-[max(env(safe-area-inset-bottom),0.75rem)] px-2.5 sm:p-5 md:p-8 animate-in fade-in duration-200 select-none overflow-hidden"
         >
           {/* Framed Container: Continuous Solid 4-Sided Neutral Slate Border (No blue) */}
-          <div className="w-full h-full max-w-5xl rounded-2xl sm:rounded-3xl border-2 sm:border-[3px] border-slate-700 bg-white shadow-2xl overflow-hidden flex flex-col relative z-10">
+          <div className="w-full h-full max-h-full max-w-5xl rounded-2xl sm:rounded-3xl border-2 sm:border-[3px] border-slate-700 bg-white shadow-2xl overflow-hidden flex flex-col relative z-10">
             
             {/* Header: Part of the Framed Border (100% Static & Immovable) */}
             <div className="bg-slate-50 border-b border-slate-200 px-3.5 py-2.5 sm:px-6 sm:py-3.5 flex items-center justify-between shrink-0 z-30 select-none">
@@ -1406,7 +1406,7 @@ function ResultsContent() {
             {/* REAL PDF EMBEDDED VIEWER (Strictly contained inside the 4-sided border) */}
             <div 
               ref={pdfContainerRef}
-              className="flex-1 w-full bg-slate-100 relative overflow-hidden flex flex-col select-none"
+              className="flex-1 min-h-0 w-full bg-slate-100 relative overflow-hidden flex flex-col select-none"
               style={{ touchAction: 'none' }}
             >
               {(activeDoc.file_url || (activeDoc.file_path && activeDoc.file_path.startsWith('gdrive://'))) ? (
