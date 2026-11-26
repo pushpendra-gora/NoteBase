@@ -734,9 +734,19 @@ function DashboardContent() {
         deleteCustomUploadedDocument(id);
 
         try {
-          await fetch(`/api/documents?id=${encodeURIComponent(id)}&type=${fileToDelete?.type || ''}`, {
+          const creds = getSupabaseCredentials();
+          const delHeaders: Record<string, string> = {};
+          if (creds.url && creds.key) {
+            delHeaders['x-supabase-url'] = creds.url;
+            delHeaders['x-supabase-key'] = creds.key;
+          }
+          const res = await fetch(`/api/documents?id=${encodeURIComponent(id)}&type=${fileToDelete?.type || ''}`, {
             method: 'DELETE',
+            headers: delHeaders,
           });
+          if (!res.ok && isSupabaseConfigured() && fileToDelete) {
+            await deleteDocumentFromSupabase(id, fileToDelete.file_path, fileToDelete.type);
+          }
         } catch {
           if (isSupabaseConfigured() && fileToDelete) {
             await deleteDocumentFromSupabase(id, fileToDelete.file_path, fileToDelete.type);

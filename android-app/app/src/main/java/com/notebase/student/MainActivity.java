@@ -128,7 +128,12 @@ public class MainActivity extends AppCompatActivity {
             offlineErrorLayout.setVisibility(View.GONE);
             hasRetriedOfflineCache = false;
             updateWebViewCacheMode(isDeviceOnline());
-            webView.loadUrl(APP_URL);
+            String currentUrl = webView.getUrl();
+            if (currentUrl != null && currentUrl.startsWith(APP_URL)) {
+                webView.reload();
+            } else {
+                webView.loadUrl(APP_URL);
+            }
         });
 
         connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -200,8 +205,11 @@ public class MainActivity extends AppCompatActivity {
                     return true;
                 }
 
-                if (url.contains("export=download") || url.endsWith(".apk") || url.endsWith(".pdf")) {
-                    downloadFile(url, webView.getSettings().getUserAgentString(), null, "application/pdf");
+                String path = Uri.parse(url).getPath();
+                String lowerPath = path != null ? path.toLowerCase(java.util.Locale.US) : "";
+                if (url.contains("export=download") || lowerPath.endsWith(".apk") || lowerPath.endsWith(".pdf")) {
+                    String mime = lowerPath.endsWith(".apk") ? "application/vnd.android.package-archive" : "application/pdf";
+                    downloadFile(url, webView.getSettings().getUserAgentString(), null, mime);
                     return true;
                 }
 

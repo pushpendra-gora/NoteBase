@@ -82,6 +82,7 @@ public class NativePdfViewerView extends View {
     private float offsetX = 0f;
     private float offsetY = 0f;
     private boolean isScaling = false;
+    private int skipScrollEventsAfterScale = 0;
 
     // HUD fade visibility
     private boolean showHud = false;
@@ -174,6 +175,7 @@ public class NativePdfViewerView extends View {
             @Override
             public void onScaleEnd(ScaleGestureDetector detector) {
                 isScaling = false;
+                skipScrollEventsAfterScale = 2;
                 mainHandler.removeCallbacks(settledRerenderRunnable);
                 mainHandler.postDelayed(settledRerenderRunnable, 120);
             }
@@ -183,12 +185,17 @@ public class NativePdfViewerView extends View {
             @Override
             public boolean onDown(MotionEvent e) {
                 scroller.forceFinished(true);
+                skipScrollEventsAfterScale = 0;
                 return true;
             }
 
             @Override
             public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
                 if (isScaling) return false;
+                if (skipScrollEventsAfterScale > 0) {
+                    skipScrollEventsAfterScale--;
+                    return true;
+                }
                 offsetX -= distanceX;
                 offsetY -= distanceY;
                 clampOffsets();
@@ -391,6 +398,10 @@ public class NativePdfViewerView extends View {
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
         if (w > 0 && w != lastLayoutWidth && pageCount > 0) {
+            if (oldw > 0 && w != oldw) {
+                inFlightKeys.clear();
+                bitmapCache.evictAll();
+            }
             recomputePageLayout(w);
             clampOffsets();
             invalidate();

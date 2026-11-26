@@ -576,16 +576,19 @@ export async function updateCoordinatorInSupabase(coord: CoordinatorRecord): Pro
   if (!client) return false;
 
   try {
+    const updateData: Record<string, any> = {
+      name: coord.name,
+      branch: coord.branch,
+      year: coord.year,
+      initials: coord.initials || '',
+      status: coord.status || 'Active',
+    };
+    if (coord.password && coord.password.trim()) {
+      updateData.password = coord.password.trim();
+    }
     const { error } = await client
       .from('coordinators')
-      .update({
-        name: coord.name,
-        branch: coord.branch,
-        year: coord.year,
-        password: coord.password || '',
-        initials: coord.initials || '',
-        status: coord.status || 'Active'
-      })
+      .update(updateData)
       .eq('id', coord.id);
     return !error;
   } catch {

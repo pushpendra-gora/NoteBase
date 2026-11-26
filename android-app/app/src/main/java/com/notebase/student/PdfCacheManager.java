@@ -53,8 +53,9 @@ public class PdfCacheManager {
     private static final Pattern DRIVE_ID_QUERY_PATTERN = Pattern.compile("[?&]id=([a-zA-Z0-9_-]+)");
     private static final Pattern GDRIVE_SCHEME_PATTERN = Pattern.compile("^gdrive://([a-zA-Z0-9_-]+)");
     private static final Pattern CONFIRM_PARAM_PATTERN = Pattern.compile("confirm=([a-zA-Z0-9_-]+)");
-    private static final Pattern UUID_INPUT_PATTERN = Pattern.compile("name=\"uuid\"\\s+value=\"([^\"]+)\"");
-    private static final Pattern CONFIRM_INPUT_PATTERN = Pattern.compile("name=\"confirm\"\\s+value=\"([^\"]+)\"");
+    private static final Pattern INPUT_TAG_PATTERN = Pattern.compile("<input\\b([^>]*)>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern NAME_ATTR_PATTERN = Pattern.compile("\\bname\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
+    private static final Pattern VALUE_ATTR_PATTERN = Pattern.compile("\\bvalue\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
 
     private final Context appContext;
     private final File cacheDir;
@@ -350,21 +351,42 @@ public class PdfCacheManager {
         if (html == null || html.isEmpty()) return null;
 
         String confirm = "t";
-        Matcher cm = CONFIRM_INPUT_PATTERN.matcher(html);
-        if (cm.find()) {
-            confirm = cm.group(1);
-        } else {
+        String uuid = null;
+        String authToken = null;
+
+        Matcher inputMatcher = INPUT_TAG_PATTERN.matcher(html);
+        while (inputMatcher.find()) {
+            String attrs = inputMatcher.group(1);
+            if (attrs == null) continue;
+            Matcher nm = NAME_ATTR_PATTERN.matcher(attrs);
+            Matcher vm = VALUE_ATTR_PATTERN.matcher(attrs);
+            if (nm.find() && vm.find()) {
+                String name = nm.group(1);
+                String val = vm.group(1);
+                if ("confirm".equalsIgnoreCase(name)) {
+                    confirm = val;
+                } else if ("uuid".equalsIgnoreCase(name)) {
+                    uuid = val;
+                } else if ("at".equalsIgnoreCase(name)) {
+                    authToken = val;
+                }
+            }
+        }
+
+        if ("t".equals(confirm)) {
             Matcher cpm = CONFIRM_PARAM_PATTERN.matcher(html);
             if (cpm.find()) {
                 confirm = cpm.group(1);
             }
         }
 
-        Matcher um = UUID_INPUT_PATTERN.matcher(html);
-        if (um.find()) {
-            String uuid = um.group(1);
-            return "https://drive.usercontent.google.com/download?id=" + driveId
-                    + "&export=download&confirm=" + confirm + "&uuid=" + Uri.encode(uuid);
+        if (uuid != null && !uuid.isEmpty()) {
+            String url = "https://drive.usercontent.google.com/download?id=" + driveId
+                    + "&export=download&confirm=" + Uri.encode(confirm) + "&uuid=" + Uri.encode(uuid);
+            if (authToken != null && !authToken.isEmpty()) {
+                url += "&at=" + Uri.encode(authToken);
+            }
+            return url;
         }
         return null;
     }

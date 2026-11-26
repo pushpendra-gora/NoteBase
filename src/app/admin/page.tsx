@@ -345,27 +345,48 @@ export default function AdminPage() {
     return getStoredCoordinators();
   });
 
-  // Sync latest coordinators from Supabase via server API
+  // Sync latest coordinators & staff Drive config whenever Admin is logged in
   useEffect(() => {
-    fetch('/api/coordinators')
+    if (!isLoggedIn) return;
+    let active = true;
+
+    const creds = getSupabaseCredentials();
+    const headers: Record<string, string> = {};
+    if (creds.url && creds.key) {
+      headers['x-supabase-url'] = creds.url;
+      headers['x-supabase-key'] = creds.key;
+    }
+
+    fetch('/api/coordinators', { headers })
       .then((res) => res.json())
       .then((data) => {
-        if (data.success && data.coordinators && data.coordinators.length > 0) {
+        if (active && data.success && Array.isArray(data.coordinators)) {
           setCoordinators(data.coordinators);
           saveStoredCoordinators(data.coordinators);
         }
       })
-      .catch(() => {
-        if (isSupabaseConfigured()) {
-          fetchCoordinatorsFromSupabase().then((data) => {
-            if (data && data.length > 0) {
-              setCoordinators(data);
-              saveStoredCoordinators(data);
-            }
-          });
+      .catch(() => {});
+
+    fetch('/api/status', { headers })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!active) return;
+        if (data?.googleDrive?.webhookUrl && !getGoogleDriveConfig().webhookUrl) {
+          const syncedCfg = {
+            webhookUrl: data.googleDrive.webhookUrl,
+            folderId: data.googleDrive.folderId || '',
+            enabled: true,
+          };
+          setGdriveConfig(syncedCfg);
+          saveGoogleDriveConfig(syncedCfg);
         }
-      });
-  }, []);
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
+  }, [isLoggedIn]);
 
   // Interactive Modals and Popups State
   const [previewMaterial, setPreviewMaterial] = useState<AdminMaterial | null>(null);
@@ -1120,9 +1141,15 @@ export default function AdminPage() {
 
       // Save document to Supabase via server API & client fallback
       try {
+        const creds = getSupabaseCredentials();
+        const docHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (creds.url && creds.key) {
+          docHeaders['x-supabase-url'] = creds.url;
+          docHeaders['x-supabase-key'] = creds.key;
+        }
         const docRes = await fetch('/api/documents', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: docHeaders,
           body: JSON.stringify(noteDoc),
         });
         const docData = await docRes.json();
@@ -1147,7 +1174,8 @@ export default function AdminPage() {
         semester: uploadSemester,
         subject: finalSubject,
         type: finalType === 'PYQ' ? 'PYQs' : 'Notes',
-        uploadedBy: finalOwner
+        uploadedBy: finalOwner,
+        file_url: uploadedFileUrl
       };
 
       setMaterials(prev => [newAdminMat, ...prev]);
@@ -1227,11 +1255,18 @@ export default function AdminPage() {
         }
 
         try {
+          const creds = getSupabaseCredentials();
+          const delHeaders: Record<string, string> = {};
+          if (creds.url && creds.key) {
+            delHeaders['x-supabase-url'] = creds.url;
+            delHeaders['x-supabase-key'] = creds.key;
+          }
           if (target?.type === 'Lectures') {
             if (isSupabaseConfigured()) await deleteLectureFromSupabase(id);
           } else {
             await fetch(`/api/documents?id=${encodeURIComponent(id)}&type=${target?.type || ''}`, {
               method: 'DELETE',
+              headers: delHeaders,
             });
           }
         } catch {
@@ -1292,15 +1327,33 @@ export default function AdminPage() {
           } catch {}
         }
 
-        if (isSupabaseConfigured()) {
-          await Promise.all(
-            targets.map(t =>
-              t.type === 'Lectures'
-                ? deleteLectureFromSupabase(t.id)
-                : deleteDocumentFromSupabase(t.id, undefined, t.type === 'PYQs' ? 'PYQ' : 'Notes')
-            )
-          );
+        const creds = getSupabaseCredentials();
+        const delHeaders: Record<string, string> = {};
+        if (creds.url && creds.key) {
+          delHeaders['x-supabase-url'] = creds.url;
+          delHeaders['x-supabase-key'] = creds.key;
         }
+        await Promise.all(
+          targets.map(async (t) => {
+            if (t.type === 'Lectures') {
+              if (isSupabaseConfigured()) await deleteLectureFromSupabase(t.id);
+              return;
+            }
+            try {
+              const res = await fetch(`/api/documents?id=${encodeURIComponent(t.id)}&type=${encodeURIComponent(t.type)}`, {
+                method: 'DELETE',
+                headers: delHeaders,
+              });
+              if (!res.ok && isSupabaseConfigured()) {
+                await deleteDocumentFromSupabase(t.id, undefined, t.type === 'PYQs' ? 'PYQ' : 'Notes');
+              }
+            } catch {
+              if (isSupabaseConfigured()) {
+                await deleteDocumentFromSupabase(t.id, undefined, t.type === 'PYQs' ? 'PYQ' : 'Notes');
+              }
+            }
+          })
+        );
 
         showToast(`${count} files deleted from database!`, 'success');
       }
@@ -1316,7 +1369,7 @@ export default function AdminPage() {
       showToast('Please enter Coordinator Full Name.', 'error');
       return;
     }
-    if (!coordForm.password.trim()) {
+    if (!editingCoord && !coordForm.password.trim()) {
       setCoordModalError('Please set a Login Password for this coordinator.');
       showToast('Please set a Login Password for this coordinator.', 'error');
       return;
@@ -1362,10 +1415,22 @@ export default function AdminPage() {
           name: cleanName,
           branch: coordForm.branch,
           year: coordForm.year,
-          password: cleanPassword,
+          ...(cleanPassword ? { password: cleanPassword } : {}),
           status: coordForm.status,
           initials
         };
+
+        const putPayload: Record<string, any> = {
+          id: editingCoord.id,
+          name: cleanName,
+          branch: coordForm.branch,
+          year: coordForm.year,
+          status: coordForm.status,
+          initials,
+        };
+        if (cleanPassword) {
+          putPayload.password = cleanPassword;
+        }
 
         let saved = false;
         let lastError = '';
@@ -1374,7 +1439,7 @@ export default function AdminPage() {
           const res = await fetch('/api/coordinators', {
             method: 'PUT',
             headers,
-            body: JSON.stringify(updatedItem),
+            body: JSON.stringify(putPayload),
           });
           const data = await res.json();
           if (res.ok && data.success) {
@@ -2729,8 +2794,8 @@ export default function AdminPage() {
                     <div className="flex items-center space-x-1.5 bg-white/90 border border-slate-200/80 px-2.5 py-1 rounded-xl shadow-xs">
                       <Key className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
                       <span className="text-[10px] font-semibold text-slate-500">Password:</span>
-                      <span className="font-mono font-bold text-slate-800 text-[11px] tracking-wide">
-                        {coord.password || '123'}
+                      <span className="font-mono font-bold text-slate-700 text-[11px] tracking-wide">
+                        Protected (Encrypted)
                       </span>
                     </div>
 
@@ -2743,7 +2808,7 @@ export default function AdminPage() {
                             name: coord.name, 
                             branch: coord.branch, 
                             year: coord.year,
-                            password: coord.password || '123',
+                            password: '',
                             status: coord.status || 'Active'
                           });
                           setCoordModalError(null);
@@ -4123,18 +4188,20 @@ export default function AdminPage() {
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-[11px] font-bold text-slate-700">
-                    Coordinator Login Password <span className="text-red-500">*</span>
+                    Coordinator Login Password {!editingCoord && <span className="text-red-500">*</span>}
                   </label>
-                  <span className="text-[10px] text-indigo-600 font-semibold">Required for Portal Login</span>
+                  <span className="text-[10px] text-indigo-600 font-semibold">
+                    {editingCoord ? 'Optional when editing' : 'Required for Portal Login'}
+                  </span>
                 </div>
                 <div className="relative">
                   <Lock className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type={showCoordPassword ? 'text' : 'password'}
-                    required
+                    required={!editingCoord}
                     value={coordForm.password}
                     onChange={(e) => setCoordForm({ ...coordForm, password: e.target.value })}
-                    placeholder="Enter secure password (e.g. rohit@123)"
+                    placeholder={editingCoord ? 'Leave blank to keep existing password' : 'Enter secure password (e.g. rohit@123)'}
                     className="w-full pl-9 pr-10 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
                   />
                   <button
