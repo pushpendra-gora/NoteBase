@@ -40,7 +40,8 @@ import {
   Cloud,
   RefreshCw,
   Settings,
-  Menu
+  Menu,
+  MoreVertical
 } from 'lucide-react';
 import { 
   getDocumentsFor, 
@@ -228,10 +229,18 @@ function DashboardContent() {
   const [manageTab, setManageTab] = useState<'Notes' | 'PYQs'>('Notes');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Selected document for preview / edit modal
+  // Selected document for preview / edit modal & mobile 3-dot action menu
   const [previewFile, setPreviewFile] = useState<CoordinatorFile | null>(null);
   const [editingFile, setEditingFile] = useState<CoordinatorFile | null>(null);
   const [newEditName, setNewEditName] = useState('');
+  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!openActionMenuId) return;
+    const closeMenu = () => setOpenActionMenuId(null);
+    document.addEventListener('click', closeMenu);
+    return () => document.removeEventListener('click', closeMenu);
+  }, [openActionMenuId]);
 
   // Global Delete Confirmation Modal State
   const [deleteConfirm, setDeleteConfirm] = useState<{
@@ -1736,37 +1745,37 @@ function DashboardContent() {
               </div>
 
               {/* Files List */}
-              <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
+              <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1 pb-10">
                 {filteredFiles.length > 0 ? (
-                  filteredFiles.map((file) => (
+                  filteredFiles.map((file, idx) => (
                     <div
                       key={file.id}
-                      className="p-4 rounded-2xl border border-slate-100 hover:border-indigo-200 bg-white hover:bg-slate-50/70 transition-all flex items-center justify-between gap-3 shadow-[0_1px_4px_rgba(0,0,0,0.02)] group"
+                      className="p-3.5 sm:p-4 rounded-2xl border border-slate-100 hover:border-indigo-200 bg-white hover:bg-slate-50/70 transition-all flex items-center justify-between gap-2.5 sm:gap-3 shadow-[0_1px_4px_rgba(0,0,0,0.02)] group relative"
                     >
                       {/* Left: Red PDF Icon + Details (Clickable to preview) */}
                       <div 
                         onClick={() => setPreviewFile(file)}
-                        className="flex items-center space-x-3.5 overflow-hidden cursor-pointer flex-1"
+                        className="flex items-center space-x-3 sm:space-x-3.5 min-w-0 flex-1 cursor-pointer"
                         title="Click to preview file"
                       >
                         <div className="w-10 h-10 rounded-xl bg-red-50 text-red-600 flex items-center justify-center font-bold text-[10px] tracking-wider shrink-0 border border-red-100 group-hover:bg-red-600 group-hover:text-white transition-colors">
                           PDF
                         </div>
-                        <div className="overflow-hidden">
-                          <div className="text-xs sm:text-sm font-bold text-slate-900 truncate group-hover:text-indigo-600 transition-colors">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs sm:text-sm font-bold text-slate-900 truncate group-hover:text-indigo-600 transition-colors" title={file.name}>
                             {file.name}
                           </div>
                           <div className="text-[11px] text-slate-500 font-medium truncate flex items-center space-x-1.5">
-                            <span>{file.semester} • {file.subject} • {file.size}</span>
+                            <span>{file.semester} • {file.subject}{file.size ? ` • ${file.size}` : ''}</span>
                             {file.owner && (
-                              <span className="text-indigo-600 font-semibold">• 👤 {file.owner}</span>
+                              <span className="text-indigo-600 font-semibold hidden sm:inline">• 👤 {file.owner}</span>
                             )}
                           </div>
                         </div>
                       </div>
 
-                      {/* Right: Actions (Download, View, Edit, Delete) - All 100% Clickable */}
-                      <div className="flex items-center space-x-1 shrink-0">
+                      {/* Right (PC / Desktop Mode): Unchanged inline Actions (Download, View, Edit, Delete) */}
+                      <div className="hidden sm:flex items-center space-x-1 shrink-0">
                         
                         {/* Download */}
                         <button
@@ -1810,6 +1819,74 @@ function DashboardContent() {
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
+                      </div>
+
+                      {/* Right (Mobile Mode): Single 3-Dot Menu Button so filename gets full width */}
+                      <div className="sm:hidden relative shrink-0" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => setOpenActionMenuId((prev) => (prev === file.id ? null : file.id))}
+                          aria-label="File actions"
+                          className="w-8 h-8 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-600 flex items-center justify-center transition-colors cursor-pointer"
+                        >
+                          <MoreVertical className="w-4 h-4" />
+                        </button>
+
+                        {openActionMenuId === file.id && (
+                          <div
+                            className={`absolute right-0 w-40 bg-white rounded-2xl border border-slate-100 shadow-xl py-1.5 z-30 animate-in fade-in zoom-in-95 duration-100 ${
+                              idx >= filteredFiles.length - 1 && filteredFiles.length > 1
+                                ? 'bottom-full mb-1.5'
+                                : 'top-full mt-1.5'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                setPreviewFile(file);
+                              }}
+                              className="w-full px-3.5 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center space-x-2.5 cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-indigo-600" />
+                              <span>Preview</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                handleDownloadFile(file);
+                              }}
+                              className="w-full px-3.5 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center space-x-2.5 cursor-pointer"
+                            >
+                              <Download className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>Download</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                setEditingFile(file);
+                                setNewEditName(file.name);
+                              }}
+                              className="w-full px-3.5 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center space-x-2.5 cursor-pointer"
+                            >
+                              <Edit3 className="w-3.5 h-3.5 text-amber-600" />
+                              <span>Edit Name</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                handleDelete(file.id, file.name);
+                              }}
+                              className="w-full px-3.5 py-2 text-left text-xs font-semibold text-red-600 hover:bg-red-50 flex items-center space-x-2.5 border-t border-slate-100 mt-1 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Delete</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
 
                     </div>
@@ -1907,32 +1984,32 @@ function DashboardContent() {
                     </button>
                   </div>
                 ) : (
-                  filteredLectures.map((lec) => (
+                  filteredLectures.map((lec, idx) => (
                     <div
                       key={lec.id}
-                      className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/60 p-3 rounded-2xl transition-colors group"
+                      className="py-3.5 sm:py-4 flex items-center justify-between gap-2.5 sm:gap-3 hover:bg-slate-50/60 p-3 rounded-2xl transition-colors group relative"
                     >
                       {/* Left: Video Icon & Details */}
-                      <div className="flex items-center space-x-3.5 overflow-hidden flex-1">
-                        <div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 group-hover:bg-indigo-600 group-hover:text-white transition-colors shadow-sm">
+                      <div className="flex items-center space-x-3 sm:space-x-3.5 min-w-0 flex-1">
+                        <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 group-hover:bg-indigo-600 group-hover:text-white transition-colors shadow-sm">
                           <Video className="w-5 h-5" />
                         </div>
-                        <div className="overflow-hidden space-y-0.5">
-                          <h5 className="text-sm font-bold text-slate-800 truncate" title={lec.title}>
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <h5 className="text-xs sm:text-sm font-bold text-slate-800 truncate" title={lec.title}>
                             {lec.title}
                           </h5>
-                          <div className="flex items-center space-x-2 text-xs text-slate-400 flex-wrap">
+                          <div className="flex items-center space-x-2 text-[11px] sm:text-xs text-slate-400 truncate">
                             <span>{lec.semester}</span>
                             <span>•</span>
-                            <span className="text-slate-600 font-medium">{lec.subject}</span>
-                            <span>•</span>
-                            <span>{lec.date}</span>
+                            <span className="text-slate-600 font-medium truncate">{lec.subject}</span>
+                            <span className="hidden sm:inline">•</span>
+                            <span className="hidden sm:inline">{lec.date}</span>
                           </div>
                         </div>
                       </div>
 
-                      {/* Right: Actions (Watch, Edit, Delete) */}
-                      <div className="flex items-center space-x-1.5 shrink-0 self-end sm:self-center">
+                      {/* Right (PC / Desktop Mode): Unchanged inline Actions (Watch, Edit, Delete) */}
+                      <div className="hidden sm:flex items-center space-x-1.5 shrink-0">
                         {/* Watch / Open Link */}
                         {lec.link ? (
                           <a
@@ -1970,6 +2047,65 @@ function DashboardContent() {
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
+                      </div>
+
+                      {/* Right (Mobile Mode): Single 3-Dot Menu Button */}
+                      <div className="sm:hidden relative shrink-0" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => setOpenActionMenuId((prev) => (prev === lec.id ? null : lec.id))}
+                          aria-label="Lecture actions"
+                          className="w-8 h-8 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-600 flex items-center justify-center transition-colors cursor-pointer"
+                        >
+                          <MoreVertical className="w-4 h-4" />
+                        </button>
+
+                        {openActionMenuId === lec.id && (
+                          <div
+                            className={`absolute right-0 w-40 bg-white rounded-2xl border border-slate-100 shadow-xl py-1.5 z-30 animate-in fade-in zoom-in-95 duration-100 ${
+                              idx >= filteredLectures.length - 1 && filteredLectures.length > 1
+                                ? 'bottom-full mb-1.5'
+                                : 'top-full mt-1.5'
+                            }`}
+                          >
+                            {lec.link && (
+                              <a
+                                href={lec.link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={() => setOpenActionMenuId(null)}
+                                className="w-full px-3.5 py-2 text-left text-xs font-semibold text-indigo-700 hover:bg-indigo-50 flex items-center space-x-2.5 cursor-pointer"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                                <span>Watch</span>
+                              </a>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                setEditingLecture(lec);
+                                setNewLectureEditTitle(lec.title);
+                                setNewLectureEditLink(lec.link || '');
+                              }}
+                              className="w-full px-3.5 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center space-x-2.5 cursor-pointer"
+                            >
+                              <Edit3 className="w-3.5 h-3.5 text-amber-600" />
+                              <span>Edit</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                handleDeleteLecture(lec.id, lec.title);
+                              }}
+                              className="w-full px-3.5 py-2 text-left text-xs font-semibold text-red-600 hover:bg-red-50 flex items-center space-x-2.5 border-t border-slate-100 mt-1 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Delete</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))

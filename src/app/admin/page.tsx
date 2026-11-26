@@ -156,6 +156,12 @@ export default function AdminPage() {
     setIsMobileSidebarOpen(false);
   };
 
+  // Manage by Year / Manage by Branch View State
+  const [selectedManageYear, setSelectedManageYear] = useState<YearOption>('1st Year');
+  const [manageYearTypeFilter, setManageYearTypeFilter] = useState<'All' | 'Notes' | 'PYQs' | 'Lectures'>('All');
+  const [selectedManageBranch, setSelectedManageBranch] = useState<BranchOption>('CSE(AI&ML)');
+  const [manageBranchYearFilter, setManageBranchYearFilter] = useState<'All' | YearOption>('All');
+
   // Admin Add / Manage Subjects State
   const [subjYear, setSubjYear] = useState<YearOption>('2nd Year');
   const [subjBranch, setSubjBranch] = useState<BranchOption>('CSE(AI&ML)');
@@ -2052,7 +2058,10 @@ export default function AdminPage() {
                 {activeNav === 'Coordinators' && 'Coordinators Management'}
                 {activeNav === 'Upload Material' && 'Upload Material'}
                 {activeNav === 'Statistics' && 'Cloud Storage & Statistics'}
-                {activeNav !== 'Dashboard' && activeNav !== 'All Materials' && activeNav !== 'Coordinators' && activeNav !== 'Upload Material' && activeNav !== 'Statistics' && activeNav}
+                {activeNav === 'Manage by Year' && 'Manage by Academic Year'}
+                {activeNav === 'Manage by Branch' && 'Manage by Branch & Group'}
+                {activeNav === 'Add Subject' && 'Subjects Curriculum Management'}
+                {activeNav !== 'Dashboard' && activeNav !== 'All Materials' && activeNav !== 'Coordinators' && activeNav !== 'Upload Material' && activeNav !== 'Statistics' && activeNav !== 'Manage by Year' && activeNav !== 'Manage by Branch' && activeNav !== 'Add Subject' && activeNav}
               </h1>
               <p className="text-xs sm:text-sm text-slate-500 font-medium">
                 {activeNav === 'Dashboard' && 'Manage Coordinators, Notes, PYQs and All Years'}
@@ -2060,7 +2069,10 @@ export default function AdminPage() {
                 {activeNav === 'Coordinators' && 'Manage student and faculty coordinators across branches and years'}
                 {activeNav === 'Upload Material' && 'Publish Notes, PYQs, and Video Lectures to any Year & Branch'}
                 {activeNav === 'Statistics' && 'Google Drive storage integration, Supabase database sync & platform metrics'}
-                {activeNav !== 'Dashboard' && activeNav !== 'All Materials' && activeNav !== 'Coordinators' && activeNav !== 'Upload Material' && activeNav !== 'Statistics' && 'Manage your portal preferences and configuration'}
+                {activeNav === 'Manage by Year' && 'Year-wise breakdown of subjects, coordinators, notes, PYQs, and lectures'}
+                {activeNav === 'Manage by Branch' && 'Branch & group-wise breakdown across academic years, subjects, and materials'}
+                {activeNav === 'Add Subject' && 'Add, rename, or remove subjects across years, branches, and semesters'}
+                {activeNav !== 'Dashboard' && activeNav !== 'All Materials' && activeNav !== 'Coordinators' && activeNav !== 'Upload Material' && activeNav !== 'Statistics' && activeNav !== 'Manage by Year' && activeNav !== 'Manage by Branch' && activeNav !== 'Add Subject' && 'Manage your portal preferences and configuration'}
               </p>
             </div>
           </div>
@@ -3957,38 +3969,568 @@ export default function AdminPage() {
         )}
 
         {/* =================================================================
-            VIEW 6: MANAGE BY YEAR / BRANCH QUICK NAVIGATION
+            VIEW 6A: MANAGE BY YEAR (Real Year-wise Dashboard & Materials)
            ================================================================= */}
-        {(activeNav === 'Manage by Year' || activeNav === 'Manage by Branch') && (
-          <div className="w-full bg-white rounded-3xl border border-slate-100/90 p-8 text-center space-y-4 shadow-[0_2px_14px_rgba(0,0,0,0.02)] animate-in fade-in duration-200">
-            <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
-              {activeNav === 'Manage by Year' ? <Calendar className="w-7 h-7" /> : <GitBranch className="w-7 h-7" />}
+        {activeNav === 'Manage by Year' && (() => {
+          const normYear = (y: string) => y.replace(' Year', '').trim().toLowerCase();
+          const yearBranches: BranchOption[] =
+            selectedManageYear === '1st Year' ? FIRST_YEAR_GROUPS : STANDARD_BRANCHES;
+          const yearSemesters = YEAR_SEMESTER_MAP[selectedManageYear] || [];
+
+          const yearMaterials = materials.filter(
+            (m) => normYear(m.year) === normYear(selectedManageYear)
+          );
+          const filteredYearMaterials = yearMaterials.filter((m) =>
+            manageYearTypeFilter === 'All' ? true : m.type === manageYearTypeFilter
+          );
+          const yearCoords = coordinators.filter(
+            (c) => normYear(c.year) === normYear(selectedManageYear)
+          );
+
+          return (
+            <div className="space-y-6 animate-in fade-in duration-200">
+              {/* 4 Year Selector Cards with Real Counts */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {YEARS.map((yr) => {
+                  const yrMats = materials.filter((m) => normYear(m.year) === normYear(yr));
+                  const yrNotes = yrMats.filter((m) => m.type === 'Notes').length;
+                  const yrPyqs = yrMats.filter((m) => m.type === 'PYQs').length;
+                  const yrLecs = yrMats.filter((m) => m.type === 'Lectures').length;
+                  const yrCoordsCount = coordinators.filter((c) => normYear(c.year) === normYear(yr)).length;
+                  const yrBranchesList: BranchOption[] = yr === '1st Year' ? FIRST_YEAR_GROUPS : STANDARD_BRANCHES;
+                  const yrSems = YEAR_SEMESTER_MAP[yr] || [];
+                  const yrSubjectsCount = yrBranchesList.reduce(
+                    (acc, br) =>
+                      acc + yrSems.reduce((sAcc, sem) => sAcc + getSubjectsFor(yr, br, sem).length, 0),
+                    0
+                  );
+                  const isSelected = selectedManageYear === yr;
+
+                  return (
+                    <button
+                      key={yr}
+                      type="button"
+                      onClick={() => {
+                        setSelectedManageYear(yr);
+                        setManageYearTypeFilter('All');
+                      }}
+                      className={`text-left rounded-3xl p-5 border transition-all cursor-pointer space-y-3 ${
+                        isSelected
+                          ? 'bg-[#3b49df] text-white border-[#3b49df] shadow-lg shadow-indigo-200/70'
+                          : 'bg-white text-slate-800 border-slate-100 hover:border-indigo-200 hover:shadow-md'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
+                          isSelected ? 'bg-white/20 text-white' : 'bg-indigo-50 text-indigo-700'
+                        }`}>
+                          {yrSems.join(' & ')}
+                        </span>
+                        <Calendar className={`w-5 h-5 ${isSelected ? 'text-indigo-200' : 'text-indigo-500'}`} />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-extrabold tracking-tight">{yr}</h3>
+                        <p className={`text-xs font-medium mt-0.5 ${isSelected ? 'text-indigo-100' : 'text-slate-500'}`}>
+                          {yrMats.length} Total Materials • {yrSubjectsCount} Subjects
+                        </p>
+                      </div>
+                      <div className={`grid grid-cols-3 gap-2 pt-2 border-t text-[11px] font-bold ${
+                        isSelected ? 'border-white/20 text-indigo-50' : 'border-slate-100 text-slate-600'
+                      }`}>
+                        <div>{yrNotes} Notes</div>
+                        <div>{yrPyqs} PYQs</div>
+                        <div>{yrLecs} Videos</div>
+                      </div>
+                      <div className={`text-[11px] font-semibold ${isSelected ? 'text-indigo-100' : 'text-slate-400'}`}>
+                        {yrCoordsCount} Coordinator{yrCoordsCount === 1 ? '' : 's'} assigned
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Selected Year Header + Quick Actions */}
+              <div className="bg-white rounded-3xl border border-slate-100/90 p-5 sm:p-6 shadow-[0_2px_14px_rgba(0,0,0,0.02)] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-lg font-extrabold text-slate-900">{selectedManageYear} Overview</h3>
+                    <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+                      {yearSemesters.join(' / ')}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Showing all branches/groups, assigned coordinators, subjects, and uploaded materials for {selectedManageYear}.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUploadYear(selectedManageYear);
+                      setUploadBranch('');
+                      setUploadSemester('');
+                      setUploadSubject('');
+                      selectAdminNav('Upload Material');
+                    }}
+                    className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs font-bold shadow-sm transition-colors cursor-pointer"
+                  >
+                    <UploadCloud className="w-3.5 h-3.5" />
+                    <span>Upload for {selectedManageYear}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSubjYear(selectedManageYear);
+                      setSubjBranch(yearBranches[0]);
+                      setSubjSemester(yearSemesters[0]);
+                      selectAdminNav('Add Subject');
+                    }}
+                    className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Subject</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setYearFilter(selectedManageYear);
+                      setBranchFilter('All');
+                      setSemesterFilter('All');
+                      setSubjectFilter('All');
+                      selectAdminNav('All Materials');
+                    }}
+                    className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    <span>Open in All Materials</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Branch/Group Cards for Selected Year */}
+              <div className="bg-white rounded-3xl border border-slate-100/90 p-5 sm:p-6 shadow-[0_2px_14px_rgba(0,0,0,0.02)] space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-bold text-slate-900">
+                    {selectedManageYear === '1st Year' ? 'Groups & Coordinators' : 'Branches & Coordinators'} ({yearBranches.length})
+                  </h4>
+                  <span className="text-xs text-slate-400 font-medium">
+                    {yearCoords.length} Active / Registered
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {yearBranches.map((br) => {
+                    const brMats = yearMaterials.filter((m) => isBranchMatch(m.branch, br));
+                    const brNotes = brMats.filter((m) => m.type === 'Notes').length;
+                    const brPyqs = brMats.filter((m) => m.type === 'PYQs').length;
+                    const brLecs = brMats.filter((m) => m.type === 'Lectures').length;
+                    const coord = yearCoords.find((c) => isBranchMatch(c.branch, br));
+                    const semSubjects = yearSemesters.flatMap((sem) =>
+                      getSubjectsFor(selectedManageYear, br, sem).map((s) => ({ ...s, sem }))
+                    );
+
+                    return (
+                      <div key={br} className="rounded-2xl border border-slate-100 bg-slate-50/50 p-4 space-y-3 hover:border-indigo-200 transition-colors">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <h5 className="text-sm font-bold text-slate-900 leading-snug">{br}</h5>
+                            <p className="text-[11px] text-slate-500 mt-0.5">
+                              {semSubjects.length} Subject{semSubjects.length === 1 ? '' : 's'} • {brMats.length} File{brMats.length === 1 ? '' : 's'}
+                            </p>
+                          </div>
+                          {coord ? (
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
+                              coord.status === 'Inactive' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'
+                            }`}>
+                              {coord.name} ({coord.status})
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 shrink-0">
+                              No Coordinator
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 text-[11px] font-semibold text-slate-600">
+                          <span className="px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700">{brNotes} Notes</span>
+                          <span className="px-2 py-0.5 rounded-lg bg-amber-50 text-amber-700">{brPyqs} PYQs</span>
+                          <span className="px-2 py-0.5 rounded-lg bg-purple-50 text-purple-700">{brLecs} Lectures</span>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-2 border-t border-slate-200/60">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedManageBranch(br);
+                              setManageBranchYearFilter(selectedManageYear);
+                              selectAdminNav('Manage by Branch');
+                            }}
+                            className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 cursor-pointer"
+                          >
+                            Inspect Branch →
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUploadYear(selectedManageYear);
+                              setUploadBranch(br);
+                              setUploadSemester('');
+                              setUploadSubject('');
+                              selectAdminNav('Upload Material');
+                            }}
+                            className="text-[11px] font-bold text-slate-700 hover:text-indigo-600 cursor-pointer"
+                          >
+                            + Upload
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Materials List for Selected Year */}
+              <div className="bg-white rounded-3xl border border-slate-100/90 p-5 sm:p-6 shadow-[0_2px_14px_rgba(0,0,0,0.02)] space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <h4 className="text-sm font-bold text-slate-900">
+                    {selectedManageYear} Materials ({filteredYearMaterials.length})
+                  </h4>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(['All', 'Notes', 'PYQs', 'Lectures'] as const).map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setManageYearTypeFilter(t)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                          manageYearTypeFilter === t
+                            ? 'bg-[#3b49df] text-white'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {filteredYearMaterials.length === 0 ? (
+                  <div className="text-center py-10 text-xs text-slate-400">
+                    No {manageYearTypeFilter === 'All' ? '' : manageYearTypeFilter + ' '}materials uploaded for {selectedManageYear} yet.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-100 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                          <th className="py-3 pr-4">Material</th>
+                          <th className="py-3 px-3">Branch</th>
+                          <th className="py-3 px-3">Subject</th>
+                          <th className="py-3 px-3">Type</th>
+                          <th className="py-3 pl-3 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-xs">
+                        {filteredYearMaterials.map((m) => (
+                          <tr key={m.id} className="hover:bg-slate-50/80">
+                            <td className="py-3 pr-4 font-bold text-slate-900 max-w-[240px] truncate">{m.fileName}</td>
+                            <td className="py-3 px-3 text-slate-600">{m.branch}</td>
+                            <td className="py-3 px-3 text-slate-600">{m.subject} {m.semester ? `(${m.semester})` : ''}</td>
+                            <td className="py-3 px-3">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                m.type === 'PYQs'
+                                  ? 'bg-amber-50 text-amber-700'
+                                  : m.type === 'Lectures'
+                                  ? 'bg-purple-50 text-purple-700'
+                                  : 'bg-blue-50 text-blue-700'
+                              }`}>
+                                {m.type}
+                              </span>
+                            </td>
+                            <td className="py-3 pl-3 text-right">
+                              <div className="inline-flex items-center space-x-1">
+                                <button type="button" onClick={() => setPreviewMaterial(m)} title="Preview" className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 cursor-pointer"><Eye className="w-3.5 h-3.5" /></button>
+                                <button type="button" onClick={() => handleDownloadSingle(m)} title="Open / Download" className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 cursor-pointer"><Download className="w-3.5 h-3.5" /></button>
+                                {m.type !== 'Lectures' && (
+                                  <button type="button" onClick={() => handleOpenEditMaterial(m)} title="Rename" className="p-1.5 rounded-lg text-slate-500 hover:text-amber-600 hover:bg-amber-50 cursor-pointer"><Edit3 className="w-3.5 h-3.5" /></button>
+                                )}
+                                <button type="button" onClick={() => handleDeleteSingle(m.id, m.fileName)} title="Delete" className="p-1.5 rounded-lg text-red-500 hover:text-red-700 hover:bg-red-50 cursor-pointer"><Trash2 className="w-3.5 h-3.5" /></button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
-            <h3 className="text-lg font-bold text-slate-900">{activeNav}</h3>
-            <p className="text-xs text-slate-500 max-w-md mx-auto">
-              Select any year or branch filter in <strong>All Materials</strong> to review, filter, and manage academic documents.
-            </p>
-            <div className="flex items-center justify-center space-x-3 pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveNav('All Materials');
-                  setShowAllUnfiltered(true);
-                }}
-                className="px-5 py-2.5 rounded-xl bg-[#3b49df] text-white text-xs font-bold shadow-sm transition-colors cursor-pointer"
-              >
-                Open All Materials Table
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveNav('Dashboard')}
-                className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
-              >
-                Back to Dashboard
-              </button>
+          );
+        })()}
+
+        {/* =================================================================
+            VIEW 6B: MANAGE BY BRANCH (Real Branch-wise Dashboard & Materials)
+           ================================================================= */}
+        {activeNav === 'Manage by Branch' && (() => {
+          const allManageBranches: BranchOption[] = [...STANDARD_BRANCHES, ...FIRST_YEAR_GROUPS];
+          const isFirstYearGroup = FIRST_YEAR_GROUPS.includes(selectedManageBranch as any);
+          const relevantYears: YearOption[] = isFirstYearGroup
+            ? ['1st Year']
+            : ['2nd Year', '3rd Year', '4th Year'];
+
+          const branchMaterials = materials.filter((m) => isBranchMatch(m.branch, selectedManageBranch));
+          const filteredBranchMaterials = branchMaterials.filter((m) =>
+            manageBranchYearFilter === 'All'
+              ? true
+              : m.year.replace(' Year', '').trim().toLowerCase() === manageBranchYearFilter.replace(' Year', '').trim().toLowerCase()
+          );
+          const branchCoords = coordinators.filter((c) => isBranchMatch(c.branch, selectedManageBranch));
+
+          return (
+            <div className="space-y-6 animate-in fade-in duration-200">
+              {/* Branch Selector Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {allManageBranches.map((br) => {
+                  const brMats = materials.filter((m) => isBranchMatch(m.branch, br));
+                  const brNotes = brMats.filter((m) => m.type === 'Notes').length;
+                  const brPyqs = brMats.filter((m) => m.type === 'PYQs').length;
+                  const brLecs = brMats.filter((m) => m.type === 'Lectures').length;
+                  const brCoordsCount = coordinators.filter((c) => isBranchMatch(c.branch, br)).length;
+                  const isSelected = selectedManageBranch === br;
+
+                  return (
+                    <button
+                      key={br}
+                      type="button"
+                      onClick={() => {
+                        setSelectedManageBranch(br);
+                        setManageBranchYearFilter('All');
+                      }}
+                      className={`text-left rounded-3xl p-4 sm:p-5 border transition-all cursor-pointer space-y-2.5 ${
+                        isSelected
+                          ? 'bg-[#3b49df] text-white border-[#3b49df] shadow-lg shadow-indigo-200/70'
+                          : 'bg-white text-slate-800 border-slate-100 hover:border-indigo-200 hover:shadow-md'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <h3 className="text-sm font-extrabold leading-snug">{br}</h3>
+                        <GitBranch className={`w-4 h-4 shrink-0 ${isSelected ? 'text-indigo-200' : 'text-indigo-500'}`} />
+                      </div>
+                      <div className={`flex items-center gap-2 text-[11px] font-bold ${isSelected ? 'text-indigo-50' : 'text-slate-600'}`}>
+                        <span>{brNotes} Notes</span>
+                        <span>•</span>
+                        <span>{brPyqs} PYQs</span>
+                        <span>•</span>
+                        <span>{brLecs} Videos</span>
+                      </div>
+                      <div className={`text-[11px] font-medium ${isSelected ? 'text-indigo-100' : 'text-slate-400'}`}>
+                        {brCoordsCount} Coordinator{brCoordsCount === 1 ? '' : 's'} • {brMats.length} Total Files
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Selected Branch Quick Actions */}
+              <div className="bg-white rounded-3xl border border-slate-100/90 p-5 sm:p-6 shadow-[0_2px_14px_rgba(0,0,0,0.02)] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-extrabold text-slate-900">{selectedManageBranch}</h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {branchCoords.length} Coordinator{branchCoords.length === 1 ? '' : 's'} assigned • {branchMaterials.length} Uploaded Materials across {relevantYears.join(', ')}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUploadYear(relevantYears[0]);
+                      setUploadBranch(selectedManageBranch);
+                      setUploadSemester('');
+                      setUploadSubject('');
+                      selectAdminNav('Upload Material');
+                    }}
+                    className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs font-bold shadow-sm transition-colors cursor-pointer"
+                  >
+                    <UploadCloud className="w-3.5 h-3.5" />
+                    <span>Upload Material</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSubjYear(relevantYears[0]);
+                      setSubjBranch(selectedManageBranch);
+                      setSubjSemester(YEAR_SEMESTER_MAP[relevantYears[0]][0]);
+                      selectAdminNav('Add Subject');
+                    }}
+                    className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Subject</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Year-by-Year Breakdown for Selected Branch */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {relevantYears.map((yr) => {
+                  const sems = YEAR_SEMESTER_MAP[yr] || [];
+                  const coord = branchCoords.find((c) => c.year === yr);
+                  const yrMats = branchMaterials.filter(
+                    (m) => m.year.replace(' Year', '').trim().toLowerCase() === yr.replace(' Year', '').trim().toLowerCase()
+                  );
+                  const semSubjs = sems.flatMap((sem) => getSubjectsFor(yr, selectedManageBranch, sem));
+
+                  return (
+                    <div key={yr} className="bg-white rounded-3xl border border-slate-100/90 p-5 shadow-[0_2px_14px_rgba(0,0,0,0.02)] space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-base font-extrabold text-slate-900">{yr}</h4>
+                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700">
+                          {sems.join(' & ')}
+                        </span>
+                      </div>
+
+                      <div className="text-xs text-slate-600">
+                        Coordinator:{' '}
+                        {coord ? (
+                          <strong className={coord.status === 'Inactive' ? 'text-rose-600' : 'text-emerald-700'}>
+                            {coord.name} ({coord.status})
+                          </strong>
+                        ) : (
+                          <span className="text-amber-600 font-semibold">Not Assigned</span>
+                        )}
+                      </div>
+
+                      <div className="text-xs text-slate-500">
+                        <strong>{semSubjs.length}</strong> Subjects • <strong>{yrMats.length}</strong> Materials
+                      </div>
+
+                      {semSubjs.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {semSubjs.slice(0, 6).map((s) => (
+                            <span key={`${s.title}-${s.code}`} className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-700">
+                              {s.title}
+                            </span>
+                          ))}
+                          {semSubjs.length > 6 && (
+                            <span className="text-[10px] font-semibold text-slate-400">+{semSubjs.length - 6} more</span>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                        <button
+                          type="button"
+                          onClick={() => setManageBranchYearFilter(yr)}
+                          className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 cursor-pointer"
+                        >
+                          Show Files ({yrMats.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSubjYear(yr);
+                            setSubjBranch(selectedManageBranch);
+                            setSubjSemester(sems[0]);
+                            selectAdminNav('Add Subject');
+                          }}
+                          className="text-[11px] font-bold text-slate-700 hover:text-indigo-600 cursor-pointer"
+                        >
+                          Manage Subjects
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Materials List for Selected Branch */}
+              <div className="bg-white rounded-3xl border border-slate-100/90 p-5 sm:p-6 shadow-[0_2px_14px_rgba(0,0,0,0.02)] space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <h4 className="text-sm font-bold text-slate-900">
+                    {selectedManageBranch} Materials ({filteredBranchMaterials.length})
+                  </h4>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setManageBranchYearFilter('All')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                        manageBranchYearFilter === 'All'
+                          ? 'bg-[#3b49df] text-white'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      All Years
+                    </button>
+                    {relevantYears.map((yr) => (
+                      <button
+                        key={yr}
+                        type="button"
+                        onClick={() => setManageBranchYearFilter(yr)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                          manageBranchYearFilter === yr
+                            ? 'bg-[#3b49df] text-white'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {yr}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {filteredBranchMaterials.length === 0 ? (
+                  <div className="text-center py-10 text-xs text-slate-400">
+                    No materials uploaded for {selectedManageBranch} {manageBranchYearFilter !== 'All' ? `(${manageBranchYearFilter})` : ''} yet.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-100 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                          <th className="py-3 pr-4">Material</th>
+                          <th className="py-3 px-3">Year</th>
+                          <th className="py-3 px-3">Subject</th>
+                          <th className="py-3 px-3">Type</th>
+                          <th className="py-3 pl-3 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-xs">
+                        {filteredBranchMaterials.map((m) => (
+                          <tr key={m.id} className="hover:bg-slate-50/80">
+                            <td className="py-3 pr-4 font-bold text-slate-900 max-w-[240px] truncate">{m.fileName}</td>
+                            <td className="py-3 px-3 text-slate-600">{m.year}</td>
+                            <td className="py-3 px-3 text-slate-600">{m.subject} {m.semester ? `(${m.semester})` : ''}</td>
+                            <td className="py-3 px-3">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                m.type === 'PYQs'
+                                  ? 'bg-amber-50 text-amber-700'
+                                  : m.type === 'Lectures'
+                                  ? 'bg-purple-50 text-purple-700'
+                                  : 'bg-blue-50 text-blue-700'
+                              }`}>
+                                {m.type}
+                              </span>
+                            </td>
+                            <td className="py-3 pl-3 text-right">
+                              <div className="inline-flex items-center space-x-1">
+                                <button type="button" onClick={() => setPreviewMaterial(m)} title="Preview" className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 cursor-pointer"><Eye className="w-3.5 h-3.5" /></button>
+                                <button type="button" onClick={() => handleDownloadSingle(m)} title="Open / Download" className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 cursor-pointer"><Download className="w-3.5 h-3.5" /></button>
+                                {m.type !== 'Lectures' && (
+                                  <button type="button" onClick={() => handleOpenEditMaterial(m)} title="Rename" className="p-1.5 rounded-lg text-slate-500 hover:text-amber-600 hover:bg-amber-50 cursor-pointer"><Edit3 className="w-3.5 h-3.5" /></button>
+                                )}
+                                <button type="button" onClick={() => handleDeleteSingle(m.id, m.fileName)} title="Delete" className="p-1.5 rounded-lg text-red-500 hover:text-red-700 hover:bg-red-50 cursor-pointer"><Trash2 className="w-3.5 h-3.5" /></button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
       </main>
 
