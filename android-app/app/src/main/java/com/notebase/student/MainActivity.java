@@ -59,6 +59,7 @@ public class MainActivity extends AppCompatActivity {
     private FrameLayout customViewContainer;
     private FrameLayout pdfNativeContainer;
     private LinearLayout offlineErrorLayout;
+    private LinearLayout splashOverlay;
     private NativePdfViewerView nativePdfViewerView;
     private PdfCacheManager pdfCacheManager;
 
@@ -108,7 +109,13 @@ public class MainActivity extends AppCompatActivity {
         customViewContainer = findViewById(R.id.customViewContainer);
         pdfNativeContainer = findViewById(R.id.pdfNativeContainer);
         offlineErrorLayout = findViewById(R.id.offlineErrorLayout);
+        splashOverlay = findViewById(R.id.splashOverlay);
         MaterialButton btnRetryConnection = findViewById(R.id.btnRetryConnection);
+        if (savedInstanceState != null && splashOverlay != null) {
+            splashOverlay.setVisibility(View.GONE);
+        } else if (splashOverlay != null) {
+            splashOverlay.postDelayed(this::dismissSplashOverlay, 4500L);
+        }
 
         pdfCacheManager = new PdfCacheManager(this);
         nativePdfViewerView = new NativePdfViewerView(this);
@@ -208,10 +215,17 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                super.onPageCommitVisible(view, url);
+                dismissSplashOverlay();
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 progressBar.setVisibility(View.GONE);
                 hasRetriedOfflineCache = false;
                 offlineErrorLayout.setVisibility(View.GONE);
+                dismissSplashOverlay();
                 super.onPageFinished(view, url);
             }
 
@@ -225,6 +239,7 @@ public class MainActivity extends AppCompatActivity {
                         view.reload();
                     } else if (!isDeviceOnline()) {
                         progressBar.setVisibility(View.GONE);
+                        dismissSplashOverlay();
                         offlineErrorLayout.setVisibility(View.VISIBLE);
                     }
                 }
@@ -332,6 +347,21 @@ public class MainActivity extends AppCompatActivity {
         } else {
             webView.restoreState(savedInstanceState);
         }
+    }
+
+    private void dismissSplashOverlay() {
+        if (splashOverlay == null || splashOverlay.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        splashOverlay.animate()
+                .alpha(0f)
+                .setDuration(180L)
+                .withEndAction(() -> {
+                    if (splashOverlay != null) {
+                        splashOverlay.setVisibility(View.GONE);
+                    }
+                })
+                .start();
     }
 
     private void handleExitPrompt() {
