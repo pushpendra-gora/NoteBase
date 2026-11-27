@@ -226,12 +226,14 @@ export let lastGoogleDriveError: string = '';
  */
 export async function uploadPdfToGoogleDrive(
   file: File,
-  folderId?: string
+  folderId?: string,
+  driveId?: string
 ): Promise<{
   success: boolean;
   fileUrl: string;
   downloadUrl: string;
   fileId: string;
+  driveUsedName?: string;
   error?: string;
 }> {
   lastGoogleDriveError = '';
@@ -243,6 +245,7 @@ export async function uploadPdfToGoogleDrive(
 
     const payload = {
       scriptUrl: webhookUrl || undefined,
+      driveId: driveId || undefined,
       fileName: file.name,
       mimeType: file.type || 'application/pdf',
       base64: base64Data,

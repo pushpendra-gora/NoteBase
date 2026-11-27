@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient, getSupabaseCredentials } from '@/lib/supabase';
 import { getAdminSession, getStaffSession } from '@/lib/serverAuth';
+import { loadMultiDriveState } from '@/lib/serverDrive';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,8 +12,7 @@ export async function GET(req: NextRequest) {
   const customKey = isAdmin ? (req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined) : undefined;
 
   const creds = getSupabaseCredentials(customUrl, customKey);
-  let driveWebhookUrl = process.env.GOOGLE_DRIVE_WEBHOOK_URL || process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL || '';
-  let driveFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID || process.env.NEXT_PUBLIC_GOOGLE_DRIVE_FOLDER_ID || '';
+  const envMultiDrive = await loadMultiDriveState(null);
 
   if (!creds.url || !creds.key) {
     return NextResponse.json({
@@ -21,12 +21,12 @@ export async function GET(req: NextRequest) {
       ...(isStaff
         ? {
             error:
-              'Supabase credentials are missing. Please set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY on Vercel or enter them in Admin Settings.',
+              'Supabase credentials are missing. Please set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY on Vercel.',
             tables: {},
           }
         : {}),
       googleDrive: {
-        configured: Boolean(driveWebhookUrl),
+        configured: envMultiDrive.drives.length > 0,
       },
     });
   }
@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
           }
         : {}),
       googleDrive: {
-        configured: Boolean(driveWebhookUrl),
+        configured: envMultiDrive.drives.length > 0,
       },
     });
   }
@@ -84,20 +84,15 @@ export async function GET(req: NextRequest) {
     tablesStatus.subjects = { exists: false, error: e?.message };
   }
 
-  // 5. Admin Credentials Table Check & Drive Webhook Check
+  // 5. Admin Credentials Table Check
   try {
-    const { data: adminData, error } = await client.from('admin_credentials').select('id, gdrive_webhook, gdrive_folder_id').eq('id', 'admin').limit(1).single();
+    const { error } = await client.from('admin_credentials').select('id').eq('id', 'admin').limit(1).single();
     tablesStatus.admin_credentials = { exists: !error, error: error?.message };
-    if (adminData?.gdrive_webhook && !driveWebhookUrl) {
-      driveWebhookUrl = adminData.gdrive_webhook;
-      if (adminData.gdrive_folder_id && !driveFolderId) {
-        driveFolderId = adminData.gdrive_folder_id;
-      }
-    }
   } catch (e: any) {
     tablesStatus.admin_credentials = { exists: false, error: e?.message };
   }
 
+  const multiState = await loadMultiDriveState(client);
   const hasAnyTableError = Object.values(tablesStatus).some((t) => !t.exists);
   const primaryError = Object.entries(tablesStatus).find(([, t]) => !t.exists)?.[1]?.error;
 
@@ -113,7 +108,7 @@ export async function GET(req: NextRequest) {
         }
       : {}),
     googleDrive: {
-      configured: Boolean(driveWebhookUrl),
+      configured: multiState.drives.length > 0,
     },
   });
 }

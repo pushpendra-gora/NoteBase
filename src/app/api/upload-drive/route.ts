@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
 import { getAdminSession, getCoordinatorSession, isValidGoogleScriptUrl } from '@/lib/serverAuth';
 import { isBranchMatch } from '@/lib/coordinatorService';
-import { deleteFileFromGoogleDriveServer, extractGoogleDriveFileId } from '@/lib/serverDrive';
+import { deleteFileFromGoogleDriveServer, extractGoogleDriveFileId, loadMultiDriveState } from '@/lib/serverDrive';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -19,49 +19,27 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { scriptUrl, fileName, mimeType, base64, folderId } = body;
+    const { scriptUrl, driveId, fileName, mimeType, base64, folderId } = body;
 
-    // 1. Determine Google Apps Script Web App URL (only Admin may supply custom scriptUrl fallback):
-    // Priority 1: Server environment variables
-    // Priority 2: Stored in Supabase admin_credentials table
-    // Priority 3: Admin-provided scriptUrl (never Coordinator-provided)
-    let targetScriptUrl =
-      process.env.GOOGLE_DRIVE_WEBHOOK_URL ||
-      process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL ||
-      process.env.GDRIVE_WEBHOOK_URL ||
-      undefined;
-    let targetFolderId =
-      (adminSession ? folderId : undefined) ||
-      process.env.GOOGLE_DRIVE_FOLDER_ID ||
-      process.env.NEXT_PUBLIC_GOOGLE_DRIVE_FOLDER_ID ||
-      undefined;
+    const client = getSupabaseClient();
+    const multiState = await loadMultiDriveState(client);
 
-    if (!targetScriptUrl) {
-      try {
-        const client = getSupabaseClient();
-        if (client) {
-          const { data } = await client
-            .from('admin_credentials')
-            .select('gdrive_webhook, gdrive_folder_id')
-            .eq('id', 'admin')
-            .limit(1)
-            .single();
+    // Pick targeted Drive if Admin is testing a specific slot; otherwise use the Admin-selected Active Drive
+    const selectedDrive =
+      adminSession && driveId
+        ? multiState.drives.find((d) => d.id === String(driveId).trim()) || null
+        : multiState.activeDrive;
 
-          if (data?.gdrive_webhook) {
-            targetScriptUrl = data.gdrive_webhook;
-            if (!targetFolderId && data.gdrive_folder_id) {
-              targetFolderId = data.gdrive_folder_id;
-            }
-          }
-        }
-      } catch (dbErr) {
-        console.warn('Could not check Supabase for Google Drive webhook:', dbErr);
-      }
+    if (adminSession && driveId && !selectedDrive) {
+      return NextResponse.json(
+        { success: false, error: 'Selected Google Drive slot is not configured on the server.' },
+        { status: 404 }
+      );
     }
 
-    if (!targetScriptUrl && adminSession && scriptUrl) {
-      targetScriptUrl = scriptUrl;
-    }
+    const targetScriptUrl = selectedDrive?.webhookUrl || (adminSession ? scriptUrl : undefined);
+    const targetFolderId =
+      (adminSession && folderId ? String(folderId).trim() : undefined) || selectedDrive?.folderId;
 
     if (!targetScriptUrl) {
       return NextResponse.json(
@@ -167,7 +145,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (jsonOutput && jsonOutput.success && jsonOutput.fileUrl) {
-      return NextResponse.json(jsonOutput);
+      return NextResponse.json({
+        ...jsonOutput,
+        driveUsedId: selectedDrive?.id || null,
+        driveUsedName: selectedDrive?.name || 'Active Drive',
+      });
     }
 
     if (jsonOutput && jsonOutput.error) {
@@ -197,31 +179,13 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET() {
-  let isConfigured = Boolean(
-    process.env.GOOGLE_DRIVE_WEBHOOK_URL ||
-      process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL ||
-      process.env.GDRIVE_WEBHOOK_URL
-  );
-  if (!isConfigured) {
-    try {
-      const client = getSupabaseClient();
-      if (client) {
-        const { data } = await client
-          .from('admin_credentials')
-          .select('gdrive_webhook')
-          .eq('id', 'admin')
-          .limit(1)
-          .single();
-        if (data?.gdrive_webhook) {
-          isConfigured = true;
-        }
-      }
-    } catch {}
-  }
+  const client = getSupabaseClient();
+  const state = await loadMultiDriveState(client);
 
   return NextResponse.json({
     status: 'online',
-    configured: isConfigured,
+    configured: state.drives.length > 0,
+    totalDrives: state.drives.length,
     service: 'Google Drive PDF Upload Gateway',
   });
 }

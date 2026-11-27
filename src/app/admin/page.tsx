@@ -702,27 +702,139 @@ export default function AdminPage() {
     }, 2800);
   };
 
-  // Google Drive Server Env Status State (configured strictly via Vercel/server environment variables)
+  // Google Drive Multi-Drive Server Registry State (never exposes secret URLs or Folder IDs in UI/Inspect)
   const [driveServerConfigured, setDriveServerConfigured] = useState(false);
+  const [driveList, setDriveList] = useState<
+    Array<{ id: string; name: string; source: 'env' | 'database'; hasCustomFolder: boolean; isActive: boolean }>
+  >([]);
+  const [activeDriveId, setActiveDriveId] = useState<string | null>(null);
+  const [nextEnvSlotNumber, setNextEnvSlotNumber] = useState<number>(2);
+  const [driveSchemaNeedsMigration, setDriveSchemaNeedsMigration] = useState(false);
+  const [isSwitchingDriveId, setIsSwitchingDriveId] = useState<string | null>(null);
+  const [isAddDriveModalOpen, setIsAddDriveModalOpen] = useState(false);
+  const [addDriveMode, setAddDriveMode] = useState<'env' | 'vault'>('env');
+  const [newDriveForm, setNewDriveForm] = useState({
+    name: '',
+    webhookUrl: '',
+    folderId: '',
+    setActive: true,
+  });
+  const [isSavingNewDrive, setIsSavingNewDrive] = useState(false);
   const [isGdriveTesting, setIsGdriveTesting] = useState(false);
+  const [testingDriveId, setTestingDriveId] = useState<string | null>(null);
   const [gdriveTestResult, setGdriveTestResult] = useState<{ success: boolean; message: string; fileUrl?: string } | null>(null);
   const [showScriptCode, setShowScriptCode] = useState(false);
   const [copiedScript, setCopiedScript] = useState(false);
 
-  // Sync Google Drive status strictly from server (boolean only, never exposes secret URLs or IDs)
-  useEffect(() => {
+  // Sync Google Drive multi-drive registry strictly from server (zero secret URLs/IDs returned)
+  const syncDriveRegistry = useCallback(async () => {
     if (!isLoggedIn || typeof window === 'undefined') return;
-    fetch('/api/admin/config', { cache: 'no-store' })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.success !== undefined) {
-          const configured = Boolean(data.configured);
-          setDriveServerConfigured(configured);
-          localStorage.setItem('notebase_gdrive_server_configured', configured ? 'true' : 'false');
+    try {
+      const res = await fetch('/api/admin/config', { cache: 'no-store' });
+      const data = await res.json();
+      if (data?.success !== undefined) {
+        const configured = Boolean(data.configured);
+        setDriveServerConfigured(configured);
+        setDriveList(Array.isArray(data.drives) ? data.drives : []);
+        setActiveDriveId(data.activeDriveId || null);
+        if (typeof data.nextEnvSlotNumber === 'number') {
+          setNextEnvSlotNumber(data.nextEnvSlotNumber);
         }
-      })
-      .catch(() => {});
+        setDriveSchemaNeedsMigration(Boolean(data.schemaNeedsMigration));
+        localStorage.setItem('notebase_gdrive_server_configured', configured ? 'true' : 'false');
+      }
+    } catch {}
   }, [isLoggedIn]);
+
+  useEffect(() => {
+    syncDriveRegistry();
+  }, [syncDriveRegistry]);
+
+  const handleSetActiveDrive = async (driveId: string, driveName: string) => {
+    setIsSwitchingDriveId(driveId);
+    try {
+      const res = await fetch('/api/admin/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'set-active', driveId }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.success) {
+        await syncDriveRegistry();
+        showToast(`✅ New uploads will now go to "${driveName}"!`, 'success');
+      } else {
+        if (data?.schemaNeedsMigration) setDriveSchemaNeedsMigration(true);
+        showToast(`⚠️ ${data?.error || 'Could not switch active upload drive.'}`, 'error');
+      }
+    } catch {
+      showToast('Network error while switching active Google Drive.', 'error');
+    } finally {
+      setIsSwitchingDriveId(null);
+    }
+  };
+
+  const handleAddNewDriveSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSavingNewDrive) return;
+    setIsSavingNewDrive(true);
+    try {
+      const res = await fetch('/api/admin/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'add-drive',
+          name: newDriveForm.name.trim(),
+          webhookUrl: newDriveForm.webhookUrl.trim(),
+          folderId: newDriveForm.folderId.trim(),
+          setActive: newDriveForm.setActive,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.success) {
+        const addedName = newDriveForm.name.trim();
+        setNewDriveForm({ name: '', webhookUrl: '', folderId: '', setActive: true });
+        setIsAddDriveModalOpen(false);
+        await syncDriveRegistry();
+        showToast(`✅ "${addedName}" added securely on server!`, 'success');
+      } else {
+        if (data?.schemaNeedsMigration) setDriveSchemaNeedsMigration(true);
+        showToast(`⚠️ ${data?.error || 'Could not add new Google Drive.'}`, 'error');
+      }
+    } catch {
+      showToast('Network error while adding Google Drive.', 'error');
+    } finally {
+      setIsSavingNewDrive(false);
+    }
+  };
+
+  const handleRemoveDbDrive = (driveId: string, driveName: string) => {
+    setDeleteConfirm({
+      title: 'Disconnect Google Drive',
+      message: `Remove "${driveName}" from active upload configuration? Existing files already stored in "${driveName}" will remain readable for students and coordinators.`,
+      onConfirm: async () => {
+        const res = await fetch('/api/admin/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'remove-drive', driveId }),
+        });
+        const data = await res.json();
+        if (res.ok && data?.success) {
+          await syncDriveRegistry();
+          showToast(`Removed "${driveName}" from upload rotation.`, 'success');
+        } else {
+          showToast(data?.error || 'Failed to remove drive.', 'error');
+        }
+      },
+    });
+  };
+
+  const handleCopyMultiDriveSql = () => {
+    const sql = `alter table public.admin_credentials add column if not exists active_drive_id text;\nalter table public.admin_credentials add column if not exists gdrive_drives jsonb default '[]'::jsonb;`;
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(sql);
+      showToast('📋 Multi-Drive SQL copied to clipboard!', 'success');
+    }
+  };
 
   // Test Supabase Connection & Table Availability (via Server Env Variables)
   const handleTestSupabaseConnection = async () => {
@@ -769,27 +881,29 @@ export default function AdminPage() {
     }
   };
 
-  // Test Google Drive Upload (using Server Environment Variable GOOGLE_DRIVE_WEBHOOK_URL)
-  const handleTestGoogleDriveUpload = async () => {
+  // Test Google Drive Upload (Active Drive or a specific selected Drive slot)
+  const handleTestGoogleDriveUpload = async (targetDriveId?: string) => {
     if (!driveServerConfigured && !isGoogleDriveConfigured()) {
       showToast('Google Drive is not configured in Vercel/server environment variables.', 'error');
       return;
     }
     setIsGdriveTesting(true);
+    setTestingDriveId(targetDriveId || null);
     setGdriveTestResult(null);
 
     try {
       const testContent = '%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R >>\nendobj\nxref\n0 4\ntrailer\n<< /Root 1 0 R >>\n%%EOF';
       const testFile = new File([testContent], `test_drive_connection_${Date.now()}.pdf`, { type: 'application/pdf' });
       
-      const res = await uploadPdfToGoogleDrive(testFile);
+      const res = await uploadPdfToGoogleDrive(testFile, undefined, targetDriveId);
       if (res.success && res.fileUrl) {
+        const usedLabel = res.driveUsedName || 'Active Google Drive';
         setGdriveTestResult({
           success: true,
-          message: 'Connection verified! Test PDF successfully uploaded to your Google Drive.',
+          message: `Connection verified! Test PDF successfully uploaded to "${usedLabel}".`,
           fileUrl: res.fileUrl
         });
-        showToast('Google Drive connected & verified successfully!', 'success');
+        showToast(`Google Drive "${usedLabel}" verified successfully!`, 'success');
       } else {
         setGdriveTestResult({
           success: false,
@@ -805,6 +919,7 @@ export default function AdminPage() {
       showToast('Error testing Google Drive connection.', 'error');
     } finally {
       setIsGdriveTesting(false);
+      setTestingDriveId(null);
     }
   };
 
@@ -3438,6 +3553,7 @@ export default function AdminPage() {
                   type="button"
                   onClick={() => {
                     syncAllMaterials();
+                    syncDriveRegistry();
                     handleTestSupabaseConnection();
                   }}
                   className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-bold transition-all shadow-sm cursor-pointer"
@@ -3581,23 +3697,44 @@ export default function AdminPage() {
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                           : 'bg-amber-50 text-amber-700 border-amber-200'
                       }`}>
-                        {(driveServerConfigured || isGoogleDriveConfigured()) ? '● Active (Env Connected)' : '○ Env Setup Required'}
+                        {(driveServerConfigured || isGoogleDriveConfigured())
+                          ? `● ${Math.max(1, driveList.length)} Drive(s) Connected`
+                          : '○ Env Setup Required'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Jab bhi koi file upload karega, PDF aapke Google Drive me save hogi aur uska public shareable link Supabase database me store hoga.
+                      New uploads sirf selected Active Drive me save honge — purani saari drives se Students aur Coordinators files read, preview, download aur delete kar sakte hain.
                     </p>
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setShowScriptCode(!showScriptCode)}
-                  className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer self-start sm:self-center shrink-0"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>{showScriptCode ? 'Hide Setup Script' : 'View / Copy Setup Script'}</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewDriveForm({
+                        name: `Drive ${nextEnvSlotNumber}`,
+                        webhookUrl: '',
+                        folderId: '',
+                        setActive: true,
+                      });
+                      setIsAddDriveModalOpen(true);
+                    }}
+                    className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-[#3b49df] hover:bg-indigo-700 text-white text-xs font-bold shadow-sm transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add New Drive</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowScriptCode(!showScriptCode)}
+                    className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>{showScriptCode ? 'Hide Setup Script' : 'View / Copy Setup Script'}</span>
+                  </button>
+                </div>
               </div>
 
               {/* 60-Second Setup Instructions & Code Snippet Box */}
@@ -3660,12 +3797,138 @@ export default function AdminPage() {
                 </div>
               )}
 
+              {/* Multi-Drive Migration Notice if new columns are missing in Supabase */}
+              {driveSchemaNeedsMigration && (
+                <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-900">
+                  <div className="flex items-start space-x-2">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <span>
+                      To switch active upload drives or store additional drives on server, run the Multi-Drive SQL update in Supabase SQL Editor.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCopyMultiDriveSql}
+                    className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold shrink-0 cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy Multi-Drive SQL</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Connected Google Drives List (Active Upload Target Selection - Zero Secrets Exposed) */}
+              {driveList.length > 0 && (
+                <div className="space-y-2.5 pt-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-700 uppercase tracking-wider text-[11px]">
+                      Registered Google Drives ({driveList.length})
+                    </span>
+                    <span className="text-[11px] text-slate-400">
+                      Select which Drive receives new uploads
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {driveList.map((drv) => (
+                      <div
+                        key={drv.id}
+                        className={`p-3.5 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all ${
+                          drv.isActive
+                            ? 'bg-emerald-50/60 border-emerald-200 shadow-xs'
+                            : 'bg-slate-50/70 border-slate-200/80'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-3 min-w-0">
+                          <div
+                            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                              drv.isActive
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-white text-slate-500 border border-slate-200'
+                            }`}
+                          >
+                            <HardDrive className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-xs sm:text-sm font-bold text-slate-900 truncate">
+                                {drv.name}
+                              </span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white text-slate-600 border border-slate-200">
+                                {drv.source === 'env' ? 'Vercel Env' : 'Server Vault'}
+                              </span>
+                              {drv.hasCustomFolder && (
+                                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+                                  Custom Folder
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-slate-500 mt-0.5">
+                              {drv.isActive
+                                ? 'Active Upload Target — All new Coordinator & Admin uploads save here'
+                                : 'Read & Delete Enabled — Older files stay accessible across Student & Coordinator portals'}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          {drv.isActive ? (
+                            <span className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-[11px] font-bold">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Active Upload Drive</span>
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={isSwitchingDriveId === drv.id}
+                              onClick={() => handleSetActiveDrive(drv.id, drv.name)}
+                              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 text-[11px] font-bold transition-colors cursor-pointer disabled:opacity-50"
+                            >
+                              {isSwitchingDriveId === drv.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Check className="w-3.5 h-3.5" />
+                              )}
+                              <span>Use for New Uploads</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            disabled={isGdriveTesting}
+                            onClick={() => handleTestGoogleDriveUpload(drv.id)}
+                            className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-[11px] font-bold transition-colors cursor-pointer disabled:opacity-50"
+                          >
+                            {isGdriveTesting && testingDriveId === drv.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Upload className="w-3 h-3" />
+                            )}
+                            <span>Test</span>
+                          </button>
+
+                          {drv.source === 'database' && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveDbDrive(drv.id, drv.name)}
+                              className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-[11px] font-bold transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Environment-only Status & Connection Test (No secret URLs or Folder IDs shown in UI/Inspect) */}
               <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-t border-slate-100">
                 <div className="flex items-start sm:items-center space-x-2.5 text-xs text-slate-600">
                   <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5 sm:mt-0" />
                   <span>
-                    Managed securely via Server Environment Variables (<code>GOOGLE_DRIVE_WEBHOOK_URL</code> &amp; optional <code>GOOGLE_DRIVE_FOLDER_ID</code>). Hidden from browser inspect.
+                    Managed securely via Server Environment Variables (<code>GOOGLE_DRIVE_WEBHOOK_URL</code>, <code>GOOGLE_DRIVE_2_WEBHOOK_URL</code>, ...) &amp; Server Vault. Hidden from browser inspect.
                   </span>
                 </div>
 
@@ -3673,10 +3936,10 @@ export default function AdminPage() {
                   <button
                     type="button"
                     disabled={isGdriveTesting}
-                    onClick={handleTestGoogleDriveUpload}
+                    onClick={() => handleTestGoogleDriveUpload()}
                     className="inline-flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
                   >
-                    {isGdriveTesting ? (
+                    {isGdriveTesting && !testingDriveId ? (
                       <>
                         <RefreshCw className="w-3.5 h-3.5 animate-spin text-slate-500" />
                         <span>Testing Upload...</span>
@@ -3684,7 +3947,7 @@ export default function AdminPage() {
                     ) : (
                       <>
                         <Upload className="w-3.5 h-3.5 text-slate-500" />
-                        <span>Test Google Drive Connection</span>
+                        <span>Test Active Drive</span>
                       </>
                     )}
                   </button>
@@ -5430,6 +5693,199 @@ grant all on public.coordinator_issues to anon, authenticated, service_role;`;
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================
+          MODAL: ADD NEW GOOGLE DRIVE (UNLIMITED EXPANSION WHEN STORAGE FULL)
+         ================================================================= */}
+      {isAddDriveModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 space-y-5 animate-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                  <HardDrive className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Add New Google Drive</h3>
+                  <p className="text-xs text-slate-500">
+                    Nayi Drive add karne par purani drives ka saara data readable rahega aur sirf selected Active Drive me naya upload jayega.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddDriveModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 cursor-pointer p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Mode Switcher: Vercel Env Vars (Recommended) vs Server Vault */}
+            <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-slate-100 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setAddDriveMode('env')}
+                className={`py-2 rounded-xl transition-all cursor-pointer ${
+                  addDriveMode === 'env'
+                    ? 'bg-white text-indigo-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Vercel Env Variables
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddDriveMode('vault')}
+                className={`py-2 rounded-xl transition-all cursor-pointer ${
+                  addDriveMode === 'vault'
+                    ? 'bg-white text-indigo-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Direct Server Save
+              </button>
+            </div>
+
+            {addDriveMode === 'env' ? (
+              <div className="space-y-4 text-xs">
+                <div className="p-4 rounded-2xl bg-indigo-50/70 border border-indigo-100 space-y-2 text-indigo-950">
+                  <div className="font-bold text-indigo-800">
+                    Next Available Drive Slot: Drive {nextEnvSlotNumber}
+                  </div>
+                  <p className="text-indigo-800/80 leading-relaxed">
+                    New Google account me Apps Script deploy karke Vercel Project &rarr; <strong>Settings &rarr; Environment Variables</strong> me ye variables add karein aur <strong>Redeploy</strong> karein:
+                  </p>
+                </div>
+
+                <div className="space-y-2.5">
+                  {[
+                    {
+                      key: `GOOGLE_DRIVE_${nextEnvSlotNumber}_WEBHOOK_URL`,
+                      desc: 'Required — New Google Apps Script Web App URL (ends with /exec)',
+                    },
+                    {
+                      key: `GOOGLE_DRIVE_${nextEnvSlotNumber}_FOLDER_ID`,
+                      desc: 'Optional — Target Folder ID in new Google Drive',
+                    },
+                    {
+                      key: `GOOGLE_DRIVE_${nextEnvSlotNumber}_NAME`,
+                      desc: `Optional — Display label (e.g. Drive ${nextEnvSlotNumber})`,
+                    },
+                  ].map((item) => (
+                    <div
+                      key={item.key}
+                      className="p-3 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-mono font-bold text-slate-900 text-[11px] break-all">
+                          {item.key}
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">{item.desc}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(item.key);
+                          showToast(`Copied ${item.key}`, 'info');
+                        }}
+                        className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 font-bold text-[11px] shrink-0 cursor-pointer flex items-center space-x-1"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>Copy</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <p className="text-[11px] text-slate-500">
+                  Redeploy hone ke baad ye nayi drive yaha Registered Google Drives list me automatically aa jayegi — phir sirf <strong>Use for New Uploads</strong> button dabana hai.
+                </p>
+
+                <div className="flex justify-end pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddDriveModalOpen(false)}
+                    className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleAddNewDriveSubmit} className="space-y-4 text-xs">
+                <div className="space-y-1.5">
+                  <label className="font-bold text-slate-700 block">Drive Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={newDriveForm.name}
+                    onChange={(e) => setNewDriveForm({ ...newDriveForm, name: e.target.value })}
+                    placeholder={`e.g. Drive ${nextEnvSlotNumber}`}
+                    className="w-full h-11 px-3.5 rounded-xl border border-slate-200 font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="font-bold text-slate-700 block">Google Apps Script Web App URL *</label>
+                  <input
+                    type="url"
+                    required
+                    value={newDriveForm.webhookUrl}
+                    onChange={(e) => setNewDriveForm({ ...newDriveForm, webhookUrl: e.target.value })}
+                    placeholder="https://script.google.com/macros/s/.../exec"
+                    className="w-full h-11 px-3.5 rounded-xl border border-slate-200 font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <p className="text-[11px] text-slate-400">
+                    Server database me save hone ke baad ye URL dubara browser UI ya inspect me nahi dikhegi.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="font-bold text-slate-700 block">Google Drive Folder ID (Optional)</label>
+                  <input
+                    type="text"
+                    value={newDriveForm.folderId}
+                    onChange={(e) => setNewDriveForm({ ...newDriveForm, folderId: e.target.value })}
+                    placeholder="Leave blank for auto-folder"
+                    className="w-full h-11 px-3.5 rounded-xl border border-slate-200 font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+
+                <label className="flex items-center space-x-2.5 cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    checked={newDriveForm.setActive}
+                    onChange={(e) => setNewDriveForm({ ...newDriveForm, setActive: e.target.checked })}
+                    className="w-4 h-4 rounded text-indigo-600 border-slate-300"
+                  />
+                  <span className="font-bold text-slate-700">
+                    Set as Active Upload Drive immediately (All new files will upload here)
+                  </span>
+                </label>
+
+                <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddDriveModalOpen(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingNewDrive}
+                    className="inline-flex items-center space-x-1.5 px-5 py-2 rounded-xl bg-[#3b49df] hover:bg-indigo-700 text-white font-bold shadow-sm cursor-pointer disabled:opacity-60"
+                  >
+                    {isSavingNewDrive ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                    <span>{isSavingNewDrive ? 'Saving...' : 'Save New Drive'}</span>
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}
