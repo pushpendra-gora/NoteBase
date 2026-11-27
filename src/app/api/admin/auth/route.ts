@@ -146,7 +146,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const creds = await getAdminServerCredentials();
+      const creds = await getAdminServerCredentials(session.id);
 
       if (!verifyPassword(currentPassword, creds.password)) {
         return NextResponse.json(

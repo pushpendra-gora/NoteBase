@@ -26,6 +26,20 @@ export function normalizeSafeExternalUrl(rawUrl?: string | null): string | null 
   }
 }
 
+export function normalizeSafeEmbedUrl(rawUrl?: string | null): string | null {
+  const safe = normalizeSafeExternalUrl(rawUrl);
+  if (!safe) return null;
+  try {
+    const parsed = new URL(safe);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      return parsed.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function openSafeExternalUrl(rawUrl?: string | null): boolean {
   const safe = normalizeSafeExternalUrl(rawUrl);
   if (!safe || typeof window === 'undefined') return false;

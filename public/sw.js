@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'notebase-shell-v2';
+const CACHE_VERSION = 'notebase-shell-v3';
 const SHELL_URLS = ['/', '/results', '/logo.png?v=2'];
 
 self.addEventListener('install', (event) => {
@@ -61,7 +61,6 @@ self.addEventListener('fetch', (event) => {
         try {
           const response = await fetch(request);
           if (response && response.ok) {
-            // Store shell cleanly under base pathname so /results?year=... works for any offline filter
             const shellKey = url.pathname === '/results' ? '/results' : url.pathname;
             cache.put(shellKey, response.clone());
           }
@@ -79,13 +78,24 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // For Next.js RSC client-side transitions, always try network first and never serve stale HTML
+  if (request.headers.get('RSC')) {
+    event.respondWith(
+      fetch(request).catch(async () => {
+        const cache = await caches.open(CACHE_VERSION);
+        return (await cache.match(request)) || Response.error();
+      })
+    );
+    return;
+  }
+
   // Other same-origin static assets (logo, manifest, chunks): Stale-While-Revalidate
   event.respondWith(
     caches.open(CACHE_VERSION).then(async (cache) => {
       const cached = await cache.match(request);
       const fetchPromise = fetch(request)
         .then((response) => {
-          if (response && response.ok && !request.headers.get('RSC')) {
+          if (response && response.ok) {
             cache.put(request, response.clone());
           }
           return response;

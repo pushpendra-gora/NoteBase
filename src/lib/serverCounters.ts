@@ -18,6 +18,13 @@ export interface MaterialCountsSnapshot {
 
 const YEAR_KEYS = ['1st Year', '2nd Year', '3rd Year', '4th Year'] as const;
 
+// In-process async mutex to serialize concurrent read-modify-write counter updates
+let counterMutexChain: Promise<void> = Promise.resolve();
+
+function resolveAdminRowId(adminId?: string): string {
+  return (adminId || process.env.ADMIN_DEFAULT_ID || 'admin').trim() || 'admin';
+}
+
 export function normalizeYearBucket(year?: string | null): keyof MaterialCountsSnapshot['years'] | null {
   if (!year) return null;
   const y = year.toLowerCase();
@@ -45,8 +52,11 @@ function isValidSnapshot(raw: any): raw is MaterialCountsSnapshot {
  * inside `admin_credentials.material_counts` so subsequent Dashboard loads read just 1 column.
  */
 export async function recomputeAndSaveMaterialCounts(
-  client: SupabaseClient
+  client: SupabaseClient,
+  adminId?: string
 ): Promise<{ snapshot: MaterialCountsSnapshot; columnMissing: boolean; error?: string }> {
+  const targetAdminId = resolveAdminRowId(adminId);
+
   const [notesTotal, pyqsTotal, lecsTotal, coordsTotal, openIssuesTotal, ...yearResults] =
     await Promise.all([
       client.from('notes').select('id', { count: 'exact', head: true }),
@@ -96,7 +106,7 @@ export async function recomputeAndSaveMaterialCounts(
     const { error: saveErr } = await client
       .from('admin_credentials')
       .update({ material_counts: snapshot })
-      .eq('id', 'admin');
+      .eq('id', targetAdminId);
     if (saveErr) {
       const msg = String(saveErr.message || '').toLowerCase();
       if (msg.includes('material_counts') || saveErr.code === '42703' || saveErr.code === 'PGRST204') {
@@ -120,19 +130,22 @@ export async function recomputeAndSaveMaterialCounts(
  */
 export async function readMaterialCounts(
   client: SupabaseClient,
-  forceRecompute = false
+  forceRecompute = false,
+  adminId?: string
 ): Promise<{
   snapshot: MaterialCountsSnapshot;
   fromCounterColumn: boolean;
   columnMissing: boolean;
   error?: string;
 }> {
+  const targetAdminId = resolveAdminRowId(adminId);
+
   if (!forceRecompute) {
     try {
       const { data, error } = await client
         .from('admin_credentials')
         .select('material_counts')
-        .eq('id', 'admin')
+        .eq('id', targetAdminId)
         .limit(1)
         .maybeSingle();
 
@@ -148,7 +161,7 @@ export async function readMaterialCounts(
     }
   }
 
-  const computed = await recomputeAndSaveMaterialCounts(client);
+  const computed = await recomputeAndSaveMaterialCounts(client, targetAdminId);
   return {
     snapshot: computed.snapshot,
     fromCounterColumn: !computed.columnMissing,
@@ -159,7 +172,7 @@ export async function readMaterialCounts(
 
 /**
  * Incrementally updates `admin_credentials.material_counts` on upload, delete, coordinator, or issue change
- * so Dashboard stays accurate without ever re-scanning all tables.
+ * inside an async mutex so parallel operations in the same runtime never clobber one another.
  */
 export async function adjustMaterialCounts(
   client: SupabaseClient | null,
@@ -171,62 +184,86 @@ export async function adjustMaterialCounts(
     openIssues?: number;
     year?: string | null;
     yearDelta?: number;
-  }
+    prevYear?: string | null;
+    prevYearDelta?: number;
+    yearAdjustments?: Array<{ year?: string | null; delta: number }>;
+  },
+  adminId?: string
 ): Promise<void> {
   if (!client) return;
-  try {
-    const { data, error } = await client
-      .from('admin_credentials')
-      .select('material_counts')
-      .eq('id', 'admin')
-      .limit(1)
-      .maybeSingle();
+  const targetAdminId = resolveAdminRowId(adminId);
 
-    if (error) {
-      // Column does not exist yet or unavailable — skip silently
-      return;
+  const run = async () => {
+    try {
+      const { data, error } = await client
+        .from('admin_credentials')
+        .select('material_counts')
+        .eq('id', targetAdminId)
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        return;
+      }
+
+      if (!isValidSnapshot(data?.material_counts)) {
+        await recomputeAndSaveMaterialCounts(client, targetAdminId);
+        return;
+      }
+
+      const curr = data.material_counts;
+      const notes = Math.max(0, (curr.notes || 0) + (delta.notes || 0));
+      const pyqs = Math.max(0, (curr.pyqs || 0) + (delta.pyqs || 0));
+      const lectures = Math.max(0, (curr.lectures || 0) + (delta.lectures || 0));
+      const coordinators = Math.max(0, (curr.coordinators || 0) + (delta.coordinators || 0));
+      const openIssues = Math.max(0, (curr.openIssues || 0) + (delta.openIssues || 0));
+
+      const years: MaterialCountsSnapshot['years'] = {
+        '1st Year': curr.years?.['1st Year'] || 0,
+        '2nd Year': curr.years?.['2nd Year'] || 0,
+        '3rd Year': curr.years?.['3rd Year'] || 0,
+        '4th Year': curr.years?.['4th Year'] || 0,
+      };
+
+      const bucket = normalizeYearBucket(delta.year);
+      if (bucket && delta.yearDelta) {
+        years[bucket] = Math.max(0, years[bucket] + delta.yearDelta);
+      }
+
+      const prevBucket = normalizeYearBucket(delta.prevYear);
+      if (prevBucket && delta.prevYearDelta) {
+        years[prevBucket] = Math.max(0, years[prevBucket] + delta.prevYearDelta);
+      }
+
+      if (Array.isArray(delta.yearAdjustments)) {
+        for (const adj of delta.yearAdjustments) {
+          const b = normalizeYearBucket(adj.year);
+          if (b && adj.delta) {
+            years[b] = Math.max(0, years[b] + adj.delta);
+          }
+        }
+      }
+
+      const updated: MaterialCountsSnapshot = {
+        notes,
+        pyqs,
+        lectures,
+        totalFiles: notes + pyqs + lectures,
+        coordinators,
+        openIssues,
+        years,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await client
+        .from('admin_credentials')
+        .update({ material_counts: updated })
+        .eq('id', targetAdminId);
+    } catch {
+      // Non-fatal counter update
     }
+  };
 
-    if (!isValidSnapshot(data?.material_counts)) {
-      await recomputeAndSaveMaterialCounts(client);
-      return;
-    }
-
-    const curr = data.material_counts;
-    const notes = Math.max(0, (curr.notes || 0) + (delta.notes || 0));
-    const pyqs = Math.max(0, (curr.pyqs || 0) + (delta.pyqs || 0));
-    const lectures = Math.max(0, (curr.lectures || 0) + (delta.lectures || 0));
-    const coordinators = Math.max(0, (curr.coordinators || 0) + (delta.coordinators || 0));
-    const openIssues = Math.max(0, (curr.openIssues || 0) + (delta.openIssues || 0));
-
-    const years: MaterialCountsSnapshot['years'] = {
-      '1st Year': curr.years?.['1st Year'] || 0,
-      '2nd Year': curr.years?.['2nd Year'] || 0,
-      '3rd Year': curr.years?.['3rd Year'] || 0,
-      '4th Year': curr.years?.['4th Year'] || 0,
-    };
-
-    const bucket = normalizeYearBucket(delta.year);
-    if (bucket && delta.yearDelta) {
-      years[bucket] = Math.max(0, years[bucket] + delta.yearDelta);
-    }
-
-    const updated: MaterialCountsSnapshot = {
-      notes,
-      pyqs,
-      lectures,
-      totalFiles: notes + pyqs + lectures,
-      coordinators,
-      openIssues,
-      years,
-      updatedAt: new Date().toISOString(),
-    };
-
-    await client
-      .from('admin_credentials')
-      .update({ material_counts: updated })
-      .eq('id', 'admin');
-  } catch {
-    // Non-fatal counter update
-  }
+  counterMutexChain = counterMutexChain.then(run, run);
+  await counterMutexChain;
 }

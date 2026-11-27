@@ -15,14 +15,22 @@ export interface SessionPayload {
 
 // In-memory login attempt tracking per IP/action (mitigates brute-force & SQLi fuzzing)
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const MAX_RATE_LIMIT_ENTRIES = 2000;
 
 export function getClientIp(req: NextRequest): string {
+  const vercelIp = req.headers.get('x-vercel-forwarded-for');
+  if (vercelIp) {
+    const first = vercelIp.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  const realIp = req.headers.get('x-real-ip')?.trim();
+  if (realIp) return realIp;
   const forwarded = req.headers.get('x-forwarded-for');
   if (forwarded) {
     const first = forwarded.split(',')[0]?.trim();
     if (first) return first;
   }
-  return req.headers.get('x-real-ip')?.trim() || 'unknown';
+  return 'unknown';
 }
 
 export function checkLoginRateLimit(
@@ -31,6 +39,15 @@ export function checkLoginRateLimit(
   windowMs = 5 * 60 * 1000
 ): { allowed: boolean; retryAfterSec: number } {
   const now = Date.now();
+  if (loginAttempts.size >= MAX_RATE_LIMIT_ENTRIES) {
+    for (const [k, v] of loginAttempts.entries()) {
+      if (now > v.resetAt) loginAttempts.delete(k);
+    }
+    if (loginAttempts.size >= MAX_RATE_LIMIT_ENTRIES) {
+      const oldestKey = loginAttempts.keys().next().value;
+      if (oldestKey) loginAttempts.delete(oldestKey);
+    }
+  }
   const entry = loginAttempts.get(key);
   if (!entry || now > entry.resetAt) {
     loginAttempts.set(key, { count: 1, resetAt: now + windowMs });

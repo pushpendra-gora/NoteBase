@@ -59,13 +59,24 @@ export function clearSupabaseCredentials() {
   }
 }
 
+function isAllowedSupabaseUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl.trim());
+    return (
+      parsed.protocol === 'https:' &&
+      (parsed.hostname.endsWith('.supabase.co') || parsed.hostname.endsWith('.supabase.in'))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function isSupabaseConfigured(customUrl?: string, customKey?: string): boolean {
   const { url, key } = getSupabaseCredentials(customUrl, customKey);
   return Boolean(
     url &&
     key &&
-    url.startsWith('https://') &&
-    url.includes('.supabase.co') &&
+    isAllowedSupabaseUrl(url) &&
     key.length > 20
   );
 }
@@ -76,7 +87,7 @@ let lastUsedKey = '';
 
 export function getSupabaseClient(customUrl?: string, customKey?: string): SupabaseClient | null {
   const { url, key } = getSupabaseCredentials(customUrl, customKey);
-  if (!url || !key || !url.startsWith('https://')) {
+  if (!url || !key || !isAllowedSupabaseUrl(url)) {
     return null;
   }
 

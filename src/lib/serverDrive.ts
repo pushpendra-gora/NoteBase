@@ -117,7 +117,11 @@ export function getConfiguredEnvDrives(): { drives: ServerDriveEntry[]; maxSlotN
 /**
  * Loads full multi-drive state strictly on the server (Vercel Env Drives + Database Drives + Active Drive ID).
  */
-export async function loadMultiDriveState(client?: SupabaseClient | null): Promise<MultiDriveState> {
+export async function loadMultiDriveState(
+  client?: SupabaseClient | null,
+  adminId?: string
+): Promise<MultiDriveState> {
+  const targetAdminId = (adminId || process.env.ADMIN_DEFAULT_ID || 'admin').trim();
   const { drives: envDrives, maxSlotNumber } = getConfiguredEnvDrives();
   const drives: ServerDriveEntry[] = [...envDrives];
   let activeDriveId: string | null = null;
@@ -128,7 +132,7 @@ export async function loadMultiDriveState(client?: SupabaseClient | null): Promi
       const { data, error } = await client
         .from('admin_credentials')
         .select('active_drive_id, gdrive_drives, gdrive_webhook, gdrive_folder_id')
-        .eq('id', 'admin')
+        .eq('id', targetAdminId)
         .limit(1)
         .maybeSingle();
 
@@ -141,7 +145,7 @@ export async function loadMultiDriveState(client?: SupabaseClient | null): Promi
         const legacy = await client
           .from('admin_credentials')
           .select('gdrive_webhook, gdrive_folder_id')
-          .eq('id', 'admin')
+          .eq('id', targetAdminId)
           .limit(1)
           .maybeSingle();
         const legacyUrl = normalizeValidWebhook(legacy.data?.gdrive_webhook);

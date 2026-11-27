@@ -26,15 +26,56 @@ alter table public.admin_credentials add column if not exists gdrive_drives json
 1. Apne **naye Google Account** se [Google Drive](https://drive.google.com) open karein.
 2. *(Optional)* Ek folder banayein (e.g., `NoteBase Uploads 2`), usko open karein, aur browser URL me `folders/` ke baad likha ID copy kar lein — ye aapka **Folder ID** hoga. (Agar blank chhodenge to script automatically folder bana degi.)
 3. Google Drive me **New** → **More** → **Google Apps Script** kholein.
-4. Purana saara code delete karke ye code paste karein:
+4. Purana saara code delete karke ye code paste karein *(is me Direct 500 MB upload support inbuilt hai)*:
 
 ```javascript
+function resolveTargetFolder(folderId) {
+  if (folderId && String(folderId).trim() !== "") {
+    return DriveApp.getFolderById(String(folderId).trim());
+  }
+  var folderName = "NoteBase Uploads";
+  var folders = DriveApp.getFoldersByName(folderName);
+  return folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
+}
+
 function doPost(e) {
   try {
     var rawData = e.postData.contents;
     var data = JSON.parse(rawData);
 
-    // Handle Delete Request from NoteBase Admin / Coordinator
+    // 1. Direct 500MB Browser-to-Drive Resumable Upload Session Token
+    if (data.action === 'getTokenAndFolder') {
+      var targetFolder = resolveTargetFolder(data.folderId);
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        accessToken: ScriptApp.getOAuthToken(),
+        folderId: targetFolder.getId()
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 2. Finalize sharing permissions after direct upload
+    if (data.action === 'finalizeFile') {
+      if (!data.fileId || String(data.fileId).trim() === "") {
+        return ContentService.createTextOutput(JSON.stringify({
+          success: false,
+          error: "Missing fileId for finalizeFile"
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      var fId = String(data.fileId).trim();
+      var uploadedFile = DriveApp.getFileById(fId);
+      try {
+        uploadedFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      } catch (shareErr) {}
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        fileId: fId,
+        fileName: uploadedFile.getName(),
+        fileUrl: "https://drive.google.com/file/d/" + fId + "/view?usp=sharing",
+        downloadUrl: "https://drive.google.com/uc?export=download&id=" + fId
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 3. Handle Delete Request from NoteBase Admin / Coordinator
     if (data.action === 'delete') {
       if (!data.fileId || String(data.fileId).trim() === "") {
         return ContentService.createTextOutput(JSON.stringify({
@@ -61,19 +102,10 @@ function doPost(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // Decode base64 PDF
+    // 4. Small-File Base64 Fallback
     var decoded = Utilities.base64Decode(data.base64);
     var blob = Utilities.newBlob(decoded, data.mimeType || 'application/pdf', data.fileName || 'document.pdf');
-
-    var folder;
-    if (data.folderId && data.folderId.trim() !== "") {
-      folder = DriveApp.getFolderById(data.folderId.trim());
-    } else {
-      var folderName = "NoteBase Uploads";
-      var folders = DriveApp.getFoldersByName(folderName);
-      folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
-    }
-
+    var folder = resolveTargetFolder(data.folderId);
     var file = folder.createFile(blob);
     var fileId = file.getId();
     var fileName = file.getName();
@@ -100,7 +132,7 @@ function doPost(e) {
 function doGet(e) {
   return ContentService.createTextOutput(JSON.stringify({
     status: "online",
-    message: "Google Drive Upload Web App is active."
+    message: "Google Drive Upload Web App (Direct 500MB Ready) is active."
   })).setMimeType(ContentService.MimeType.JSON);
 }
 ```

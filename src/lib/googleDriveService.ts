@@ -1,9 +1,12 @@
 /**
  * Google Drive Cloud Storage Service
- * Handles uploading PDFs exclusively to user's Google Drive via Google Apps Script Web App,
- * generating public shareable URLs, and integrating with Supabase PostgreSQL database.
- * NOTE: PDFs are stored ONLY in Google Drive; Supabase stores only table metadata & URLs.
+ * Handles direct browser-to-Google-Drive resumable PDF uploads (up to 500 MB) without routing file binaries through Vercel.
+ * NOTE: PDFs are stored ONLY in Google Drive; Supabase stores only table metadata & public URLs.
  */
+
+export const MAX_PDF_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
+const LEGACY_SERVER_BASE64_LIMIT_BYTES = 3 * 1024 * 1024; // 3 MB safe fallback for un-updated scripts
+const RESUMABLE_CHUNK_BYTES = 8 * 1024 * 1024; // 8 MB (32 * 256 KB, required multiple of 256 KB)
 
 export interface GoogleDriveConfig {
   webhookUrl: string;
@@ -11,34 +14,71 @@ export interface GoogleDriveConfig {
   enabled: boolean;
 }
 
-const STORAGE_KEYS = {
-  URL: 'notehub_gdrive_webhook_url',
-  FOLDER: 'notehub_gdrive_folder_id',
-  ENABLED: 'notehub_gdrive_enabled',
-};
-
-// Default Google Apps Script template for zero-maintenance user setup
+// Updated Google Apps Script template supporting direct 500 MB browser-to-Drive resumable uploads + delete + legacy fallback
 export const GOOGLE_APPS_SCRIPT_TEMPLATE = `// ====================================================================
-// NoteBase - Google Drive PDF Upload Web App
+// NoteBase - Google Drive PDF Upload Web App (Direct 500MB Support)
 // ====================================================================
 // Instructions:
 // 1. Open Google Drive -> Click New -> More -> Google Apps Script
 // 2. Paste this entire code into the editor (replace existing code)
-// 3. Click "Deploy" (top right) -> "New deployment"
+// 3. Click "Deploy" (top right) -> "Manage deployments" -> Edit (pencil) -> New version (or "New deployment")
 // 4. Select type: "Web app"
-// 5. Description: "Notes PDF Uploader"
-// 6. Execute as: "Me" (your Google account)
-// 7. Who has access: "Anyone" (allows upload without login)
-// 8. Click "Deploy" -> Authorize access
-// 9. Copy the "Web app URL" and paste it in Admin Statistics!
+// 5. Execute as: "Me" (your Google account)
+// 6. Who has access: "Anyone"
+// 7. Click "Deploy" -> Authorize access
+// 8. Copy the "Web app URL" (/exec) and add it in Vercel Env Vars or Admin Statistics!
 // ====================================================================
+
+function resolveTargetFolder(folderId) {
+  if (folderId && String(folderId).trim() !== "") {
+    return DriveApp.getFolderById(String(folderId).trim());
+  }
+  var folderName = "NoteBase Uploads";
+  var folders = DriveApp.getFoldersByName(folderName);
+  return folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
+}
 
 function doPost(e) {
   try {
     var rawData = e.postData.contents;
     var data = JSON.parse(rawData);
 
-    // Handle Delete Request from NoteBase Admin / Coordinator
+    // 1. Issue short-lived Drive OAuth token + resolved Folder ID strictly to NoteBase Server (for direct 500MB browser upload)
+    if (data.action === 'getTokenAndFolder') {
+      var targetFolder = resolveTargetFolder(data.folderId);
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        accessToken: ScriptApp.getOAuthToken(),
+        folderId: targetFolder.getId()
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 2. Finalize directly-uploaded file permissions so Students can view & download
+    if (data.action === 'finalizeFile') {
+      if (!data.fileId || String(data.fileId).trim() === "") {
+        return ContentService.createTextOutput(JSON.stringify({
+          success: false,
+          error: "Missing fileId for finalizeFile"
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      var fId = String(data.fileId).trim();
+      var uploadedFile = DriveApp.getFileById(fId);
+      try {
+        uploadedFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      } catch (shareErr) {
+        // Ignore if domain policy blocks individual file sharing
+      }
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        fileId: fId,
+        fileName: uploadedFile.getName(),
+        fileUrl: "https://drive.google.com/file/d/" + fId + "/view?usp=sharing",
+        downloadUrl: "https://drive.google.com/uc?export=download&id=" + fId,
+        created_at: new Date().toISOString()
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 3. Handle Delete Request from NoteBase Admin / Coordinator
     if (data.action === 'delete') {
       if (!data.fileId || String(data.fileId).trim() === "") {
         return ContentService.createTextOutput(JSON.stringify({
@@ -50,17 +90,13 @@ function doPost(e) {
       var targetFile = DriveApp.getFileById(targetId);
       try {
         targetFile.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);
-      } catch (shareErr) {
-        // Ignore if sharing permissions cannot be updated
-      }
+      } catch (shareErr) {}
       try {
         var parents = targetFile.getParents();
         while (parents.hasNext()) {
           parents.next().removeFile(targetFile);
         }
-      } catch (parentErr) {
-        // Ignore if parent removal is restricted
-      }
+      } catch (parentErr) {}
       targetFile.setTrashed(true);
       return ContentService.createTextOutput(JSON.stringify({
         success: true,
@@ -68,74 +104,44 @@ function doPost(e) {
         deletedFileId: targetId
       })).setMimeType(ContentService.MimeType.JSON);
     }
-    
-    // Decode base64 PDF
+
+    // 4. Legacy Small-File Base64 Upload Fallback
     var decoded = Utilities.base64Decode(data.base64);
     var blob = Utilities.newBlob(decoded, data.mimeType || 'application/pdf', data.fileName || 'document.pdf');
-    
-    // Select or create destination folder
-    var folder;
-    if (data.folderId && data.folderId.trim() !== "") {
-      folder = DriveApp.getFolderById(data.folderId.trim());
-    } else {
-      var folderName = "NoteBase Uploads";
-      var folders = DriveApp.getFoldersByName(folderName);
-      if (folders.hasNext()) {
-        folder = folders.next();
-      } else {
-        folder = DriveApp.createFolder(folderName);
-      }
-    }
-    
-    // Create the PDF file in Google Drive
+    var folder = resolveTargetFolder(data.folderId);
     var file = folder.createFile(blob);
     var fileId = file.getId();
     var fileName = file.getName();
-    
-    // Try to make file viewable with link (ignore error if restricted by Google Account settings)
+
     try {
       file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    } catch (shareErr) {
-      // Ignore: folder-level sharing or direct Drive view will work
-    }
-    
-    // Public view and direct download links
-    var publicViewUrl = "https://drive.google.com/file/d/" + fileId + "/view?usp=sharing";
-    var directDownloadUrl = "https://drive.google.com/uc?export=download&id=" + fileId;
-    
-    var output = {
+    } catch (shareErr) {}
+
+    return ContentService.createTextOutput(JSON.stringify({
       success: true,
       fileId: fileId,
       fileName: fileName,
-      fileUrl: publicViewUrl,
-      downloadUrl: directDownloadUrl,
+      fileUrl: "https://drive.google.com/file/d/" + fileId + "/view?usp=sharing",
+      downloadUrl: "https://drive.google.com/uc?export=download&id=" + fileId,
       created_at: new Date().toISOString()
-    };
-    
-    return ContentService.createTextOutput(JSON.stringify(output))
-      .setMimeType(ContentService.MimeType.JSON);
-      
+    })).setMimeType(ContentService.MimeType.JSON);
+
   } catch (err) {
-    var errorOutput = {
+    return ContentService.createTextOutput(JSON.stringify({
       success: false,
       error: err.toString()
-    };
-    return ContentService.createTextOutput(JSON.stringify(errorOutput))
-      .setMimeType(ContentService.MimeType.JSON);
+    })).setMimeType(ContentService.MimeType.JSON);
   }
 }
 
 function doGet(e) {
   return ContentService.createTextOutput(JSON.stringify({
     status: "online",
-    message: "Google Drive Upload Web App is active and ready to receive PDFs."
+    message: "Google Drive Upload Web App (Direct 500MB Ready) is active."
   })).setMimeType(ContentService.MimeType.JSON);
 }
 `;
 
-/**
- * Get current Google Drive configuration from localStorage or environment
- */
 export function getGoogleDriveConfig(): GoogleDriveConfig {
   if (typeof window === 'undefined') {
     return {
@@ -150,36 +156,17 @@ export function getGoogleDriveConfig(): GoogleDriveConfig {
       enabled: true,
     };
   }
-  const envWebhook = process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL || '';
-  const envFolder = process.env.NEXT_PUBLIC_GOOGLE_DRIVE_FOLDER_ID || '';
-  const webhookUrl = localStorage.getItem(STORAGE_KEYS.URL) || envWebhook;
-  const folderId = localStorage.getItem(STORAGE_KEYS.FOLDER) || envFolder;
-  const enabledStr = localStorage.getItem(STORAGE_KEYS.ENABLED);
-  const enabled = enabledStr === null ? true : enabledStr === 'true';
-
-  return { webhookUrl, folderId, enabled };
+  return {
+    webhookUrl: '',
+    folderId: '',
+    enabled: true,
+  };
 }
 
-/**
- * Save Google Drive configuration to localStorage
- */
-export function saveGoogleDriveConfig(config: Partial<GoogleDriveConfig>) {
-  if (typeof window === 'undefined') return;
-
-  if (config.webhookUrl !== undefined) {
-    localStorage.setItem(STORAGE_KEYS.URL, config.webhookUrl.trim());
-  }
-  if (config.folderId !== undefined) {
-    localStorage.setItem(STORAGE_KEYS.FOLDER, config.folderId.trim());
-  }
-  if (config.enabled !== undefined) {
-    localStorage.setItem(STORAGE_KEYS.ENABLED, String(config.enabled));
-  }
+export function saveGoogleDriveConfig(_config: Partial<GoogleDriveConfig>) {
+  // No-op in browser: Drive credentials live strictly on the server
 }
 
-/**
- * Checks if Google Drive upload is properly configured and active.
- */
 export function isGoogleDriveConfigured(): boolean {
   if (typeof window === 'undefined') {
     return Boolean(
@@ -188,27 +175,19 @@ export function isGoogleDriveConfigured(): boolean {
       process.env.GDRIVE_WEBHOOK_URL
     );
   }
-  const customUrl = localStorage.getItem(STORAGE_KEYS.URL);
-  if (customUrl && customUrl.startsWith('https://script.google.com/')) {
-    const enabledStr = localStorage.getItem(STORAGE_KEYS.ENABLED);
-    return enabledStr !== 'false';
+  try {
+    return localStorage.getItem('notebase_gdrive_server_configured') === 'true';
+  } catch {
+    return false;
   }
-  if (process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL) {
-    return true;
-  }
-  return localStorage.getItem('notebase_gdrive_server_configured') === 'true';
 }
 
-/**
- * Converts a File object to base64 string
- */
 export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.readAsDataURL(file);
     reader.onload = () => {
       const result = reader.result as string;
-      // Strip out the data:application/pdf;base64, prefix
       const base64 = result.split(',')[1] || result;
       resolve(base64);
     };
@@ -216,96 +195,237 @@ export function fileToBase64(file: File): Promise<string> {
   });
 }
 
+async function verifyPdfMagicBytes(file: File): Promise<boolean> {
+  try {
+    const slice = file.slice(0, 5);
+    const buf = await slice.arrayBuffer();
+    const header = new TextDecoder('ascii').decode(new Uint8Array(buf));
+    return header === '%PDF-';
+  } catch {
+    return false;
+  }
+}
+
+function uploadChunkWithProgress(
+  uploadUrl: string,
+  chunk: Blob,
+  start: number,
+  end: number,
+  totalSize: number,
+  mimeType: string,
+  onChunkProgress: (loadedInChunk: number) => void
+): Promise<{ status: number; responseText: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', uploadUrl, true);
+    xhr.setRequestHeader('Content-Type', mimeType || 'application/pdf');
+    xhr.setRequestHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+
+    xhr.upload.onprogress = (evt) => {
+      if (evt.lengthComputable) {
+        onChunkProgress(evt.loaded);
+      }
+    };
+
+    xhr.onload = () => {
+      resolve({ status: xhr.status, responseText: xhr.responseText || '' });
+    };
+
+    xhr.onerror = () => {
+      reject(new Error('Network/CORS error while uploading directly to Google Drive.'));
+    };
+
+    xhr.send(chunk);
+  });
+}
+
 export let lastGoogleDriveError: string = '';
 
 /**
- * Uploads a PDF to Google Drive:
- * 1. If admin configured a custom Webhook URL in dashboard localStorage, tries direct browser upload.
- * 2. Otherwise calls secure server endpoint `/api/upload-drive` which holds GOOGLE_DRIVE_WEBHOOK_URL server-only!
- * (Zero webhook secrets exposed to client bundle!)
+ * Uploads a PDF directly from the browser to Google Drive (supports up to 500 MB):
+ * 1. Requests a short-lived Google Drive resumable upload session URI from `/api/upload-drive` (zero file bytes sent to Vercel).
+ * 2. Streams the file directly to Google Drive in 8 MB chunks via XHR with progress tracking.
+ * 3. Calls `/api/upload-drive` (`action: 'finalize'`) to apply share permissions and return public view/download links.
+ * 4. If the deployed Google Apps Script hasn't been updated yet, transparently falls back for small PDFs (<= 3 MB).
  */
 export async function uploadPdfToGoogleDrive(
   file: File,
   folderId?: string,
-  driveId?: string
+  driveId?: string,
+  onProgress?: (percent: number) => void
 ): Promise<{
   success: boolean;
   fileUrl: string;
   downloadUrl: string;
   fileId: string;
+  driveUsedId?: string | null;
   driveUsedName?: string;
   error?: string;
 }> {
   lastGoogleDriveError = '';
-  const { webhookUrl, folderId: savedFolderId } = getGoogleDriveConfig();
-  const targetFolderId = folderId || savedFolderId;
 
   try {
-    const base64Data = await fileToBase64(file);
-
-    const payload = {
-      scriptUrl: webhookUrl || undefined,
-      driveId: driveId || undefined,
-      fileName: file.name,
-      mimeType: file.type || 'application/pdf',
-      base64: base64Data,
-      folderId: targetFolderId || undefined,
-    };
-
-    let response: Response;
-
-    // Secure server gateway routes through Next.js server with fallback to direct
-    try {
-      response = await fetch('/api/upload-drive', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-    } catch (serverErr) {
-      if (webhookUrl && webhookUrl.startsWith('https://script.google.com/')) {
-        response = await fetch(webhookUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'text/plain;charset=utf-8',
-          },
-          body: JSON.stringify(payload),
-        });
-      } else {
-        throw serverErr;
-      }
+    if (!file || file.size <= 0) {
+      throw new Error('Selected PDF file is empty.');
+    }
+    if (file.size > MAX_PDF_UPLOAD_BYTES) {
+      throw new Error('File exceeds the 500 MB Google Drive upload limit.');
+    }
+    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+      throw new Error('Only valid PDF (.pdf) files are allowed.');
+    }
+    const isPdfHeader = await verifyPdfMagicBytes(file);
+    if (!isPdfHeader) {
+      throw new Error('Invalid PDF file: file header does not start with %PDF-.');
     }
 
-    const responseText = await response.text();
-    let result: any = null;
-    try {
-      result = JSON.parse(responseText);
-    } catch {
-      // Check if response contains direct drive links
-      const match = responseText.match(/https:\/\/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
-      if (match && match[1]) {
-        result = {
+    onProgress?.(2);
+
+    // Step 1: Initialize Resumable Upload Session on server (tiny JSON, 0 file bytes to Vercel)
+    const initRes = await fetch('/api/upload-drive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'init',
+        fileName: file.name,
+        mimeType: file.type || 'application/pdf',
+        fileSize: file.size,
+        folderId: folderId || undefined,
+        driveId: driveId || undefined,
+        origin: typeof window !== 'undefined' ? window.location.origin : undefined,
+      }),
+    });
+
+    const initData = await initRes.json().catch(() => ({}));
+
+    if (initRes.ok && initData?.success && initData?.uploadUrl) {
+      const uploadUrl = String(initData.uploadUrl);
+      const mimeType = file.type || 'application/pdf';
+      const totalSize = file.size;
+
+      // Step 2: Upload binary chunks directly to Google Drive (bypasses Vercel completely!)
+      let uploadedDriveFileId = '';
+      let offset = 0;
+
+      while (offset < totalSize) {
+        const end = Math.min(offset + RESUMABLE_CHUNK_BYTES - 1, totalSize - 1);
+        const chunk = file.slice(offset, end + 1);
+        const chunkBaseOffset = offset;
+
+        const { status, responseText } = await uploadChunkWithProgress(
+          uploadUrl,
+          chunk,
+          offset,
+          end,
+          totalSize,
+          mimeType,
+          (loadedInChunk) => {
+            const pct = Math.min(95, Math.max(3, Math.round(((chunkBaseOffset + loadedInChunk) / totalSize) * 93) + 2));
+            onProgress?.(pct);
+          }
+        );
+
+        if (status === 308) {
+          offset = end + 1;
+          const pct = Math.min(95, Math.round((offset / totalSize) * 93) + 2);
+          onProgress?.(pct);
+          continue;
+        }
+
+        if (status === 200 || status === 201) {
+          let parsed: any = null;
+          try {
+            parsed = JSON.parse(responseText);
+          } catch {}
+          uploadedDriveFileId = String(parsed?.id || '');
+          break;
+        }
+
+        let errDetail = `Google Drive upload failed (HTTP ${status})`;
+        try {
+          const parsedErr = JSON.parse(responseText);
+          if (parsedErr?.error?.message) errDetail = parsedErr.error.message;
+        } catch {}
+        throw new Error(errDetail);
+      }
+
+      if (!uploadedDriveFileId) {
+        throw new Error('Google Drive did not return a valid File ID after upload.');
+      }
+
+      onProgress?.(97);
+
+      // Step 3: Finalize file permissions (Anyone with link -> View) via Apps Script
+      const finRes = await fetch('/api/upload-drive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'finalize',
+          fileId: uploadedDriveFileId,
+          driveId: initData.driveUsedId || driveId || undefined,
+        }),
+      });
+      const finData = await finRes.json().catch(() => ({}));
+      onProgress?.(100);
+
+      if (finRes.ok && finData?.success && finData?.fileUrl) {
+        return {
           success: true,
-          fileId: match[1],
-          fileUrl: `https://drive.google.com/file/d/${match[1]}/view?usp=sharing`,
-          downloadUrl: `https://drive.google.com/uc?export=download&id=${match[1]}`,
+          fileUrl: finData.fileUrl,
+          downloadUrl: finData.downloadUrl || finData.fileUrl,
+          fileId: finData.fileId || uploadedDriveFileId,
+          driveUsedId: finData.driveUsedId || initData.driveUsedId || null,
+          driveUsedName: finData.driveUsedName || initData.driveUsedName || 'Active Drive',
         };
       }
+
+      // Even if finalize failed (e.g. restricted domain), return valid Drive view URL
+      return {
+        success: true,
+        fileUrl: `https://drive.google.com/file/d/${uploadedDriveFileId}/view?usp=sharing`,
+        downloadUrl: `https://drive.google.com/uc?export=download&id=${uploadedDriveFileId}`,
+        fileId: uploadedDriveFileId,
+        driveUsedId: initData.driveUsedId || null,
+        driveUsedName: initData.driveUsedName || 'Active Drive',
+      };
     }
 
-    if (!response.ok || !result || !result.success) {
-      const errMsg = result?.error || `Upload failed (Status ${response.status}): ${responseText.slice(0, 150)}`;
-      lastGoogleDriveError = errMsg;
-      throw new Error(errMsg);
+    // Backwards-compatibility fallback ONLY for small files (<= 3 MB) if Apps Script wasn't redeployed yet
+    if (initData?.needsScriptUpdate && file.size <= LEGACY_SERVER_BASE64_LIMIT_BYTES) {
+      const base64Data = await fileToBase64(file);
+      const legacyRes = await fetch('/api/upload-drive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          driveId: driveId || undefined,
+          fileName: file.name,
+          mimeType: file.type || 'application/pdf',
+          base64: base64Data,
+          folderId: folderId || undefined,
+        }),
+      });
+      const legacyData = await legacyRes.json().catch(() => ({}));
+      if (legacyRes.ok && legacyData?.success && legacyData?.fileUrl) {
+        onProgress?.(100);
+        return {
+          success: true,
+          fileUrl: legacyData.fileUrl,
+          downloadUrl: legacyData.downloadUrl || legacyData.fileUrl,
+          fileId: legacyData.fileId || '',
+          driveUsedId: legacyData.driveUsedId || null,
+          driveUsedName: legacyData.driveUsedName || 'Active Drive',
+        };
+      }
+      throw new Error(legacyData?.error || 'Legacy small-file upload failed.');
     }
 
-    return {
-      success: true,
-      fileUrl: result.fileUrl,
-      downloadUrl: result.downloadUrl || result.fileUrl,
-      fileId: result.fileId || '',
-    };
+    if (initData?.needsScriptUpdate) {
+      throw new Error(
+        'Please re-deploy the updated Google Apps Script (from Admin -> Statistics -> View / Copy Setup Script) to enable direct 500 MB Google Drive uploads.'
+      );
+    }
+
+    throw new Error(initData?.error || `Failed to initialize Google Drive upload (Status ${initRes.status}).`);
   } catch (error: any) {
     const msg = error?.message || 'Failed to upload to Google Drive';
     lastGoogleDriveError = msg;
@@ -321,9 +441,7 @@ export async function uploadPdfToGoogleDrive(
 }
 
 /**
- * Uploads a PDF exclusively to Google Drive:
- * Supabase bucket is completely removed; Supabase stores only the document metadata & public fileUrl.
- * All actual PDF binaries are stored strictly in Google Drive.
+ * Uploads a PDF exclusively to Google Drive (up to 500 MB directly from browser).
  */
 export async function uploadUnifiedPdf(
   file: File,
@@ -333,14 +451,21 @@ export async function uploadUnifiedPdf(
     year?: string;
     branch?: string;
     semester?: string;
+    onProgress?: (percent: number) => void;
   }
 ): Promise<{
   publicUrl: string;
   filePath: string;
   storageType: 'gdrive';
+  error?: string;
 } | null> {
   try {
-    const gdriveResult = await uploadPdfToGoogleDrive(file);
+    const gdriveResult = await uploadPdfToGoogleDrive(
+      file,
+      undefined,
+      undefined,
+      metadata?.onProgress
+    );
     if (gdriveResult.success && gdriveResult.fileUrl) {
       return {
         publicUrl: gdriveResult.fileUrl,
@@ -358,53 +483,13 @@ export async function uploadUnifiedPdf(
   return null;
 }
 
-export async function deletePdfFromGoogleDrive(fileUrlOrPath?: string): Promise<{
+export async function deletePdfFromGoogleDrive(_fileUrlOrPath?: string): Promise<{
   deleted: boolean;
   needsScriptUpdate?: boolean;
   error?: string;
 }> {
-  if (!fileUrlOrPath) return { deleted: false };
-  const fileIdMatch =
-    fileUrlOrPath.match(/^gdrive:\/\/([a-zA-Z0-9_-]+)/) ||
-    fileUrlOrPath.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) ||
-    fileUrlOrPath.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-  const fileId = fileIdMatch?.[1];
-  if (!fileId) return { deleted: false };
-
-  const { webhookUrl } = getGoogleDriveConfig();
-  if (!webhookUrl) return { deleted: false, error: 'Google Drive Web App URL missing' };
-
-  try {
-    const res = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'delete', fileId }),
-    });
-    const text = await res.text();
-    const parsed = JSON.parse(text);
-    if (parsed?.success && (parsed.deleted || parsed.deletedFileId)) {
-      return { deleted: true };
-    }
-    const errStr = String(parsed?.error || '');
-    return {
-      deleted: false,
-      needsScriptUpdate: errStr.includes('base64') || errStr.includes('Invalid argument'),
-      error: errStr || 'Google Drive delete rejected',
-    };
-  } catch {
-    // Fallback when Google Apps Script 302 redirect triggers browser CORS error after executing doPost
-    try {
-      await fetch(webhookUrl, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'delete', fileId }),
-      });
-      return { deleted: true };
-    } catch (err: any) {
-      return { deleted: false, error: err?.message || 'Drive delete network error' };
-    }
-  }
+  // Handled strictly server-side via DELETE /api/documents or DELETE /api/upload-drive
+  return { deleted: false, error: 'Direct browser Drive deletion disabled for security.' };
 }
 
 export async function deleteDocumentEverywhere(params: {
@@ -412,6 +497,7 @@ export async function deleteDocumentEverywhere(params: {
   type?: 'Notes' | 'PYQ' | 'PYQs';
   fileUrl?: string;
   filePath?: string;
+  skipCount?: boolean;
   supabaseCreds?: { url?: string; key?: string };
   supabaseFallback?: () => Promise<boolean>;
 }): Promise<{
@@ -420,27 +506,18 @@ export async function deleteDocumentEverywhere(params: {
   driveAttempted: boolean;
   driveNeedsScriptUpdate?: boolean;
   driveError?: string;
+  error?: string;
 }> {
-  const { id, type, fileUrl, filePath, supabaseCreds, supabaseFallback } = params;
-  const headers: Record<string, string> = {};
-  if (supabaseCreds?.url && supabaseCreds?.key) {
-    headers['x-supabase-url'] = supabaseCreds.url;
-    headers['x-supabase-key'] = supabaseCreds.key;
-  }
-  const driveCfg = getGoogleDriveConfig();
-  if (driveCfg.webhookUrl) {
-    headers['x-gdrive-webhook'] = driveCfg.webhookUrl;
-  }
-
+  const { id, type, fileUrl, filePath, skipCount } = params;
   const query = new URLSearchParams({ id });
   if (type) query.set('type', type);
   if (fileUrl) query.set('fileUrl', fileUrl);
   if (filePath) query.set('filePath', filePath);
+  if (skipCount) query.set('skipCount', '1');
 
   try {
     const res = await fetch(`/api/documents?${query.toString()}`, {
       method: 'DELETE',
-      headers,
     });
     const data = await res.json();
     if (res.ok && data?.success) {
@@ -452,17 +529,18 @@ export async function deleteDocumentEverywhere(params: {
         driveError: data.driveError,
       };
     }
-  } catch {
-    // Fall through to client fallback
+    return {
+      success: false,
+      driveDeleted: false,
+      driveAttempted: false,
+      error: data?.error || `Server delete failed (${res.status})`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      driveDeleted: false,
+      driveAttempted: false,
+      error: err?.message || 'Network error while deleting document.',
+    };
   }
-
-  const driveFallback = await deletePdfFromGoogleDrive(fileUrl || filePath);
-  const dbFallbackOk = supabaseFallback ? await supabaseFallback() : false;
-  return {
-    success: dbFallbackOk,
-    driveDeleted: driveFallback.deleted,
-    driveAttempted: Boolean(fileUrl || filePath),
-    driveNeedsScriptUpdate: driveFallback.needsScriptUpdate,
-    driveError: driveFallback.error,
-  };
 }

@@ -88,7 +88,8 @@ import {
   uploadUnifiedPdf,
   GOOGLE_APPS_SCRIPT_TEMPLATE,
   lastGoogleDriveError,
-  deleteDocumentEverywhere
+  deleteDocumentEverywhere,
+  MAX_PDF_UPLOAD_BYTES
 } from '../../lib/googleDriveService';
 import { extractPdfPageCount, formatFileSize } from '../../lib/pdfMetadata';
 import { openSafeExternalUrl } from '../../lib/urlSafety';
@@ -417,7 +418,7 @@ export default function AdminPage() {
     try {
       const allSubjs = await fetchAllSubjectsFromSupabase();
       loadedResourcesRef.current.subjects = true;
-      if (allSubjs && allSubjs.length > 0) {
+      if (Array.isArray(allSubjs)) {
         const grouped = new Map<string, { year: YearOption; branch: BranchOption; semester: SemesterOption; list: SubjectMeta[] }>();
         allSubjs.forEach(({ year, branch, semester, subject }) => {
           const key = `${year}___${branch}___${semester}`;
@@ -574,7 +575,7 @@ export default function AdminPage() {
   }, []);
 
   // Sequential Cascading Filters (Year -> Branch -> Semester -> Subject)
-  const [typeFilter, setTypeFilter] = useState<'All' | 'Notes' | 'PYQs'>('All');
+  const [typeFilter, setTypeFilter] = useState<'All' | 'Notes' | 'PYQs' | 'Lectures'>('All');
   const [yearFilter, setYearFilter] = useState<string>('All');
   const [branchFilter, setBranchFilter] = useState<string>('All');
   const [semesterFilter, setSemesterFilter] = useState<string>('All');
@@ -598,7 +599,9 @@ export default function AdminPage() {
   const [uploadOwnerName, setUploadOwnerName] = useState<string>('');
   const [selectedUploadFile, setSelectedUploadFile] = useState<File | null>(null);
   const [isUploadingMaterial, setIsUploadingMaterial] = useState<boolean>(false);
+  const [adminUploadProgress, setAdminUploadProgress] = useState<number | null>(null);
   const uploadFileInputRef = useRef<HTMLInputElement>(null);
+  const recentServerOffsetRef = useRef<number>(0);
 
   // Coordinators List State (Populated strictly after authenticated Admin verification)
   const [coordinators, setCoordinators] = useState<CoordinatorItem[]>([]);
@@ -686,11 +689,15 @@ export default function AdminPage() {
     ];
   }, [coordForm.year]);
 
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Helper for Floating Toast Notifications
   const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ message, type });
-    setTimeout(() => {
+    toastTimerRef.current = setTimeout(() => {
       setToast(null);
+      toastTimerRef.current = null;
     }, 2800);
   };
 
@@ -912,8 +919,11 @@ export default function AdminPage() {
   useEffect(() => {
     if (!isLoggedIn) return;
     if (activeNav === 'Dashboard') {
-      if (!loadedResourcesRef.current.materials) {
-        syncDashboardSummary();
+      if (!loadedResourcesRef.current.summary) {
+        syncDashboardSummary(true);
+      }
+      if (loadedResourcesRef.current.materials && !loadedResourcesRef.current.summary) {
+        syncAllMaterials(true);
       }
     } else if (activeNav === 'Coordinators') {
       syncCoordinators();
@@ -970,9 +980,17 @@ export default function AdminPage() {
       const res = await uploadPdfToGoogleDrive(testFile, undefined, targetDriveId);
       if (res.success && res.fileUrl) {
         const usedLabel = res.driveUsedName || 'Active Google Drive';
+        // Clean up temporary test PDF from Drive so test runs never leave orphan files behind
+        if (res.fileId) {
+          fetch('/api/upload-drive', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileId: res.fileId }),
+          }).catch(() => {});
+        }
         setGdriveTestResult({
           success: true,
-          message: `Connection verified! Test PDF successfully uploaded to "${usedLabel}".`,
+          message: `Connection verified! Test PDF uploaded & cleaned up cleanly on "${usedLabel}" (Direct 500 MB Ready).`,
           fileUrl: res.fileUrl
         });
         showToast(`Google Drive "${usedLabel}" verified successfully!`, 'success');
@@ -1006,7 +1024,7 @@ export default function AdminPage() {
   // 1. Available branches dynamically computed based on selected Year (7 approved branches)
   const availableBranches = useMemo(() => {
     if (yearFilter === '1st Year') {
-      return ['ABCD Group', 'EFGH Group', 'Common (All Branches)'];
+      return ['ABCD Group', 'EFGH Group'];
     }
     return [
       'CSE(AI&ML)',
@@ -1073,7 +1091,7 @@ export default function AdminPage() {
       semesterFilter as SemesterOption
     )
       .then((cloudSubjs) => {
-        if (cloudSubjs && cloudSubjs.length > 0) {
+        if (Array.isArray(cloudSubjs)) {
           saveSubjectsFor(
             yearFilter as YearOption,
             branchFilter as BranchOption,
@@ -1100,11 +1118,61 @@ export default function AdminPage() {
     async (opts?: { reset?: boolean; offsetOverride?: number }) => {
       if (!isLoggedIn) return;
       const reset = opts?.reset ?? false;
-      const offset = reset ? 0 : (opts?.offsetOverride ?? recentMaterials.length);
-      if (reset) setIsLoadingRecent(true);
-      else setIsLoadingMoreRecent(true);
+      const offset = reset ? 0 : (opts?.offsetOverride ?? recentServerOffsetRef.current);
+      if (reset) {
+        recentServerOffsetRef.current = 0;
+        setIsLoadingRecent(true);
+      } else {
+        setIsLoadingMoreRecent(true);
+      }
 
       try {
+        if (typeFilter === 'Lectures') {
+          const lq = new URLSearchParams();
+          if (yearFilter !== 'All') lq.set('year', yearFilter);
+          if (branchFilter !== 'All') lq.set('branch', branchFilter);
+          if (semesterFilter !== 'All') lq.set('semester', semesterFilter);
+          if (subjectFilter !== 'All') lq.set('subject', subjectFilter);
+
+          const res = await fetch(`/api/lectures${lq.toString() ? `?${lq.toString()}` : ''}`, { cache: 'no-store' });
+          const data = await res.json();
+          if (res.ok && data?.success && Array.isArray(data.lectures)) {
+            const qStr = searchQuery.trim().toLowerCase();
+            const allMatched: AdminMaterial[] = data.lectures
+              .filter((l: any) => {
+                if (!qStr) return true;
+                return (
+                  String(l.title || '').toLowerCase().includes(qStr) ||
+                  String(l.subject || '').toLowerCase().includes(qStr) ||
+                  String(l.faculty || '').toLowerCase().includes(qStr)
+                );
+              })
+              .map((l: any) => ({
+                id: l.id,
+                fileName: l.title,
+                year: l.year || '2nd Year',
+                branch: l.branch || 'CSE(AI&ML)',
+                semester: l.semester,
+                subject: l.subject,
+                type: 'Lectures' as const,
+                uploadedBy: l.faculty || 'Coordinator',
+                link: l.link,
+              }));
+            const nextSlice = allMatched.slice(offset, offset + 5);
+            recentServerOffsetRef.current = offset + nextSlice.length;
+            setHasMoreRecent(allMatched.length > offset + 5);
+            if (reset) {
+              setRecentMaterials(nextSlice);
+            } else {
+              setRecentMaterials((prev) => {
+                const seen = new Set(prev.map((p) => p.id));
+                return [...prev, ...nextSlice.filter((m) => !seen.has(m.id))];
+              });
+            }
+          }
+          return;
+        }
+
         const q = new URLSearchParams({
           limit: '5',
           offset: String(offset),
@@ -1134,6 +1202,7 @@ export default function AdminPage() {
             file_url: d.file_url,
             file_path: d.file_path,
           }));
+          recentServerOffsetRef.current = offset + mapped.length;
           setHasMoreRecent(Boolean(data.hasMore));
           if (reset) {
             setRecentMaterials(mapped);
@@ -1153,7 +1222,6 @@ export default function AdminPage() {
     },
     [
       isLoggedIn,
-      recentMaterials.length,
       typeFilter,
       yearFilter,
       branchFilter,
@@ -1410,6 +1478,20 @@ export default function AdminPage() {
     return [];
   }, [uploadYear, uploadBranch, uploadSemester, adminSubjectsVersion]);
 
+  // Sync subjects from Supabase whenever Upload Material Year/Branch/Semester are selected
+  useEffect(() => {
+    if (!isLoggedIn || activeNav !== 'Upload Material') return;
+    if (!uploadYear || !uploadBranch || !uploadSemester) return;
+    fetchSubjectsFromSupabase(uploadYear, uploadBranch, uploadSemester)
+      .then((cloudSubjs) => {
+        if (Array.isArray(cloudSubjs)) {
+          saveSubjectsFor(uploadYear, uploadBranch, uploadSemester, cloudSubjs);
+          setAdminSubjectsVersion((v) => v + 1);
+        }
+      })
+      .catch(() => {});
+  }, [isLoggedIn, activeNav, uploadYear, uploadBranch, uploadSemester]);
+
   // Change Year: reset downstream fields without auto-filling
   const handleUploadYearChange = (newYear: YearOption | '') => {
     setUploadYear(newYear);
@@ -1431,15 +1513,20 @@ export default function AdminPage() {
 
   const handleUploadFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (!file.name.toLowerCase().endsWith('.pdf')) {
-        showToast('Please upload a valid .pdf file', 'error');
-        return;
-      }
-      setSelectedUploadFile(file);
-      if (!uploadDisplayTitle.trim()) {
-        setUploadDisplayTitle(file.name.replace(/\.pdf$/i, ''));
-      }
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+      showToast('Please upload a valid .pdf file', 'error');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > MAX_PDF_UPLOAD_BYTES) {
+      showToast('File exceeds the 500 MB Google Drive upload limit.', 'error');
+      e.target.value = '';
+      return;
+    }
+    setSelectedUploadFile(file);
+    if (!uploadDisplayTitle.trim()) {
+      setUploadDisplayTitle(file.name.replace(/\.pdf$/i, ''));
     }
   };
 
@@ -1494,8 +1581,10 @@ export default function AdminPage() {
           date: new Date().toISOString().split('T')[0]
         };
 
-        if (isSupabaseConfigured()) {
-          await insertLectureToSupabase(newLec, uploadYear, uploadBranch);
+        const lecSaved = await insertLectureToSupabase(newLec, uploadYear, uploadBranch);
+        if (!lecSaved) {
+          showToast('Failed to publish lecture. Please ensure link is a valid http/https URL.', 'error');
+          return;
         }
 
         // Save to localStorage so student lecture view sees it
@@ -1534,26 +1623,28 @@ export default function AdminPage() {
     }
 
     // REGULAR CASE: NOTES OR PYQS
-    const finalOwner = uploadOwnerName.trim() || 'Pushpendra Gora';
+    const finalOwner = uploadOwnerName.trim() || 'Department Faculty';
     const finalFileName = cleanTitle.toLowerCase().endsWith('.pdf') ? cleanTitle : `${cleanTitle}.pdf`;
     const finalType: 'Notes' | 'PYQ' = uploadType === 'PYQ' ? 'PYQ' : 'Notes';
     const calculatedSize = selectedUploadFile ? formatFileSize(selectedUploadFile.size) : '';
     const realPageCount = selectedUploadFile ? await extractPdfPageCount(selectedUploadFile) : 0;
 
     setIsUploadingMaterial(true);
+    setAdminUploadProgress(selectedUploadFile ? 1 : null);
 
     try {
       let uploadedFileUrl: string | undefined = undefined;
       let uploadedFilePath: string | undefined = undefined;
 
-      // 1. Upload PDF exclusively to Google Drive (Supabase bucket disabled)
+      // 1. Upload PDF directly from browser to Google Drive (up to 500 MB, 0 bytes through Vercel)
       if (selectedUploadFile) {
         showToast('Uploading PDF directly to Google Drive...', 'info');
         const uploadResult = await uploadUnifiedPdf(selectedUploadFile, undefined, {
           title: cleanTitle,
           year: uploadYear,
           branch: uploadBranch,
-          semester: uploadSemester
+          semester: uploadSemester,
+          onProgress: (pct) => setAdminUploadProgress(pct),
         });
         if (uploadResult && uploadResult.publicUrl) {
           uploadedFileUrl = uploadResult.publicUrl;
@@ -1561,14 +1652,15 @@ export default function AdminPage() {
           showToast('Saved to Google Drive! Public shareable link stored in database.', 'success');
         } else {
           setIsUploadingMaterial(false);
+          setAdminUploadProgress(null);
           const errDetail = lastGoogleDriveError || 'Google Drive Web App URL is not set or upload failed.';
           showToast(`⚠️ Google Drive upload failed: ${errDetail}`, 'error');
-          alert(`Google Drive Upload Error:\n${errDetail}\n\nPlease check your Google Apps Script Web App URL in Statistics or set GOOGLE_DRIVE_WEBHOOK_URL on Vercel.`);
+          alert(`Google Drive Upload Error:\n${errDetail}\n\nPlease check your Google Apps Script deployment in Statistics.`);
           return;
         }
       }
 
-      // 2. Save note doc for student portal search
+      // 2. Save note doc metadata strictly via server API
       const docId = `doc-admin-${Date.now()}`;
       const noteDoc: NoteDocument = {
         id: docId,
@@ -1591,30 +1683,16 @@ export default function AdminPage() {
         ]
       };
 
-      // Save document to Supabase via server API & client fallback
-      try {
-        const creds = getSupabaseCredentials();
-        const docHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (creds.url && creds.key) {
-          docHeaders['x-supabase-url'] = creds.url;
-          docHeaders['x-supabase-key'] = creds.key;
-        }
-        const docRes = await fetch('/api/documents', {
-          method: 'POST',
-          headers: docHeaders,
-          body: JSON.stringify(noteDoc),
-        });
-        const docData = await docRes.json();
-        if (!docRes.ok || !docData.success) {
-          if (isSupabaseConfigured()) {
-            await insertDocumentToSupabase(noteDoc);
-          }
-        }
-      } catch {
-        if (isSupabaseConfigured()) {
-          await insertDocumentToSupabase(noteDoc);
-        }
+      const docRes = await fetch('/api/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(noteDoc),
+      });
+      const docData = await docRes.json();
+      if (!docRes.ok || !docData.success) {
+        throw new Error(docData?.error || 'Failed to save document metadata to database.');
       }
+
       saveCustomUploadedDocument(noteDoc);
 
       // 3. Add to materials table state in Admin portal
@@ -1644,11 +1722,12 @@ export default function AdminPage() {
       if (uploadFileInputRef.current) {
         uploadFileInputRef.current.value = '';
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      showToast('Error uploading document. Please try again.', 'error');
+      showToast(err?.message || 'Error uploading document. Please try again.', 'error');
     } finally {
       setIsUploadingMaterial(false);
+      setAdminUploadProgress(null);
     }
   };
 
@@ -1809,7 +1888,7 @@ export default function AdminPage() {
         const results = await Promise.all(
           targets.map(async (t) => {
             if (t.type === 'Lectures') {
-              if (isSupabaseConfigured()) await deleteLectureFromSupabase(t.id);
+              await deleteLectureFromSupabase(t.id);
               return { driveDeleted: false, driveNeedsScriptUpdate: false };
             }
             const docType = t.type === 'PYQs' ? 'PYQ' : 'Notes';
@@ -1817,6 +1896,7 @@ export default function AdminPage() {
               id: t.id,
               type: t.type,
               fileUrl: t.file_url,
+              skipCount: true,
               supabaseCreds: creds,
               supabaseFallback: () =>
                 isSupabaseConfigured()
@@ -1825,6 +1905,9 @@ export default function AdminPage() {
             });
           })
         );
+
+        // Recompute single-column counter atomically once after bulk deletion
+        syncDashboardSummary(true, true).catch(() => {});
 
         const driveDeletedCount = results.filter((r) => r.driveDeleted).length;
         const needsScriptUpdate = results.some((r) => r.driveNeedsScriptUpdate);
@@ -2806,8 +2889,9 @@ export default function AdminPage() {
                 {/* 1st Year Card */}
                 <div 
                   onClick={() => {
-                    setActiveNav('All Materials');
-                    setYearFilter('1st Year');
+                    setSelectedManageYear('1st Year');
+                    setManageYearTypeFilter('All');
+                    setActiveNav('Manage by Year');
                   }}
                   className="p-5 rounded-2xl bg-purple-50/60 border border-purple-100/80 hover:bg-purple-50 hover:shadow-sm transition-all cursor-pointer group"
                 >
@@ -2824,8 +2908,9 @@ export default function AdminPage() {
                 {/* 2nd Year Card */}
                 <div 
                   onClick={() => {
-                    setActiveNav('All Materials');
-                    setYearFilter('2nd Year');
+                    setSelectedManageYear('2nd Year');
+                    setManageYearTypeFilter('All');
+                    setActiveNav('Manage by Year');
                   }}
                   className="p-5 rounded-2xl bg-blue-50/60 border border-blue-100/80 hover:bg-blue-50 hover:shadow-sm transition-all cursor-pointer group"
                 >
@@ -2842,8 +2927,9 @@ export default function AdminPage() {
                 {/* 3rd Year Card */}
                 <div 
                   onClick={() => {
-                    setActiveNav('All Materials');
-                    setYearFilter('3rd Year');
+                    setSelectedManageYear('3rd Year');
+                    setManageYearTypeFilter('All');
+                    setActiveNav('Manage by Year');
                   }}
                   className="p-5 rounded-2xl bg-indigo-50/60 border border-indigo-100/80 hover:bg-indigo-50 hover:shadow-sm transition-all cursor-pointer group"
                 >
@@ -2860,8 +2946,9 @@ export default function AdminPage() {
                 {/* 4th Year Card */}
                 <div 
                   onClick={() => {
-                    setActiveNav('All Materials');
-                    setYearFilter('4th Year');
+                    setSelectedManageYear('4th Year');
+                    setManageYearTypeFilter('All');
+                    setActiveNav('Manage by Year');
                   }}
                   className="p-5 rounded-2xl bg-emerald-50/60 border border-emerald-100/80 hover:bg-emerald-50 hover:shadow-sm transition-all cursor-pointer group"
                 >
@@ -2990,6 +3077,18 @@ export default function AdminPage() {
                 >
                   <FileCheck className={`w-3.5 h-3.5 ${typeFilter === 'PYQs' ? 'text-white' : 'text-slate-400'}`} />
                   <span>PYQs</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTypeFilter('Lectures')}
+                  className={`inline-flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl transition-all cursor-pointer ${
+                    typeFilter === 'Lectures'
+                      ? 'bg-[#3b49df] text-white shadow-sm'
+                      : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Video className={`w-3.5 h-3.5 ${typeFilter === 'Lectures' ? 'text-white' : 'text-slate-400'}`} />
+                  <span>Lectures</span>
                 </button>
               </div>
             </div>
@@ -3203,8 +3302,12 @@ export default function AdminPage() {
                           />
                         </td>
                         <td className="py-3.5 px-3 font-semibold text-slate-800 flex items-center space-x-2.5">
-                          <div className="w-7 h-7 rounded-lg bg-red-50 text-red-600 font-bold text-[9px] flex items-center justify-center shrink-0 border border-red-100">
-                            PDF
+                          <div className={`w-7 h-7 rounded-lg font-bold text-[9px] flex items-center justify-center shrink-0 border ${
+                            m.type === 'Lectures'
+                              ? 'bg-purple-50 text-purple-600 border-purple-100'
+                              : 'bg-red-50 text-red-600 border-red-100'
+                          }`}>
+                            {m.type === 'Lectures' ? 'VID' : 'PDF'}
                           </div>
                           <span className="truncate max-w-[200px]" title={m.fileName}>
                             {m.fileName}
@@ -3222,6 +3325,8 @@ export default function AdminPage() {
                           <span className={`px-3 py-1 rounded-full text-[10px] font-bold border ${
                             m.type === 'Notes' 
                               ? 'bg-blue-50 text-blue-700 border-blue-100' 
+                              : m.type === 'Lectures'
+                              ? 'bg-purple-50 text-purple-700 border-purple-100'
                               : 'bg-cyan-50 text-cyan-700 border-cyan-100'
                           }`}>
                             {m.type}
@@ -3718,7 +3823,7 @@ export default function AdminPage() {
                           Click to Browse PDF File from Computer
                         </p>
                         <p className="text-[11px] text-slate-400">
-                          Accepts .pdf curriculum syllabus files
+                          Accepts .pdf files up to 500 MB (uploads directly to Google Drive)
                         </p>
                       </div>
                     )}
@@ -3762,9 +3867,10 @@ export default function AdminPage() {
                   </div>
                   <input
                     type="text"
+                    required
                     value={uploadOwnerName}
                     onChange={(e) => setUploadOwnerName(e.target.value)}
-                    placeholder="e.g. Pushpendra Gora"
+                    placeholder="e.g. Department Faculty"
                     className="w-full h-11 px-3.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
@@ -3784,7 +3890,11 @@ export default function AdminPage() {
                   )}
                   <span>
                     {isUploadingMaterial 
-                      ? (uploadType === 'Lectures' ? 'Publishing Lecture...' : 'Uploading to Supabase Storage...') 
+                      ? (uploadType === 'Lectures'
+                          ? 'Publishing Lecture...'
+                          : adminUploadProgress !== null
+                          ? `Uploading directly to Google Drive (${adminUploadProgress}%)...`
+                          : 'Saving...') 
                       : (uploadType === 'Lectures' ? 'Publish Video Lecture' : uploadType === 'PYQ' ? 'Upload PYQ Paper' : 'Upload Material')}
                   </span>
                 </button>
@@ -3929,13 +4039,13 @@ export default function AdminPage() {
                   <div>
                     <p className="text-xs text-slate-500 font-medium">Google Drive</p>
                     <div className="flex items-baseline space-x-2 mt-0.5">
-                      <span className={`text-base font-black ${isGoogleDriveConfigured() ? 'text-emerald-700' : 'text-amber-700'}`}>
-                        {isGoogleDriveConfigured() ? 'Active & Synced' : 'Ready to Connect'}
+                      <span className={`text-base font-black ${(driveServerConfigured || isGoogleDriveConfigured()) ? 'text-emerald-700' : 'text-amber-700'}`}>
+                        {(driveServerConfigured || isGoogleDriveConfigured()) ? 'Active & Synced' : 'Ready to Connect'}
                       </span>
                     </div>
                   </div>
                 </div>
-                <div className={`w-2.5 h-2.5 rounded-full ${isGoogleDriveConfigured() ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}`}></div>
+                <div className={`w-2.5 h-2.5 rounded-full ${(driveServerConfigured || isGoogleDriveConfigured()) ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}`}></div>
               </div>
             </section>
 
@@ -3980,7 +4090,7 @@ export default function AdminPage() {
                           : 'bg-amber-50 text-amber-700 border-amber-200'
                       }`}>
                         {(driveServerConfigured || isGoogleDriveConfigured())
-                          ? `● ${Math.max(1, driveList.length)} Drive(s) Connected`
+                          ? (driveList.length > 0 ? `● ${driveList.length} Drive(s) Connected` : '● Drive Connected')
                           : '○ Env Setup Required'}
                       </span>
                     </div>

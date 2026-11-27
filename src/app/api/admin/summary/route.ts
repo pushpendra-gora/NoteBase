@@ -11,7 +11,8 @@ export const dynamic = 'force-dynamic';
  * (zero full table scans across notes/pyqs/lectures/coordinators unless `?recompute=1` is requested).
  */
 export async function GET(req: NextRequest) {
-  if (!getAdminSession(req)) {
+  const adminSession = getAdminSession(req);
+  if (!adminSession) {
     return NextResponse.json(
       { success: false, error: 'Unauthorized. Admin sign-in required.' },
       { status: 401 }
@@ -34,7 +35,7 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const forceRecompute = searchParams.get('recompute') === '1';
 
-    const result = await readMaterialCounts(client, forceRecompute);
+    const result = await readMaterialCounts(client, forceRecompute, adminSession.id);
 
     return NextResponse.json({
       success: !result.error,

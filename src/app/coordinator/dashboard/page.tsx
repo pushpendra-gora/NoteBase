@@ -78,11 +78,11 @@ import {
   uploadUnifiedPdf, 
   isGoogleDriveConfigured, 
   lastGoogleDriveError,
-  getGoogleDriveConfig,
-  saveGoogleDriveConfig,
-  deleteDocumentEverywhere
+  deleteDocumentEverywhere,
+  MAX_PDF_UPLOAD_BYTES
 } from '../../../lib/googleDriveService';
 import { extractPdfPageCount, formatFileSize } from '../../../lib/pdfMetadata';
+import { normalizeSafeExternalUrl } from '../../../lib/urlSafety';
 import PdfPreviewModal from '../../../components/PdfPreviewModal';
 
 interface CoordinatorFile {
@@ -323,11 +323,14 @@ function DashboardContent() {
 
   // Global action toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = (msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToastMessage(msg);
-    setTimeout(() => {
+    toastTimerRef.current = setTimeout(() => {
       setToastMessage(null);
+      toastTimerRef.current = null;
     }, 3200);
   };
 
@@ -340,6 +343,7 @@ function DashboardContent() {
   const [uploadOwner, setUploadOwner] = useState('');
   const [selectedFileObj, setSelectedFileObj] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
 
   // Manage Material State
   const [manageTab, setManageTab] = useState<'Notes' | 'PYQs'>('Notes');
@@ -390,12 +394,7 @@ function DashboardContent() {
   }, [yearParam, branchParam, uploadSemester, coordinatorSemesters, subjectsVersion]);
 
   // Supabase Cloud State
-  const [showSupabaseModal, setShowSupabaseModal] = useState(false);
   const [supabaseConnected, setSupabaseConnected] = useState(false);
-  const [supabaseUrlInput, setSupabaseUrlInput] = useState('');
-  const [supabaseKeyInput, setSupabaseKeyInput] = useState('');
-  const [supabaseTesting, setSupabaseTesting] = useState(false);
-  const [supabaseMessage, setSupabaseMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   // Handle mobile native back button / gestures to close open modals smoothly
   useEffect(() => {
@@ -403,7 +402,6 @@ function DashboardContent() {
       setShowUserMenu(false);
       setShowStorageModal(false);
       setShowChangePasswordModal(false);
-      setShowSupabaseModal(false);
       setPreviewFile(null);
       setEditingFile(null);
       setDeleteConfirm(null);
@@ -415,34 +413,32 @@ function DashboardContent() {
     };
   }, []);
 
-  // Initialize Supabase & Google Drive configuration once authenticated
+  // Initialize Supabase & server Google Drive readiness once authenticated
   useEffect(() => {
-    const creds = getSupabaseCredentials();
-    if (creds.url) setSupabaseUrlInput(creds.url);
-    if (creds.key) setSupabaseKeyInput(creds.key);
-    setSupabaseConnected(isSupabaseConfigured());
-
     if (!authChecked) return;
 
-    // Auto-sync Google Drive Webhook from server/Supabase
     if (typeof window !== 'undefined') {
-      const headers: Record<string, string> = {};
-      if (creds.url && creds.key) {
-        headers['x-supabase-url'] = creds.url;
-        headers['x-supabase-key'] = creds.key;
-      }
-      fetch('/api/status', { headers })
+      try {
+        localStorage.removeItem('notehub_supabase_url');
+        localStorage.removeItem('notehub_supabase_anon_key');
+        localStorage.removeItem('notehub_gdrive_webhook_url');
+        localStorage.removeItem('notehub_gdrive_folder_id');
+      } catch {}
+
+      fetch('/api/status', { cache: 'no-store' })
         .then((res) => res.json())
         .then((data) => {
-          if (data?.googleDrive?.webhookUrl) {
-            saveGoogleDriveConfig({
-              webhookUrl: data.googleDrive.webhookUrl,
-              folderId: data.googleDrive.folderId || '',
-              enabled: true,
-            });
+          setSupabaseConnected(Boolean(data?.connected));
+          if (data?.googleDrive?.configured !== undefined) {
+            localStorage.setItem(
+              'notebase_gdrive_server_configured',
+              data.googleDrive.configured ? 'true' : 'false'
+            );
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          setSupabaseConnected(isSupabaseConfigured());
+        });
     }
   }, [authChecked]);
 
@@ -461,59 +457,56 @@ function DashboardContent() {
     return subjs.map((s) => s.title);
   }, [yearParam, branchParam, lectureSemester, coordinatorSemesters, subjectsVersion]);
 
-  // Lecture List State: only authentic real lectures uploaded by coordinator/admin
-  const [lecturesList, setLecturesList] = useState<LectureItem[]>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem('notehub_custom_lectures');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) {
-            return parsed;
-          }
-        }
-      } catch {}
-    }
-    return [];
-  });
+  // Lecture List State: only authentic real lectures uploaded for verified coordinator
+  const [lecturesList, setLecturesList] = useState<LectureItem[]>([]);
 
-  // Fetch Supabase lectures on mount (Supabase is authoritative)
-  useEffect(() => {
-    if (isSupabaseConfigured()) {
-      fetchLecturesFromSupabase(yearParam, branchParam).then((cloudLecs) => {
-        if (cloudLecs && cloudLecs.length > 0) {
-          setLecturesList((prev) => {
-            const cloudIds = new Set(cloudLecs.map((l) => l.id));
-            const uniquePrev = prev.filter((l) => !cloudIds.has(l.id));
-            const formattedCloud = cloudLecs.map((l) => ({
-              id: l.id,
-              title: l.title,
-              subject: l.subject,
-              semester: l.semester,
-              faculty: l.faculty,
-              link: l.link,
-              date: l.date
-            }));
-            return [...formattedCloud, ...uniquePrev];
-          });
-        }
-      }).catch(() => {});
-    }
-  }, [yearParam, branchParam, supabaseConnected]);
-
-  // Fetch cloud subjects from Supabase only after coordinator session is verified
+  // Fetch Supabase lectures ONLY after verified session is ready (authoritative sync including empty lists)
   useEffect(() => {
     if (!authChecked || !verifiedSession) return;
-    if (isSupabaseConfigured()) {
-      coordinatorSemesters.forEach((sem) => {
-        fetchSubjectsFromSupabase(yearParam, branchParam, sem).then((cloudSubjs) => {
-          if (cloudSubjs && cloudSubjs.length > 0) {
+    let active = true;
+    fetchLecturesFromSupabase(yearParam, branchParam)
+      .then((cloudLecs) => {
+        if (!active || !Array.isArray(cloudLecs)) return;
+        const formattedCloud: LectureItem[] = cloudLecs.map((l) => ({
+          id: l.id,
+          title: l.title,
+          subject: l.subject,
+          semester: l.semester,
+          faculty: l.faculty,
+          link: l.link,
+          date: l.date,
+        }));
+        setLecturesList(formattedCloud);
+        if (typeof window !== 'undefined') {
+          try {
+            const raw = localStorage.getItem('notehub_custom_lectures');
+            const existing: any[] = raw ? JSON.parse(raw) : [];
+            const otherBranch = existing.filter(
+              (item) => !(item.year === yearParam && item.branch === branchParam)
+            );
+            localStorage.setItem('notehub_custom_lectures', JSON.stringify([...cloudLecs, ...otherBranch]));
+          } catch {}
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [authChecked, verifiedSession, yearParam, branchParam, supabaseConnected]);
+
+  // Fetch cloud subjects from Supabase only after coordinator session is verified (authoritative sync even if empty)
+  useEffect(() => {
+    if (!authChecked || !verifiedSession) return;
+    coordinatorSemesters.forEach((sem) => {
+      fetchSubjectsFromSupabase(yearParam, branchParam, sem)
+        .then((cloudSubjs) => {
+          if (Array.isArray(cloudSubjs)) {
             saveSubjectsFor(yearParam, branchParam, sem, cloudSubjs);
             setSubjectsVersion((v) => v + 1);
           }
-        }).catch(() => {});
-      });
-    }
+        })
+        .catch(() => {});
+    });
   }, [authChecked, verifiedSession, yearParam, branchParam, coordinatorSemesters, supabaseConnected]);
 
   // Initial files generated corresponding to coordinator's year & branch
@@ -687,65 +680,23 @@ function DashboardContent() {
     });
   }, [lecturesList, lectureSearchQuery]);
 
-  // Handle system file browse picker
+  // Handle system file browse picker (validates .pdf and 500 MB Google Drive limit)
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      setSelectedFileObj(file);
-      setUploadFileName(file.name);
-      showToast(`Selected file: "${file.name}"`);
-    }
-  };
-
-  // Handle Supabase Cloud Configuration Save & Test
-  const handleSaveSupabaseConfig = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSupabaseTesting(true);
-    setSupabaseMessage(null);
-
-    const cleanUrl = supabaseUrlInput.trim();
-    const cleanKey = supabaseKeyInput.trim();
-
-    if (!cleanUrl || !cleanKey) {
-      setSupabaseMessage({ text: 'Please enter both Supabase Project URL and Anon Key.', type: 'error' });
-      setSupabaseTesting(false);
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+      showToast('⚠️ Only valid .pdf files are allowed.');
+      e.target.value = '';
       return;
     }
-
-    try {
-      localStorage.setItem('notehub_supabase_url', cleanUrl);
-      localStorage.setItem('notehub_supabase_anon_key', cleanKey);
-
-      const { createClient } = await import('@supabase/supabase-js');
-      const testClient = createClient(cleanUrl, cleanKey);
-      const { error } = await testClient.from('notes').select('id').limit(1);
-      if (error) {
-        throw error;
-      }
-
-      setSupabaseConnected(true);
-      setSupabaseMessage({ text: 'Connected successfully to Supabase Database & Storage!', type: 'success' });
-      showToast('☁️ Supabase Cloud Connected!');
-      setTimeout(() => setShowSupabaseModal(false), 1200);
-    } catch (err: any) {
-      setSupabaseMessage({ text: `Connection note: Saved credentials. ${err.message || ''}`, type: 'info' });
-      setSupabaseConnected(true);
-      showToast('☁️ Supabase Credentials Saved!');
-      setTimeout(() => setShowSupabaseModal(false), 1200);
-    } finally {
-      setSupabaseTesting(false);
+    if (file.size > MAX_PDF_UPLOAD_BYTES) {
+      showToast('⚠️ File exceeds the 500 MB Google Drive limit.');
+      e.target.value = '';
+      return;
     }
-  };
-
-  // Handle Disconnect Supabase
-  const handleDisconnectSupabase = () => {
-    localStorage.removeItem('notehub_supabase_url');
-    localStorage.removeItem('notehub_supabase_anon_key');
-    setSupabaseConnected(false);
-    setSupabaseUrlInput('');
-    setSupabaseKeyInput('');
-    setSupabaseMessage({ text: 'Supabase disconnected. Using local database.', type: 'info' });
-    showToast('Supabase disconnected.');
+    setSelectedFileObj(file);
+    setUploadFileName(file.name);
+    showToast(`Selected file: "${file.name}"`);
   };
 
   // Handle Upload
@@ -763,8 +714,9 @@ function DashboardContent() {
     // SPECIAL CASE: LECTURES
     if (uploadType === 'Lectures') {
       const cleanLink = lectureLink.trim();
-      if (!cleanLink) {
-        showToast('⚠️ Please paste the video / lecture link URL.');
+      const safeUrl = normalizeSafeExternalUrl(cleanLink);
+      if (!cleanLink || !safeUrl) {
+        showToast('⚠️ Please paste a valid http:// or https:// video link.');
         return;
       }
 
@@ -775,12 +727,14 @@ function DashboardContent() {
           title: cleanTitle,
           subject: finalSubject,
           semester: finalSem,
-          link: cleanLink,
+          link: safeUrl,
           date: new Date().toISOString().split('T')[0]
         };
 
-        if (isSupabaseConfigured()) {
-          await insertLectureToSupabase(newLec, yearParam, branchParam);
+        const ok = await insertLectureToSupabase(newLec, yearParam, branchParam);
+        if (!ok) {
+          showToast('⚠️ Could not publish lecture to database. Please check link and try again.');
+          return;
         }
 
         setLecturesList((prev) => {
@@ -810,19 +764,21 @@ function DashboardContent() {
     const finalOwner = uploadOwner.trim() || 'Department Faculty';
 
     setIsUploading(true);
+    setUploadProgress(selectedFileObj ? 1 : null);
 
     try {
       let uploadedFileUrl: string | undefined = undefined;
       let uploadedFilePath: string | undefined = undefined;
 
-      // 1. Upload actual PDF file exclusively to Google Drive (Supabase bucket disabled)
+      // 1. Upload actual PDF file directly from browser to Google Drive (up to 500 MB, 0 bytes through Vercel)
       if (selectedFileObj) {
-        showToast('☁️ Uploading PDF to Google Drive...');
+        showToast('☁️ Uploading PDF directly to Google Drive...');
         const uploadResult = await uploadUnifiedPdf(selectedFileObj, undefined, {
           title: finalDisplayName,
           year: yearParam,
           branch: branchParam,
-          semester: finalSem
+          semester: finalSem,
+          onProgress: (pct) => setUploadProgress(pct),
         });
         if (uploadResult && uploadResult.publicUrl) {
           uploadedFileUrl = uploadResult.publicUrl;
@@ -830,9 +786,10 @@ function DashboardContent() {
           showToast('✅ Saved to Google Drive! Public link saved to database.');
         } else {
           setIsUploading(false);
+          setUploadProgress(null);
           const errDetail = lastGoogleDriveError || 'Google Drive Web App URL is not configured or failed to upload.';
           showToast(`⚠️ Google Drive upload failed: ${errDetail}`);
-          alert(`Google Drive Upload Error:\n${errDetail}\n\nPlease check your Google Apps Script Web App URL in Admin -> Statistics or set GOOGLE_DRIVE_WEBHOOK_URL on Vercel.`);
+          alert(`Google Drive Upload Error:\n${errDetail}\n\nPlease check your Google Apps Script deployment in Admin -> Statistics.`);
           return;
         }
       }
@@ -855,7 +812,6 @@ function DashboardContent() {
         file_path: uploadedFilePath
       };
 
-      // Also save to shared storage for student portal / search
       const noteDoc: NoteDocument = {
         id: newFile.id,
         title: newFile.name,
@@ -877,40 +833,26 @@ function DashboardContent() {
         ]
       };
 
-      // 2. Insert record into Supabase database via server API & direct client
-      try {
-        const creds = getSupabaseCredentials();
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (creds.url && creds.key) {
-          headers['x-supabase-url'] = creds.url;
-          headers['x-supabase-key'] = creds.key;
-        }
-
-        const docRes = await fetch('/api/documents', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(noteDoc),
-        });
-        const docData = await docRes.json();
-        if (!docRes.ok || !docData.success) {
-          if (isSupabaseConfigured()) {
-            await insertDocumentToSupabase(noteDoc);
-          }
-        }
-      } catch {
-        if (isSupabaseConfigured()) {
-          await insertDocumentToSupabase(noteDoc);
-        }
+      // 2. Insert record into Supabase database strictly via authenticated server API
+      const docRes = await fetch('/api/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(noteDoc),
+      });
+      const docData = await docRes.json();
+      if (!docRes.ok || !docData.success) {
+        throw new Error(docData?.error || 'Failed to save document metadata on server.');
       }
 
-      // 3. Fallback / local persistence
       saveCustomUploadedDocument(noteDoc);
 
       setFiles((prev) => [newFile, ...prev]);
       setUploadFileName('');
       setUploadOwner('');
       setSelectedFileObj(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
       setIsUploading(false);
+      setUploadProgress(null);
 
       if (uploadedFileUrl) {
         showToast(`✅ "${newFile.name}" stored in Supabase & uploaded to ${finalSem}!`);
@@ -918,13 +860,13 @@ function DashboardContent() {
         showToast(`✅ "${newFile.name}" by ${finalOwner} uploaded to ${finalSem}!`);
       }
       
-      // Navigate to the uploaded category
       setActiveNav(finalType === 'PYQ' ? 'PYQs' : 'Notes');
       setManageTab(finalType === 'PYQ' ? 'PYQs' : 'Notes');
     } catch (err: any) {
       console.error('Upload error:', err);
       setIsUploading(false);
-      showToast('⚠️ Document saved locally.');
+      setUploadProgress(null);
+      showToast(`⚠️ ${err?.message || 'Error uploading document.'}`);
     }
   };
 
@@ -1047,20 +989,26 @@ function DashboardContent() {
     }
   };
 
-  // Handle PDF Download / Direct Open (Real PDF directly from Google Drive / Supabase)
+  // Handle PDF Download / Direct Open (Real PDF directly from Google Drive)
   const handleDownloadFile = (file: CoordinatorFile) => {
-    if (file.file_url) {
-      let downloadUrl = file.file_url;
-      const fileIdMatch = file.file_url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    const safeSource = normalizeSafeExternalUrl(file.file_url);
+    if (safeSource) {
+      let downloadUrl = safeSource;
+      const fileIdMatch = safeSource.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
       const safeTitle = (file.name || 'document').replace(/[/\\?%*:|"<>]/g, '_');
       const filename = safeTitle.toLowerCase().endsWith('.pdf') ? safeTitle : `${safeTitle}.pdf`;
 
       if (fileIdMatch && fileIdMatch[1]) {
         downloadUrl = `https://drive.google.com/uc?export=download&id=${fileIdMatch[1]}&filename=${encodeURIComponent(filename)}&title=${encodeURIComponent(filename)}`;
       }
+      const verifiedDownloadUrl = normalizeSafeExternalUrl(downloadUrl);
+      if (!verifiedDownloadUrl) {
+        showToast(`⚠️ Blocked unsafe file URL for "${file.name}".`);
+        return;
+      }
 
       const link = document.createElement('a');
-      link.href = downloadUrl;
+      link.href = verifiedDownloadUrl;
       link.setAttribute('download', filename);
       link.setAttribute('target', '_blank');
       link.setAttribute('rel', 'noopener noreferrer');
@@ -1075,7 +1023,7 @@ function DashboardContent() {
       showToast(`📥 Downloading "${filename}"...`);
       return;
     }
-    showToast(`⚠️ No PDF file attached for "${file.name}".`);
+    showToast(`⚠️ No valid PDF file attached for "${file.name}".`);
   };
 
   // Handle Lecture Upload Submit
@@ -1084,6 +1032,13 @@ function DashboardContent() {
     const cleanTitle = lectureTitle.trim();
     if (!cleanTitle) {
       showToast('⚠️ Please enter lecture title!');
+      return;
+    }
+
+    const rawLink = lectureLink.trim();
+    const safeLink = rawLink ? normalizeSafeExternalUrl(rawLink) : undefined;
+    if (rawLink && !safeLink) {
+      showToast('⚠️ Invalid lecture URL. Only http:// or https:// links are allowed.');
       return;
     }
 
@@ -1096,12 +1051,15 @@ function DashboardContent() {
       title: cleanTitle,
       subject: finalSubj,
       semester: finalSem,
-      link: lectureLink.trim() || undefined,
+      link: safeLink || undefined,
       date: new Date().toISOString().split('T')[0]
     };
 
-    if (isSupabaseConfigured()) {
-      await insertLectureToSupabase(newLec, yearParam, branchParam);
+    const ok = await insertLectureToSupabase(newLec, yearParam, branchParam);
+    setIsUploadingLecture(false);
+    if (!ok) {
+      showToast('⚠️ Failed to publish lecture on server. Please try again.');
+      return;
     }
 
     setLecturesList((prev) => {
@@ -1114,7 +1072,6 @@ function DashboardContent() {
 
     setLectureTitle('');
     setLectureLink('');
-    setIsUploadingLecture(false);
     showToast(`🎬 Lecture "${cleanTitle}" published!`);
     setActiveNav('Lectures');
   };
@@ -1125,8 +1082,10 @@ function DashboardContent() {
       title: 'Delete Video Lecture',
       message: `Are you sure you want to delete lecture "${title}"?`,
       onConfirm: async () => {
-        if (isSupabaseConfigured()) {
-          await deleteLectureFromSupabase(id);
+        const ok = await deleteLectureFromSupabase(id);
+        if (!ok) {
+          showToast(`⚠️ Could not delete lecture "${title}" from database.`);
+          return;
         }
         setLecturesList((prev) => {
           const updated = prev.filter((l) => l.id !== id);
@@ -1144,10 +1103,17 @@ function DashboardContent() {
   const handleSaveLectureEdit = async () => {
     if (!editingLecture || !newLectureEditTitle.trim()) return;
     const cleanTitle = newLectureEditTitle.trim();
-    const cleanLink = newLectureEditLink.trim() || undefined;
+    const rawLink = newLectureEditLink.trim();
+    const cleanLink = rawLink ? normalizeSafeExternalUrl(rawLink) || undefined : undefined;
+    if (rawLink && !cleanLink) {
+      showToast('⚠️ Invalid lecture URL. Only http:// or https:// links are allowed.');
+      return;
+    }
 
-    if (isSupabaseConfigured()) {
-      await updateLectureInSupabase(editingLecture.id, cleanTitle, cleanLink);
+    const ok = await updateLectureInSupabase(editingLecture.id, cleanTitle, cleanLink);
+    if (!ok) {
+      showToast('⚠️ Failed to update lecture on server.');
+      return;
     }
 
     setLecturesList((prev) => {
@@ -1550,13 +1516,21 @@ function DashboardContent() {
                       <Key className="w-3.5 h-3.5 text-slate-500" />
                       <span>Change Password</span>
                     </button>
-                    <Link
-                      href="/coordinator"
-                      className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-red-600 hover:bg-red-50 transition-colors"
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setShowUserMenu(false);
+                        try {
+                          await fetch('/api/coordinator/auth', { method: 'DELETE' });
+                          sessionStorage.removeItem('notehub_active_coordinator');
+                        } catch {}
+                        router.push('/coordinator');
+                      }}
+                      className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-red-600 hover:bg-red-50 transition-colors cursor-pointer text-left"
                     >
                       <LogOut className="w-3.5 h-3.5" />
                       <span>Sign Out</span>
-                    </Link>
+                    </button>
                   </div>
                 </div>
               )}
@@ -1826,8 +1800,8 @@ function DashboardContent() {
                       </div>
                       <div className="text-[11px] text-slate-400 font-medium">
                         {selectedFileObj 
-                          ? `${(selectedFileObj.size / (1024 * 1024)).toFixed(2)} MB • Ready to Upload` 
-                          : 'Accepts .pdf curriculum syllabus files'}
+                          ? `${(selectedFileObj.size / (1024 * 1024)).toFixed(2)} MB • Ready for Direct Drive Upload (Max 500 MB)` 
+                          : 'Accepts .pdf curriculum files up to 500 MB (uploads directly to Google Drive)'}
                       </div>
                     </div>
                   </div>
@@ -1889,7 +1863,11 @@ function DashboardContent() {
                     )}
                     <span>
                       {isUploading
-                        ? (uploadType === 'Lectures' ? 'Publishing Lecture...' : 'Uploading...')
+                        ? (uploadType === 'Lectures'
+                            ? 'Publishing Lecture...'
+                            : uploadProgress !== null
+                            ? `Uploading to Google Drive (${uploadProgress}%)...`
+                            : 'Saving...')
                         : (uploadType === 'Lectures' ? 'Publish Video Lecture' : uploadType === 'PYQ' ? 'Upload PYQ Paper' : 'Upload Notes')}
                     </span>
                   </button>
@@ -2230,9 +2208,9 @@ function DashboardContent() {
                       {/* Right (PC / Desktop Mode): Unchanged inline Actions (Watch, Edit, Delete) */}
                       <div className="hidden sm:flex items-center space-x-1.5 shrink-0">
                         {/* Watch / Open Link */}
-                        {lec.link ? (
+                        {normalizeSafeExternalUrl(lec.link) ? (
                           <a
-                            href={lec.link}
+                            href={normalizeSafeExternalUrl(lec.link)!}
                             target="_blank"
                             rel="noopener noreferrer"
                             title="Watch Lecture Link"
@@ -2287,9 +2265,9 @@ function DashboardContent() {
                                 : 'top-full mt-1.5'
                             }`}
                           >
-                            {lec.link && (
+                            {normalizeSafeExternalUrl(lec.link) && (
                               <a
-                                href={lec.link}
+                                href={normalizeSafeExternalUrl(lec.link)!}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 onClick={() => setOpenActionMenuId(null)}
@@ -2968,148 +2946,6 @@ function DashboardContent() {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Supabase Cloud Database & Storage Modal */}
-      {showSupabaseModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-lg w-full shadow-2xl border border-slate-100 space-y-5 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
-            
-            {/* Header */}
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center space-x-2.5">
-                <div className="w-9 h-9 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center shadow-sm">
-                  <Database className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">Supabase Cloud Database</h3>
-                  <p className="text-xs text-slate-500">PostgreSQL cloud database for metadata and public links (PDFs stored in Google Drive)</p>
-                </div>
-              </div>
-              <button onClick={() => setShowSupabaseModal(false)} className="text-slate-400 hover:text-slate-700">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Connection Status Badge */}
-            <div className={`p-4 rounded-2xl border flex items-center justify-between ${
-              supabaseConnected 
-                ? 'bg-emerald-50/70 border-emerald-200 text-emerald-800' 
-                : 'bg-amber-50/70 border-amber-200 text-amber-800'
-            }`}>
-              <div className="flex items-center space-x-3">
-                <span className={`w-3 h-3 rounded-full ${supabaseConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}`} />
-                <div>
-                  <p className="text-xs font-bold">
-                    {supabaseConnected ? 'Cloud Active: Connected to Supabase' : 'Status: Unconnected / Local Fallback Active'}
-                  </p>
-                  <p className="text-[11px] opacity-80">
-                    {supabaseConnected 
-                      ? 'Uploaded PDFs store directly in Supabase Storage with public links in DB.' 
-                      : 'Files and dynamic subjects will save in browser memory until credentials are added.'}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Config Form */}
-            <form onSubmit={handleSaveSupabaseConfig} className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 block">
-                  Supabase Project URL <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="url"
-                  required
-                  placeholder="https://your-project-id.supabase.co"
-                  value={supabaseUrlInput}
-                  onChange={(e) => setSupabaseUrlInput(e.target.value)}
-                  className="w-full h-12 px-4 rounded-2xl border border-slate-200 text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 block">
-                  Supabase Anon (Public) Key <span className="text-red-500">*</span>
-                </label>
-                <textarea
-                  rows={2}
-                  required
-                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                  value={supabaseKeyInput}
-                  onChange={(e) => setSupabaseKeyInput(e.target.value)}
-                  className="w-full p-3 rounded-2xl border border-slate-200 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-              </div>
-
-              {supabaseMessage && (
-                <div className={`p-3 rounded-xl text-xs font-semibold border flex items-center space-x-2 ${
-                  supabaseMessage.type === 'success' 
-                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
-                    : supabaseMessage.type === 'error'
-                    ? 'bg-red-50 text-red-600 border-red-200'
-                    : 'bg-blue-50 text-blue-700 border-blue-200'
-                }`}>
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{supabaseMessage.text}</span>
-                </div>
-              )}
-
-              {/* Quick Setup Instructions */}
-              <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200/80 text-[11px] text-slate-600 space-y-1.5">
-                <p className="font-bold text-slate-800">Quick 3-Step Setup:</p>
-                <ol className="list-decimal list-inside space-y-1 pl-1">
-                  <li>Go to <strong>Project Settings → API</strong> in your Supabase dashboard and copy the Project URL & anon key.</li>
-                  <li>In Supabase <strong>SQL Editor</strong>, run the code from <code className="bg-slate-200 px-1 py-0.5 rounded text-slate-800 font-mono">supabase-schema.sql</code> (present in project root).</li>
-                  <li>Click <strong>Test & Save</strong> below. All PDFs and public links will automatically synchronize live!</li>
-                </ol>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                {supabaseConnected ? (
-                  <button
-                    type="button"
-                    onClick={handleDisconnectSupabase}
-                    className="px-3.5 py-2 rounded-xl text-xs font-semibold text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
-                  >
-                    Disconnect
-                  </button>
-                ) : (
-                  <span />
-                )}
-
-                <div className="flex items-center space-x-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowSupabaseModal(false)}
-                    className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
-                  >
-                    Close
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={supabaseTesting}
-                    className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm cursor-pointer disabled:opacity-60"
-                  >
-                    {supabaseTesting ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Connecting...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Check className="w-3.5 h-3.5" />
-                        <span>Test & Save</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </form>
-
           </div>
         </div>
       )}

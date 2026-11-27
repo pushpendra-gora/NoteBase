@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Download, Loader2, X } from 'lucide-react';
+import { normalizeSafeEmbedUrl } from '../lib/urlSafety';
 
 export interface PdfPreviewDoc {
   id: string;
@@ -36,11 +37,7 @@ function getAndroidBridge(): any {
 
 function resolveRawPdfSourceUrl(doc: PdfPreviewDoc): string {
   const candidate = doc.file_url || doc.file_path || '';
-  if (candidate.startsWith('gdrive://')) {
-    const fId = candidate.replace('gdrive://', '');
-    return `https://drive.google.com/file/d/${fId}/view?usp=sharing`;
-  }
-  return candidate;
+  return normalizeSafeEmbedUrl(candidate) || '';
 }
 
 function getPdfEmbedUrl(url?: string): string {
@@ -57,7 +54,7 @@ function getPdfEmbedUrl(url?: string): string {
   if (idMatch?.[1] && url.includes('drive.google.com')) {
     return `https://drive.google.com/file/d/${idMatch[1]}/preview`;
   }
-  return url;
+  return normalizeSafeEmbedUrl(url) || '';
 }
 
 export default function PdfPreviewModal({
@@ -295,7 +292,8 @@ export default function PdfPreviewModal({
 
   if (!doc) return null;
 
-  const hasPdfSource = Boolean(doc.file_url || (doc.file_path && doc.file_path.startsWith('gdrive://')));
+  const safeEmbedUrl = getPdfEmbedUrl(doc.file_url || doc.file_path);
+  const hasPdfSource = Boolean(safeEmbedUrl);
   const isPyq = doc.type === 'PYQ' || doc.type === 'PYQs';
 
   return (
@@ -405,7 +403,7 @@ export default function PdfPreviewModal({
                     className="flex-1 w-full h-full flex flex-col"
                   >
                     <iframe
-                      src={getPdfEmbedUrl(doc.file_url || doc.file_path)}
+                      src={safeEmbedUrl}
                       title={doc.title}
                       loading="eager"
                       onLoad={() => {

@@ -86,7 +86,8 @@ export async function GET(req: NextRequest) {
 
   // 5. Admin Credentials Table Check
   try {
-    const { error } = await client.from('admin_credentials').select('id').eq('id', 'admin').limit(1).single();
+    const adminRowId = (process.env.ADMIN_DEFAULT_ID || 'admin').trim();
+    const { error } = await client.from('admin_credentials').select('id').eq('id', adminRowId).limit(1).maybeSingle();
     tablesStatus.admin_credentials = { exists: !error, error: error?.message };
   } catch (e: any) {
     tablesStatus.admin_credentials = { exists: false, error: e?.message };

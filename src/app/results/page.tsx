@@ -31,7 +31,7 @@ import { BranchOption, NoteDocument, SemesterOption, YearOption, LectureItem } f
 import { isSupabaseConfigured } from '../../lib/supabase';
 import { fetchDocumentsFromSupabase, fetchLecturesFromSupabase, fetchSubjectsFromSupabase } from '../../lib/supabaseService';
 import { formatFileSize } from '../../lib/pdfMetadata';
-import { openSafeExternalUrl } from '../../lib/urlSafety';
+import { normalizeSafeEmbedUrl, normalizeSafeExternalUrl, openSafeExternalUrl } from '../../lib/urlSafety';
 import PdfPreviewModal from '../../components/PdfPreviewModal';
 
 function ResultsContent() {
@@ -72,24 +72,15 @@ function ResultsContent() {
     if (typeof window !== 'undefined') {
       window.history.pushState({ modal: 'pdf' }, '');
 
-      // Save document metadata to local device storage for offline listing
-      try {
-        const raw = localStorage.getItem('notebase_cached_pdf_docs');
-        const map = raw ? JSON.parse(raw) : {};
-        map[doc.id] = doc;
-        localStorage.setItem('notebase_cached_pdf_docs', JSON.stringify(map));
-
-        // Only mark cached immediately in browser mode; in Android App, mark after actual PDF file is cached
-        if (!getAndroidBridge()) {
-          const idSetRaw = localStorage.getItem('notebase_cached_pdf_ids');
-          const idSet: string[] = idSetRaw ? JSON.parse(idSetRaw) : [];
-          if (!idSet.includes(doc.id)) {
-            idSet.push(doc.id);
-            localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(idSet));
-            setCachedPdfIds(new Set(idSet));
-          }
-        }
-      } catch {}
+      // Save document metadata only when an actual PDF source is attached
+      if (doc.file_url || doc.file_path) {
+        try {
+          const raw = localStorage.getItem('notebase_cached_pdf_docs');
+          const map = raw ? JSON.parse(raw) : {};
+          map[doc.id] = doc;
+          localStorage.setItem('notebase_cached_pdf_docs', JSON.stringify(map));
+        } catch {}
+      }
     }
     setActiveDoc(doc);
   };
@@ -306,7 +297,7 @@ function ResultsContent() {
     if (isSupabaseConfigured()) {
       fetchSubjectsFromSupabase(year, branch, semester).then((cloudSubjs) => {
         if (isMounted) {
-          if (cloudSubjs && cloudSubjs.length > 0) {
+          if (Array.isArray(cloudSubjs)) {
             setCloudSubjects(cloudSubjs);
             try {
               localStorage.setItem(`notebase_cloud_subjs_${year}_${branch}_${semester}`, JSON.stringify(cloudSubjs));
@@ -392,18 +383,27 @@ function ResultsContent() {
       setIsLoadingLectures(true);
       fetchLecturesFromSupabase(year, branch).then((cloudData) => {
         if (isMounted) {
-          if (cloudData && cloudData.length > 0) {
-            setCloudLectures(
-              cloudData.map((l) => ({
-                id: l.id,
-                title: l.title,
-                subject: l.subject,
-                semester: l.semester,
-                faculty: l.faculty,
-                link: l.link,
-                date: l.date
-              }))
-            );
+          if (Array.isArray(cloudData)) {
+            const mapped = cloudData.map((l) => ({
+              id: l.id,
+              title: l.title,
+              subject: l.subject,
+              semester: l.semester,
+              faculty: l.faculty,
+              link: l.link,
+              date: l.date
+            }));
+            setCloudLectures(mapped);
+            try {
+              const raw = localStorage.getItem('notehub_custom_lectures');
+              const existing: any[] = raw ? JSON.parse(raw) : [];
+              const otherBranch = existing.filter(
+                (item) => !(item.year === year && item.branch === branch)
+              );
+              const nextLocal = [...cloudData, ...otherBranch];
+              localStorage.setItem('notehub_custom_lectures', JSON.stringify(nextLocal));
+              setLocalLectures(nextLocal);
+            } catch {}
           }
           setIsLoadingLectures(false);
         }
@@ -460,9 +460,11 @@ function ResultsContent() {
   const [isLoadingSubjectDocs, setIsLoadingSubjectDocs] = useState<boolean>(false);
   // Tracks subjects whose metadata has already been fetched in this session so switching back never re-loads
   const fetchedSubjectsRef = useRef<Set<string>>(new Set());
+  const semesterWarmedRef = useRef<string>('');
 
   useEffect(() => {
     fetchedSubjectsRef.current.clear();
+    semesterWarmedRef.current = '';
   }, [year, branch, semester, type]);
 
   // Shared helper to reconcile server docs with localStorage + Android disk cache
@@ -595,12 +597,6 @@ function ResultsContent() {
       if (!isMounted || !succeeded) return;
 
       const grouped: Record<string, NoteDocument[]> = {};
-      for (const subj of subjectsList) {
-        if (subj.title) {
-          grouped[subj.title] = [];
-          fetchedSubjectsRef.current.add(subj.title);
-        }
-      }
       for (const doc of allDocs) {
         if (doc.subject) {
           if (!grouped[doc.subject]) grouped[doc.subject] = [];
@@ -608,6 +604,7 @@ function ResultsContent() {
           fetchedSubjectsRef.current.add(doc.subject);
         }
       }
+      semesterWarmedRef.current = `${year}___${branch}___${semester}___${type}`;
 
       reconcileServerDocsWithLocal(allDocs);
       setSubjectDocsCache(grouped);
@@ -628,8 +625,9 @@ function ResultsContent() {
       return;
     }
 
-    // Already fetched once this session: keep cached data immediately without re-loading
-    if (fetchedSubjectsRef.current.has(activeSubject)) {
+    const warmKey = `${year}___${branch}___${semester}___${type}`;
+    if (semesterWarmedRef.current === warmKey || fetchedSubjectsRef.current.has(activeSubject)) {
+      fetchedSubjectsRef.current.add(activeSubject);
       setIsLoadingSubjectDocs(false);
       return;
     }
@@ -753,39 +751,40 @@ function ResultsContent() {
       return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1&fs=1`;
     }
 
-    if (trimmed.includes('youtube.com/embed/')) {
-      const glue = trimmed.includes('?') ? '&' : '?';
-      return `${trimmed}${glue}autoplay=1&rel=0&modestbranding=1&fs=1&enablejsapi=1`;
+    if (trimmed.includes('youtube.com/embed/') && normalizeSafeEmbedUrl(trimmed)) {
+      const safe = normalizeSafeEmbedUrl(trimmed)!;
+      const glue = safe.includes('?') ? '&' : '?';
+      return `${safe}${glue}autoplay=1&rel=0&modestbranding=1&fs=1&enablejsapi=1`;
     }
 
-    return trimmed;
+    return normalizeSafeEmbedUrl(trimmed) || '';
   };
 
   const handleOpenInYouTubeApp = (link?: string) => {
     if (!link) return;
+    const safe = normalizeSafeExternalUrl(link);
+    if (!safe) return;
+
     const bridge = getAndroidBridge();
     if (bridge?.openYouTubeVideo) {
-      bridge.openYouTubeVideo(link);
+      bridge.openYouTubeVideo(safe);
       return;
     }
 
-    const videoId = extractYouTubeVideoId(link);
-    if (videoId) {
+    const videoId = extractYouTubeVideoId(safe);
+    const isAndroidUa = typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent);
+    if (videoId && isAndroidUa) {
       const intentUrl = `intent://www.youtube.com/watch?v=${videoId}#Intent;package=com.google.android.youtube;scheme=https;end`;
       window.location.href = intentUrl;
     } else {
-      openSafeExternalUrl(link);
+      openSafeExternalUrl(safe);
     }
   };
 
   const handleDownload = (doc: NoteDocument) => {
-    let targetUrl = doc.file_url;
-    if (targetUrl && targetUrl.startsWith('gdrive://')) {
-      const fId = targetUrl.replace('gdrive://', '');
-      targetUrl = `https://drive.google.com/file/d/${fId}/view?usp=sharing`;
-    } else if (!targetUrl && doc.file_path && doc.file_path.startsWith('gdrive://')) {
-      const fId = doc.file_path.replace('gdrive://', '');
-      targetUrl = `https://drive.google.com/file/d/${fId}/view?usp=sharing`;
+    let targetUrl = normalizeSafeExternalUrl(doc.file_url);
+    if (!targetUrl && doc.file_path) {
+      targetUrl = normalizeSafeExternalUrl(doc.file_path);
     }
 
     // If real PDF URL exists or document is cached locally on Android, initiate direct download
@@ -798,18 +797,24 @@ function ResultsContent() {
       if (fileIdMatch && fileIdMatch[1]) {
         downloadUrl = `https://drive.google.com/uc?export=download&id=${fileIdMatch[1]}&filename=${encodeURIComponent(filename)}&title=${encodeURIComponent(filename)}`;
       }
+      const safeDownloadUrl = normalizeSafeExternalUrl(downloadUrl) || '';
 
       setDownloadSuccess(true);
       const bridge = getAndroidBridge();
-      if (bridge?.downloadPdf) {
-        bridge.downloadPdf(doc.id, downloadUrl, filename);
+      if (bridge?.downloadPdf && safeDownloadUrl) {
+        bridge.downloadPdf(doc.id, safeDownloadUrl, filename);
         setTimeout(() => setDownloadSuccess(false), 2500);
+        return;
+      }
+
+      if (!safeDownloadUrl) {
+        setDownloadSuccess(false);
         return;
       }
 
       // Trigger direct download via invisible anchor tag for mobile browsers & WebView
       const link = document.createElement('a');
-      link.href = downloadUrl;
+      link.href = safeDownloadUrl;
       link.setAttribute('download', filename);
       link.setAttribute('target', '_blank');
       link.setAttribute('rel', 'noopener noreferrer');
@@ -945,7 +950,7 @@ function ResultsContent() {
 
                 return (
                   <button
-                    key={subj.code}
+                    key={`${subj.code}-${subj.title}`}
                     type="button"
                     onClick={() => handleSelectSubject(subj.title)}
                     className={`px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-bold transition-all border inline-flex items-center space-x-2 cursor-pointer shadow-xs ${
@@ -1250,7 +1255,13 @@ function ResultsContent() {
           });
         }}
         onWebLoaded={(docId) => {
-          if (typeof window !== 'undefined' && !getAndroidBridge()) {
+          if (
+            typeof window !== 'undefined' &&
+            !getAndroidBridge() &&
+            activeDoc &&
+            activeDoc.id === docId &&
+            (activeDoc.file_url || (activeDoc.file_path && activeDoc.file_path.startsWith('gdrive://')))
+          ) {
             setCachedPdfIds((prev) => {
               if (prev.has(docId)) return prev;
               const next = new Set(prev);
@@ -1313,13 +1324,19 @@ function ResultsContent() {
 
             {/* Video Player Container: Expands to edge-to-edge full screen in landscape */}
             <div className="relative w-full flex-1 aspect-video landscape:aspect-auto landscape:h-full bg-black flex items-center justify-center overflow-hidden">
-              <iframe
-                src={getYouTubeEmbedUrl(activeLecture.link)}
-                title={activeLecture.title}
-                className="w-full h-full border-0"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-                allowFullScreen
-              />
+              {getYouTubeEmbedUrl(activeLecture.link) ? (
+                <iframe
+                  src={getYouTubeEmbedUrl(activeLecture.link)}
+                  title={activeLecture.title}
+                  className="w-full h-full border-0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+                  allowFullScreen
+                />
+              ) : (
+                <div className="p-6 text-center text-slate-300 text-xs sm:text-sm">
+                  Invalid or unsafe video lecture URL.
+                </div>
+              )}
 
               {/* Floating Close Button for Landscape Mode */}
               <button

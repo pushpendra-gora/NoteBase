@@ -96,8 +96,13 @@ create table if not exists public.subjects (
   year text not null,
   branch text not null,
   semester text not null,
+  unit_snippets text[] default '{}'::text[],
+  pyq_snippets text[] default '{}'::text[],
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+
+alter table public.subjects add column if not exists unit_snippets text[] default '{}'::text[];
+alter table public.subjects add column if not exists pyq_snippets text[] default '{}'::text[];
 
 create index if not exists idx_subjects_lookup on public.subjects(year, branch, semester);
 

@@ -25,7 +25,8 @@ function isMissingMultiDriveColumnError(error: any): boolean {
  * Admin-only: Returns safe multi-drive summary (NEVER exposes secret webhook URLs or Folder IDs).
  */
 export async function GET(req: NextRequest) {
-  if (!getAdminSession(req)) {
+  const adminSession = getAdminSession(req);
+  if (!adminSession) {
     return NextResponse.json(
       { success: false, error: 'Unauthorized. Admin sign-in required.' },
       { status: 401 }
@@ -33,7 +34,7 @@ export async function GET(req: NextRequest) {
   }
 
   const client = getSupabaseClient();
-  const state = await loadMultiDriveState(client);
+  const state = await loadMultiDriveState(client, adminSession.id);
 
   const drives: PublicDriveSummary[] = state.drives.map((d) => ({
     id: d.id,
@@ -77,7 +78,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const action = String(body?.action || '').trim();
-    const state = await loadMultiDriveState(client);
+    const state = await loadMultiDriveState(client, adminSession.id);
 
     // 1. Switch which Drive receives all new uploads
     if (action === 'set-active') {

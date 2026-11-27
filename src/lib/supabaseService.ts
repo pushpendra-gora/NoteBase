@@ -4,11 +4,6 @@ import { NoteDocument, SubjectMeta, YearOption, BranchOption, SemesterOption } f
 function getClientApiHeaders(includeJson = false): Record<string, string> {
   const headers: Record<string, string> = {};
   if (includeJson) headers['Content-Type'] = 'application/json';
-  const creds = getSupabaseCredentials();
-  if (creds.url && creds.key) {
-    headers['x-supabase-url'] = creds.url;
-    headers['x-supabase-key'] = creds.key;
-  }
   return headers;
 }
 

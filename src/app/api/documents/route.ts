@@ -189,10 +189,10 @@ export async function POST(req: NextRequest) {
     const targetTable = type === 'PYQ' ? 'pyqs' : 'notes';
     const targetId = id || `doc-${Date.now()}`;
 
-    // Check if document ID already exists so counter column increments ONLY on genuine new inserts
+    // Check if document ID already exists so counter column increments ONLY on genuine new inserts (or adjusts year on move)
     const { data: existingDoc } = await client
       .from(targetTable)
-      .select('id')
+      .select('id, year')
       .eq('id', targetId)
       .limit(1)
       .maybeSingle();
@@ -241,6 +241,13 @@ export async function POST(req: NextRequest) {
       await adjustMaterialCounts(client, {
         notes: targetTable === 'notes' ? 1 : 0,
         pyqs: targetTable === 'pyqs' ? 1 : 0,
+        year: payload.year,
+        yearDelta: 1,
+      });
+    } else if (existingDoc.year !== payload.year) {
+      await adjustMaterialCounts(client, {
+        prevYear: existingDoc.year,
+        prevYearDelta: -1,
         year: payload.year,
         yearDelta: 1,
       });
@@ -357,7 +364,6 @@ export async function DELETE(req: NextRequest) {
     const type = searchParams.get('type');
     const paramFileUrl = searchParams.get('fileUrl');
     const paramFilePath = searchParams.get('filePath');
-    const customWebhook = req.headers.get('x-gdrive-webhook');
 
     if (!id) {
       return NextResponse.json(
@@ -415,30 +421,41 @@ export async function DELETE(req: NextRequest) {
       dbRow?.file_path ||
       (adminSession ? paramFileUrl || paramFilePath || null : null);
 
-    // Delete file from Google Drive first (best-effort, never blocks DB cleanup if Drive URL isn't set)
-    const driveResult = await deleteFileFromGoogleDriveServer(fileRefToDelete, client, customWebhook);
+    const skipCount = Boolean(adminSession && searchParams.get('skipCount') === '1');
 
-    // If type is known, delete from specific table. Otherwise delete from both.
+    // Delete file from Google Drive first (best-effort, never blocks DB cleanup if Drive URL isn't set)
+    const driveResult = await deleteFileFromGoogleDriveServer(fileRefToDelete, client);
+
+    // Delete from DB and track exact deleted rows per table for accurate counters
+    let deletedNotesRows: Array<{ id: string; year?: string | null }> = [];
+    let deletedPyqsRows: Array<{ id: string; year?: string | null }> = [];
+
     if (type === 'PYQ' || type === 'PYQs') {
-      const { error } = await client.from('pyqs').delete().eq('id', id);
+      const { data: delData, error } = await client.from('pyqs').delete().eq('id', id).select('id, year');
       if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+      deletedPyqsRows = delData || [];
     } else if (type === 'Notes') {
-      const { error } = await client.from('notes').delete().eq('id', id);
+      const { data: delData, error } = await client.from('notes').delete().eq('id', id).select('id, year');
       if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+      deletedNotesRows = delData || [];
     } else {
-      await Promise.all([
-        client.from('notes').delete().eq('id', id),
-        client.from('pyqs').delete().eq('id', id),
+      const [nDel, pDel] = await Promise.all([
+        client.from('notes').delete().eq('id', id).select('id, year'),
+        client.from('pyqs').delete().eq('id', id).select('id, year'),
       ]);
+      deletedNotesRows = nDel.data || [];
+      deletedPyqsRows = pDel.data || [];
     }
 
-    if (dbRow) {
-      const wasPyq = dbRow._table === 'pyqs' || type === 'PYQ' || type === 'PYQs';
+    if (!skipCount && (deletedNotesRows.length > 0 || deletedPyqsRows.length > 0)) {
+      const yearAdjustments = [
+        ...deletedNotesRows.map((r) => ({ year: r.year || null, delta: -1 })),
+        ...deletedPyqsRows.map((r) => ({ year: r.year || null, delta: -1 })),
+      ];
       await adjustMaterialCounts(client, {
-        notes: wasPyq ? 0 : -1,
-        pyqs: wasPyq ? -1 : 0,
-        year: dbRow.year || null,
-        yearDelta: -1,
+        notes: -deletedNotesRows.length,
+        pyqs: -deletedPyqsRows.length,
+        yearAdjustments,
       });
     }
 
