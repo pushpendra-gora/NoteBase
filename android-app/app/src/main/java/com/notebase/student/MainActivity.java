@@ -5,6 +5,7 @@ import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -47,6 +48,10 @@ import com.google.android.material.button.MaterialButton;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.net.URI;
+import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
@@ -54,8 +59,11 @@ import java.util.regex.Pattern;
 
 public class MainActivity extends AppCompatActivity {
 
-    private static final String APP_URL = "https://notebase-sigma.vercel.app";
+    private static final String BASE_ORIGIN = "https://notebase-sigma.vercel.app";
+    private static final String APP_URL = BuildConfig.START_URL;
+    private static final boolean IS_COORDINATOR_APP = BuildConfig.IS_COORDINATOR;
 
+    private FrameLayout contentContainer;
     private WebView webView;
     private ProgressBar progressBar;
     private FrameLayout customViewContainer;
@@ -104,15 +112,29 @@ public class MainActivity extends AppCompatActivity {
     @SuppressLint("SetJavaScriptEnabled")
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         setContentView(R.layout.activity_main);
+        applyLightSystemBars();
 
-        FrameLayout contentContainer = findViewById(R.id.contentContainer);
+        FrameLayout windowRoot = findViewById(R.id.windowRoot);
+        contentContainer = findViewById(R.id.contentContainer);
+        if (IS_COORDINATOR_APP) {
+            int coordinatorSurface = 0xFFFFFFFF;
+            if (windowRoot != null) {
+                windowRoot.setBackgroundColor(coordinatorSurface);
+            }
+            if (contentContainer != null) {
+                contentContainer.setBackgroundColor(coordinatorSurface);
+            }
+        }
         if (contentContainer != null) {
             ViewCompat.setOnApplyWindowInsetsListener(contentContainer, (v, windowInsets) -> {
                 Insets bars = windowInsets.getInsets(
                         WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout()
                 );
-                v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                Insets ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime());
+                int bottomInset = Math.max(bars.bottom, ime.bottom);
+                v.setPadding(bars.left, bars.top, bars.right, bottomInset);
                 return WindowInsetsCompat.CONSUMED;
             });
             ViewCompat.requestApplyInsets(contentContainer);
@@ -143,7 +165,7 @@ public class MainActivity extends AppCompatActivity {
             hasRetriedOfflineCache = false;
             updateWebViewCacheMode(isDeviceOnline());
             String currentUrl = webView.getUrl();
-            if (currentUrl != null && currentUrl.startsWith(APP_URL)) {
+            if (currentUrl != null && currentUrl.startsWith(BASE_ORIGIN)) {
                 webView.reload();
             } else {
                 webView.loadUrl(APP_URL);
@@ -286,9 +308,9 @@ public class MainActivity extends AppCompatActivity {
                 }
                 fileUploadCallback = filePathCallback;
 
-                Intent intent = fileChooserParams.createIntent();
+                Intent chooserIntent = buildFileChooserIntent(fileChooserParams);
                 try {
-                    fileChooserLauncher.launch(intent);
+                    fileChooserLauncher.launch(chooserIntent);
                 } catch (Exception e) {
                     fileUploadCallback = null;
                     Toast.makeText(MainActivity.this, "Cannot open file picker", Toast.LENGTH_SHORT).show();
@@ -389,14 +411,25 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean isHomeUrl(String url) {
-        if (url == null) return true;
+        return isRootPortalUrl(url, IS_COORDINATOR_APP);
+    }
+
+    public static boolean isRootPortalUrl(String url, boolean isCoordinator) {
+        if (url == null || url.trim().isEmpty()) return true;
+        String path = "";
         try {
-            Uri uri = Uri.parse(url);
-            String path = uri.getPath();
-            return path == null || path.isEmpty() || "/".equals(path);
-        } catch (Exception e) {
-            return url.equals(APP_URL) || url.equals(APP_URL + "/");
+            URI parsed = URI.create(url.trim());
+            if (parsed.getPath() != null) {
+                path = parsed.getPath();
+            }
+        } catch (Exception ignored) {
+            return false;
         }
+        String normalizedPath = path.replaceAll("/+$", "");
+        if (isCoordinator) {
+            return "/coordinator".equals(normalizedPath) || "/coordinator/dashboard".equals(normalizedPath);
+        }
+        return normalizedPath.isEmpty();
     }
 
     private void navigateBackFromWebView() {
@@ -410,8 +443,8 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        // If on /results (or subpage), jump directly back to the Home filter page in 1 press
-        if (currentUrl != null && currentUrl.contains("/results")) {
+        // If Student app is on /results (or subpage), jump directly back to the Home filter page in 1 press
+        if (!IS_COORDINATOR_APP && currentUrl != null && currentUrl.contains("/results")) {
             android.webkit.WebBackForwardList list = webView.copyBackForwardList();
             int currentIdx = list.getCurrentIndex();
             for (int i = currentIdx - 1; i >= 0; i--) {
@@ -438,8 +471,70 @@ public class MainActivity extends AppCompatActivity {
             finish();
         } else {
             lastBackPressTime = now;
-            Toast.makeText(MainActivity.this, "Press back again to exit NoteBase", Toast.LENGTH_SHORT).show();
+            String exitMsg = IS_COORDINATOR_APP
+                    ? "Press back again to exit NoteBase Coordinator"
+                    : "Press back again to exit NoteBase";
+            Toast.makeText(MainActivity.this, exitMsg, Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private Intent buildFileChooserIntent(WebChromeClient.FileChooserParams params) {
+        Intent contentIntent = new Intent(Intent.ACTION_GET_CONTENT);
+        contentIntent.addCategory(Intent.CATEGORY_OPENABLE);
+        contentIntent.setType("*/*");
+
+        if (params != null) {
+            String[] mimeTypes = resolveMimeTypesFromAcceptTypes(params.getAcceptTypes());
+            if (mimeTypes.length > 0) {
+                contentIntent.putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes);
+            }
+            if (params.getMode() == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
+                contentIntent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            }
+        }
+
+        return Intent.createChooser(contentIntent, "Select File");
+    }
+
+    public static String[] resolveMimeTypesFromAcceptTypes(String[] acceptTypes) {
+        if (acceptTypes == null || acceptTypes.length == 0) {
+            return new String[0];
+        }
+        Set<String> mimes = new LinkedHashSet<>();
+        for (String raw : acceptTypes) {
+            if (raw == null) continue;
+            for (String token : raw.split(",")) {
+                String t = token.trim().toLowerCase(Locale.US);
+                if (t.isEmpty()) continue;
+                if (t.contains("/")) {
+                    mimes.add(t);
+                } else if (".pdf".equals(t)) {
+                    mimes.add("application/pdf");
+                } else if (".png".equals(t)) {
+                    mimes.add("image/png");
+                } else if (".jpg".equals(t) || ".jpeg".equals(t)) {
+                    mimes.add("image/jpeg");
+                } else if (".webp".equals(t)) {
+                    mimes.add("image/webp");
+                } else if (".gif".equals(t)) {
+                    mimes.add("image/gif");
+                } else if (".html".equals(t) || ".htm".equals(t)) {
+                    mimes.add("text/html");
+                }
+            }
+        }
+        return mimes.toArray(new String[0]);
+    }
+
+    private void applyLightSystemBars() {
+        try {
+            WindowInsetsControllerCompat controller =
+                    WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+            if (controller != null) {
+                controller.setAppearanceLightStatusBars(true);
+                controller.setAppearanceLightNavigationBars(true);
+            }
+        } catch (Exception ignored) {}
     }
 
     private void exitFullscreenVideo() {
@@ -449,6 +544,10 @@ public class MainActivity extends AppCompatActivity {
         customViewContainer.setVisibility(View.GONE);
         webView.setVisibility(View.VISIBLE);
         setFullscreenSystemBars(false);
+        applyLightSystemBars();
+        if (contentContainer != null) {
+            ViewCompat.requestApplyInsets(contentContainer);
+        }
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         if (customViewCallback != null) {
             customViewCallback.onCustomViewHidden();
@@ -651,9 +750,22 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        applyLightSystemBars();
+        if (contentContainer != null) {
+            ViewCompat.requestApplyInsets(contentContainer);
+        }
         if (webView != null) {
             webView.onResume();
             updateWebViewCacheMode(isDeviceOnline());
+        }
+    }
+
+    @Override
+    public void onConfigurationChanged(@NonNull Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        applyLightSystemBars();
+        if (contentContainer != null) {
+            ViewCompat.requestApplyInsets(contentContainer);
         }
     }
 

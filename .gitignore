@@ -28,6 +28,8 @@ android-app/build/
 android-app/app/build/
 android-app/local.properties
 *.apk
+!NoteBase-Student.apk
+!NoteBase-Coordinator.apk
 /android-screen.png
 
 # Debug & OS logs

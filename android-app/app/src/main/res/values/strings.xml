@@ -1,7 +1,4 @@
 <resources>
-    <string name="app_name">NoteBase</string>
-    <string name="loading_notebase">Loading NoteBase…</string>
     <string name="offline_title">You\'re Offline</string>
-    <string name="offline_message">Please connect to the internet to load NoteBase for the first time. Once loaded, your notes and opened PDFs stay available offline.</string>
     <string name="retry_connection">Retry Connection</string>
 </resources>

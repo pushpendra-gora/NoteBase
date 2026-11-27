@@ -24,6 +24,7 @@ import {
 } from '../../data/notesData';
 import { BranchOption, YearOption } from '../../types';
 import { getStoredCoordinators, isBranchMatch } from '../../lib/coordinatorService';
+import PortalAboutMenu from '../../components/PortalAboutMenu';
 
 export default function CoordinatorLoginPage() {
   const router = useRouter();
@@ -158,7 +159,7 @@ export default function CoordinatorLoginPage() {
   };
 
   return (
-    <div className="h-[100dvh] max-h-[100dvh] w-full max-w-[100vw] bg-[#f3effb] relative flex flex-col items-center justify-center pt-[max(env(safe-area-inset-top),1.5rem)] pb-[max(env(safe-area-inset-bottom),1.5rem)] px-4 sm:p-6 overflow-y-auto overflow-x-hidden overscroll-none overscroll-x-none touch-pan-y select-none selection:bg-purple-200">
+    <div className="h-[100dvh] max-h-[100dvh] w-full max-w-[100vw] bg-[#f3effb] relative flex flex-col items-center justify-start pt-[max(env(safe-area-inset-top),1.25rem)] pb-[max(env(safe-area-inset-bottom),1.25rem)] px-4 sm:p-6 overflow-y-auto overflow-x-hidden overscroll-none overscroll-x-none touch-pan-y select-none selection:bg-purple-200">
       
       {/* Background Soft Pastel Blobs contained strictly inside viewport */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
@@ -168,11 +169,19 @@ export default function CoordinatorLoginPage() {
       </div>
 
       {/* Main Container */}
-      <div className="w-full max-w-xl mx-auto flex flex-col items-center relative z-10 py-8">
+      <div className="w-full max-w-xl mx-auto my-auto flex flex-col items-center relative z-10 py-4 sm:py-8">
         
         {/* Same White Card UI from Reference */}
-        <div className="w-full bg-white rounded-[32px] sm:rounded-[36px] shadow-[0_20px_50px_rgba(79,70,229,0.06),0_4px_16px_rgba(0,0,0,0.03)] border border-slate-100/90 p-8 sm:p-12 transition-all">
+        <div className="relative w-full bg-white rounded-[32px] sm:rounded-[36px] shadow-[0_20px_50px_rgba(79,70,229,0.06),0_4px_16px_rgba(0,0,0,0.03)] border border-slate-100/90 p-8 sm:p-12 transition-all">
           
+          {/* Top-Right 3-Dot Menu */}
+          <PortalAboutMenu
+            onOpenMenu={() => {
+              setYearOpen(false);
+              setBranchOpen(false);
+            }}
+          />
+
           {/* Logo Section */}
           <div className="flex flex-col items-center text-center mb-8">
             {/* NoteBase 3D App Icon */}

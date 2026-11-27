@@ -1307,6 +1307,67 @@ function DashboardContent() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Allow Android hardware back press to dismiss open modals or mobile drawer gracefully
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    (window as any).__closeNoteBaseModalIfOpen = () => {
+      if (previewFile) {
+        try {
+          (window as any).NoteBaseAndroid?.closeNativePdf?.();
+        } catch {}
+        setPreviewFile(null);
+        return true;
+      }
+      if (deleteConfirm && !isDeletingConfirm) {
+        setDeleteConfirm(null);
+        return true;
+      }
+      if (showChangePasswordModal) {
+        setShowChangePasswordModal(false);
+        return true;
+      }
+      if (editingSubject) {
+        setEditingSubject(null);
+        return true;
+      }
+      if (editingLecture) {
+        setEditingLecture(null);
+        return true;
+      }
+      if (editingFile) {
+        setEditingFile(null);
+        return true;
+      }
+      if (showStorageModal) {
+        setShowStorageModal(false);
+        return true;
+      }
+      if (showUserMenu) {
+        setShowUserMenu(false);
+        return true;
+      }
+      if (isMobileSidebarOpen) {
+        setIsMobileSidebarOpen(false);
+        return true;
+      }
+      return false;
+    };
+    return () => {
+      delete (window as any).__closeNoteBaseModalIfOpen;
+    };
+  }, [
+    previewFile,
+    deleteConfirm,
+    isDeletingConfirm,
+    showChangePasswordModal,
+    editingSubject,
+    editingLecture,
+    editingFile,
+    showStorageModal,
+    showUserMenu,
+    isMobileSidebarOpen,
+  ]);
+
   if (!authChecked || !verifiedSession) {
     return (
       <div className="h-[100dvh] w-full bg-[#f8fafc] flex items-center justify-center text-slate-500 text-sm font-semibold">
@@ -1333,7 +1394,7 @@ function DashboardContent() {
       )}
 
       {/* MOBILE COMPACT TOP BAR (Minimized Sidebar Header on Mobile) */}
-      <div className="md:hidden bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between shrink-0 z-30 shadow-xs">
+      <div className="md:hidden bg-white border-b border-slate-100 px-4 pt-[max(env(safe-area-inset-top),0.75rem)] pb-3 flex items-center justify-between shrink-0 z-30 shadow-xs">
         <Link href="/" className="flex items-center space-x-2.5">
           <img src="/logo.png?v=2" alt="NoteBase Logo" className="w-8 h-8 object-contain" />
           <span className="text-lg font-extrabold tracking-tight text-slate-900">
@@ -1364,7 +1425,7 @@ function DashboardContent() {
       )}
 
       {/* 1. LEFT SIDEBAR (Collapsible Drawer on Mobile, Static Sidebar on Desktop) */}
-      <aside className={`fixed inset-y-0 left-0 z-50 w-72 md:w-64 md:static bg-white border-r border-slate-100 p-6 flex flex-col justify-between shrink-0 shadow-xl md:shadow-sm overflow-y-auto transition-transform duration-200 ease-out ${
+      <aside className={`fixed inset-y-0 left-0 z-50 w-72 md:w-64 md:static bg-white border-r border-slate-100 px-6 pt-[max(env(safe-area-inset-top),1.5rem)] pb-[max(env(safe-area-inset-bottom),1.5rem)] flex flex-col justify-between shrink-0 shadow-xl md:shadow-sm overflow-y-auto transition-transform duration-200 ease-out ${
         isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
       }`}>
         
@@ -1540,7 +1601,7 @@ function DashboardContent() {
       </aside>
 
       {/* 2. MAIN CONTENT AREA */}
-      <main className="flex-1 p-6 sm:p-10 space-y-6 overflow-y-auto relative">
+      <main className="flex-1 p-4 sm:p-6 md:p-10 pb-[max(env(safe-area-inset-bottom),1.5rem)] space-y-6 overflow-y-auto overflow-x-hidden relative min-w-0">
         
         {/* Top Header Bar */}
         <div className="flex items-center justify-between">
@@ -1851,7 +1912,7 @@ function DashboardContent() {
                     </div>
                   </div>
                 ) : (
-                  <div className="space-y-1.5">
+                  <div className="space-y-1.5 min-w-0 w-full">
                     <label className="text-xs font-semibold text-slate-700 block">File Attachment (PDF, Image, or HTML)</label>
                     
                     {/* Hidden File Input */}
@@ -1865,15 +1926,18 @@ function DashboardContent() {
 
                     <div 
                       onClick={() => fileInputRef.current?.click()}
-                      className="w-full border-2 border-dashed border-slate-200 hover:border-indigo-400 rounded-2xl p-5 text-center cursor-pointer bg-slate-50/50 hover:bg-indigo-50/20 transition-all space-y-1.5"
+                      className="w-full max-w-full min-w-0 overflow-hidden border-2 border-dashed border-slate-200 hover:border-indigo-400 rounded-2xl p-4 sm:p-5 text-center cursor-pointer bg-slate-50/50 hover:bg-indigo-50/20 transition-all space-y-1.5"
                     >
-                      <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
+                      <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto shrink-0">
                         <Upload className="w-5 h-5" />
                       </div>
-                      <div className="text-xs font-bold text-slate-800">
+                      <div
+                        className="w-full max-w-full text-xs font-bold text-slate-800 break-words [overflow-wrap:anywhere] px-1 leading-relaxed"
+                        title={selectedFileObj?.name}
+                      >
                         {selectedFileObj ? selectedFileObj.name : 'Click to Browse File from Computer'}
                       </div>
-                      <div className="text-[11px] text-slate-400 font-medium">
+                      <div className="text-[11px] text-slate-400 font-medium break-words">
                         {selectedFileObj 
                           ? `${(selectedFileObj.size / (1024 * 1024)).toFixed(2)} MB • Ready for Direct Drive Upload (Max 500 MB)` 
                           : 'Accepts PDF, Image (.png, .jpg, .webp, .gif), or HTML (.html, .htm) up to 500 MB (uploads directly to Google Drive)'}
@@ -2738,7 +2802,7 @@ function DashboardContent() {
 
       {/* STORAGE DETAILS MODAL (Opened from Storage KPI Card) */}
       {showStorageModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center pt-[max(env(safe-area-inset-top),1rem)] pb-[max(env(safe-area-inset-bottom),1rem)] px-4 overflow-y-auto">
           <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-slate-100 space-y-5 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center space-x-2.5 text-slate-900 font-bold text-base">
@@ -2795,7 +2859,7 @@ function DashboardContent() {
 
       {/* Edit Modal */}
       {editingFile && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center pt-[max(env(safe-area-inset-top),1rem)] pb-[max(env(safe-area-inset-bottom),1rem)] px-4 overflow-y-auto">
           <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-100 space-y-4 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h4 className="text-base font-bold text-slate-900">Edit Document Name</h4>
@@ -2833,7 +2897,7 @@ function DashboardContent() {
 
       {/* Edit Lecture Modal */}
       {editingLecture && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center pt-[max(env(safe-area-inset-top),1rem)] pb-[max(env(safe-area-inset-bottom),1rem)] px-4 overflow-y-auto">
           <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-slate-100 space-y-4 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center space-x-2">
@@ -2887,7 +2951,7 @@ function DashboardContent() {
 
       {/* Edit Subject Modal */}
       {editingSubject && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center pt-[max(env(safe-area-inset-top),1rem)] pb-[max(env(safe-area-inset-bottom),1rem)] px-4 overflow-y-auto">
           <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-slate-100 space-y-4 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center space-x-2">
@@ -2970,7 +3034,7 @@ function DashboardContent() {
 
       {/* Change Password Modal */}
       {showChangePasswordModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center pt-[max(env(safe-area-inset-top),1rem)] pb-[max(env(safe-area-inset-bottom),1rem)] px-4 overflow-y-auto">
           <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-slate-100 space-y-5 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center space-x-2.5 text-slate-900 font-bold text-base">
@@ -3047,7 +3111,7 @@ function DashboardContent() {
 
       {/* DELETE CONFIRMATION POPUP MODAL */}
       {deleteConfirm && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center pt-[max(env(safe-area-inset-top),1rem)] pb-[max(env(safe-area-inset-bottom),1rem)] px-4 overflow-y-auto animate-in fade-in duration-150">
           <div className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-100 space-y-4 animate-in zoom-in-95 duration-150">
             <div className="flex items-center space-x-3">
               <div className="w-11 h-11 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center shrink-0">

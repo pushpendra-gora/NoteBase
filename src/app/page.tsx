@@ -12,10 +12,7 @@ import {
   Search,
   RotateCcw,
   Video,
-  Loader2,
-  MoreVertical,
-  Info,
-  X
+  Loader2
 } from 'lucide-react';
 import { 
   FIRST_YEAR_GROUPS, 
@@ -24,6 +21,7 @@ import {
   YEARS 
 } from '../data/notesData';
 import { BranchOption, SemesterOption, YearOption } from '../types';
+import PortalAboutMenu from '../components/PortalAboutMenu';
 
 export default function NoteBaseHome() {
   const router = useRouter();
@@ -99,14 +97,11 @@ export default function NoteBaseHome() {
   const [branchOpen, setBranchOpen] = useState(false);
   const [semesterOpen, setSemesterOpen] = useState(false);
   const [typeOpen, setTypeOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [aboutOpen, setAboutOpen] = useState(false);
 
   const yearRef = useRef<HTMLDivElement>(null);
   const branchRef = useRef<HTMLDivElement>(null);
   const semesterRef = useRef<HTMLDivElement>(null);
   const typeRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -123,9 +118,6 @@ export default function NoteBaseHome() {
       if (typeRef.current && !typeRef.current.contains(event.target as Node)) {
         setTypeOpen(false);
       }
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setMenuOpen(false);
-      }
     }
 
     // Close any open dropdown or modal on mobile back button
@@ -134,8 +126,6 @@ export default function NoteBaseHome() {
       setBranchOpen(false);
       setSemesterOpen(false);
       setTypeOpen(false);
-      setMenuOpen(false);
-      setAboutOpen(false);
     };
 
     document.addEventListener('mousedown', handleClickOutside);
@@ -261,39 +251,14 @@ export default function NoteBaseHome() {
         <div className="relative w-full bg-white rounded-[28px] sm:rounded-[36px] shadow-[0_20px_50px_rgba(79,70,229,0.06),0_4px_16px_rgba(0,0,0,0.03)] border border-slate-100/90 p-5 sm:p-12 transition-all">
           
           {/* Top-Right 3-Dot Menu */}
-          <div ref={menuRef} className="absolute top-4 right-4 sm:top-6 sm:right-6 z-40">
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen((prev) => !prev);
-                setYearOpen(false);
-                setBranchOpen(false);
-                setSemesterOpen(false);
-                setTypeOpen(false);
-              }}
-              aria-label="More options"
-              title="More options"
-              className="w-9 h-9 rounded-full bg-slate-50 hover:bg-slate-100 border border-slate-200/80 text-slate-600 hover:text-slate-900 flex items-center justify-center transition-colors cursor-pointer shadow-xs"
-            >
-              <MoreVertical className="w-4 h-4" />
-            </button>
-
-            {menuOpen && (
-              <div className="absolute right-0 mt-2 w-40 bg-white rounded-2xl border border-slate-100 shadow-[0_12px_30px_rgba(0,0,0,0.12)] p-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setAboutOpen(true);
-                  }}
-                  className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors flex items-center space-x-2.5 cursor-pointer"
-                >
-                  <Info className="w-4 h-4 text-indigo-600 shrink-0" />
-                  <span>About</span>
-                </button>
-              </div>
-            )}
-          </div>
+          <PortalAboutMenu
+            onOpenMenu={() => {
+              setYearOpen(false);
+              setBranchOpen(false);
+              setSemesterOpen(false);
+              setTypeOpen(false);
+            }}
+          />
 
           {/* Logo Section */}
           <div className="flex flex-col items-center text-center mb-8">
@@ -606,58 +571,6 @@ export default function NoteBaseHome() {
         </div>
 
       </div>
-
-      {/* About Modal */}
-      {aboutOpen && (
-        <div
-          onClick={() => setAboutOpen(false)}
-          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 space-y-5 animate-in zoom-in-95 duration-150"
-          >
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3.5">
-              <div className="flex items-center space-x-2.5">
-                <img src="/logo.png?v=2" alt="NoteBase Logo" className="w-8 h-8 object-contain" />
-                <div>
-                  <h2 className="text-base font-extrabold text-slate-900">About NoteBase</h2>
-                  <p className="text-[11px] text-slate-400 font-medium">Student Notes &amp; Study Portal</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setAboutOpen(false)}
-                aria-label="Close About"
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-center">
-              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                All college notes, previous year question papers (PYQs), and video lectures are available here in one place, organized by Year, Branch, and Semester.
-              </p>
-
-              <div className="p-3.5 rounded-2xl bg-indigo-50/80 border border-indigo-100">
-                <p className="text-[11px] uppercase tracking-wider font-bold text-indigo-500">Created With Care</p>
-                <p className="text-sm font-extrabold text-indigo-900 mt-0.5">
-                  Made by Pushpendra Gora
-                </p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setAboutOpen(false)}
-              className="w-full py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-bold transition-colors cursor-pointer"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
 
     </div>
   );

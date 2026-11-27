@@ -2,6 +2,13 @@
 
 NoteBase is a college notes and academic resource portal built with Next.js 15, React 19, Tailwind CSS, and Supabase.
 
+## Android Apps (APK Download)
+
+Download and install the Android apps directly on your phone (both APKs can be installed side by side):
+
+- **Student App (`NoteBase-Student.apk`)**: [Download NoteBase Student APK](https://github.com/pushpendra-gora/NoteBase/raw/main/NoteBase-Student.apk)
+- **Coordinator App (`NoteBase-Coordinator.apk`)**: [Download NoteBase Coordinator APK](https://github.com/pushpendra-gora/NoteBase/raw/main/NoteBase-Coordinator.apk)
+
 ## Features
 
 - **Student Portal**: Filter study materials by Year, Branch, Semester, and Subject. Includes inline PDF viewing and video lecture links.

@@ -103,6 +103,7 @@ import { extractPdfPageCount, formatFileSize } from '../../lib/pdfMetadata';
 import { openSafeExternalUrl } from '../../lib/urlSafety';
 import PdfPreviewModal from '../../components/PdfPreviewModal';
 import UploadProgressBar, { UploadProgressInfo } from '../../components/UploadProgressBar';
+import PortalAboutMenu from '../../components/PortalAboutMenu';
 
 interface AdminMaterial {
   id: string;
@@ -2397,17 +2398,20 @@ export default function AdminPage() {
   // =========================================================================
   if (!isLoggedIn) {
     return (
-      <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f3effb] relative flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto overflow-x-hidden selection:bg-purple-200">
+      <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f3effb] relative flex flex-col items-center justify-start pt-[max(env(safe-area-inset-top),1.25rem)] pb-[max(env(safe-area-inset-bottom),1.25rem)] px-4 sm:p-6 overflow-y-auto overflow-x-hidden selection:bg-purple-200">
         
         {/* Ambient Background Glows */}
-        <div className="absolute top-[-100px] left-[-100px] w-96 h-96 bg-[#e8dcfa]/70 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute bottom-[-100px] right-[-100px] w-[500px] h-[500px] bg-[#dfd4f6]/60 rounded-full blur-3xl pointer-events-none" />
-
-
+        <div className="fixed inset-0 overflow-hidden pointer-events-none">
+          <div className="absolute top-[-100px] left-[-100px] w-96 h-96 bg-[#e8dcfa]/70 rounded-full blur-3xl" />
+          <div className="absolute bottom-[-100px] right-[-100px] w-[500px] h-[500px] bg-[#dfd4f6]/60 rounded-full blur-3xl" />
+        </div>
 
         {/* Login Box */}
-        <div className="bg-white rounded-3xl border border-slate-100/90 shadow-[0_12px_40px_rgba(79,70,229,0.08)] max-w-md w-full p-6 sm:p-8 space-y-6 relative z-10 animate-in fade-in zoom-in-95 duration-200">
+        <div className="bg-white rounded-3xl border border-slate-100/90 shadow-[0_12px_40px_rgba(79,70,229,0.08)] max-w-md w-full my-auto p-6 sm:p-8 space-y-6 relative z-10 animate-in fade-in zoom-in-95 duration-200">
           
+          {/* Top-Right 3-Dot Menu */}
+          <PortalAboutMenu />
+
           {/* Brand Header */}
           <div className="text-center space-y-2">
             <div className="w-16 h-16 flex items-center justify-center mx-auto">
@@ -3937,17 +3941,19 @@ export default function AdminPage() {
                   />
                   <div
                     onClick={() => uploadFileInputRef.current?.click()}
-                    className="border-2 border-dashed border-slate-200 hover:border-indigo-400 bg-slate-50/50 hover:bg-indigo-50/20 rounded-2xl p-6 sm:p-8 text-center cursor-pointer transition-all group"
+                    className="w-full max-w-full min-w-0 overflow-hidden border-2 border-dashed border-slate-200 hover:border-indigo-400 bg-slate-50/50 hover:bg-indigo-50/20 rounded-2xl p-5 sm:p-8 text-center cursor-pointer transition-all group"
                   >
-                    <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 group-hover:scale-105 flex items-center justify-center mx-auto mb-3 transition-transform shadow-sm">
+                    <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 group-hover:scale-105 flex items-center justify-center mx-auto mb-3 transition-transform shadow-sm shrink-0">
                       <Upload className="w-5 h-5" />
                     </div>
                     {selectedUploadFile ? (
-                      <div className="space-y-1">
-                        <p className="text-xs font-bold text-emerald-700 flex items-center justify-center space-x-1.5">
-                          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                          <span>{selectedUploadFile.name}</span>
-                        </p>
+                      <div className="space-y-1 min-w-0 w-full">
+                        <div className="text-xs font-bold text-emerald-700 flex items-center justify-center gap-1.5 min-w-0 max-w-full px-1">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <span className="min-w-0 break-words [overflow-wrap:anywhere] text-center">
+                            {selectedUploadFile.name}
+                          </span>
+                        </div>
                         <p className="text-[11px] text-slate-400 font-semibold">
                           {(selectedUploadFile.size / (1024 * 1024)).toFixed(2)} MB • Ready to Upload
                         </p>

@@ -76,4 +76,27 @@ public class NoteBaseHelpersTest {
         assertEquals("dQw4w9WgXcQ", MainActivity.extractYouTubeVideoId("vnd.youtube:dQw4w9WgXcQ"));
         assertNull(MainActivity.extractYouTubeVideoId("https://example.com/not-youtube"));
     }
+
+    @Test
+    public void isRootPortalUrl_distinguishesStudentAndCoordinatorRoots() {
+        assertTrue(MainActivity.isRootPortalUrl("https://notebase-sigma.vercel.app/", false));
+        assertTrue(MainActivity.isRootPortalUrl("https://notebase-sigma.vercel.app", false));
+        assertFalse(MainActivity.isRootPortalUrl("https://notebase-sigma.vercel.app/results?year=1st", false));
+
+        assertTrue(MainActivity.isRootPortalUrl("https://notebase-sigma.vercel.app/coordinator", true));
+        assertTrue(MainActivity.isRootPortalUrl("https://notebase-sigma.vercel.app/coordinator/dashboard?branch=CSE", true));
+        assertFalse(MainActivity.isRootPortalUrl("https://notebase-sigma.vercel.app/", true));
+    }
+
+    @Test
+    public void resolveMimeTypesFromAcceptTypes_mapsExtensionsAndPreservesMimes() {
+        String[] result = MainActivity.resolveMimeTypesFromAcceptTypes(
+                new String[]{".pdf,.png,image/jpeg,.html,text/html"}
+        );
+        assertEquals(4, result.length);
+        assertEquals("application/pdf", result[0]);
+        assertEquals("image/png", result[1]);
+        assertEquals("image/jpeg", result[2]);
+        assertEquals("text/html", result[3]);
+    }
 }
