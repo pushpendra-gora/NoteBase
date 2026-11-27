@@ -7,6 +7,7 @@ export interface MaterialCountsSnapshot {
   totalFiles: number;
   coordinators: number;
   openIssues: number;
+  openStudentIssues?: number;
   years: {
     '1st Year': number;
     '2nd Year': number;
@@ -57,13 +58,14 @@ export async function recomputeAndSaveMaterialCounts(
 ): Promise<{ snapshot: MaterialCountsSnapshot; columnMissing: boolean; error?: string }> {
   const targetAdminId = resolveAdminRowId(adminId);
 
-  const [notesTotal, pyqsTotal, lecsTotal, coordsTotal, openIssuesTotal, ...yearResults] =
+  const [notesTotal, pyqsTotal, lecsTotal, coordsTotal, openIssuesTotal, openStudentIssuesTotal, ...yearResults] =
     await Promise.all([
       client.from('notes').select('id', { count: 'exact', head: true }),
       client.from('pyqs').select('id', { count: 'exact', head: true }),
       client.from('lectures').select('id', { count: 'exact', head: true }),
       client.from('coordinators').select('id', { count: 'exact', head: true }),
       client.from('coordinator_issues').select('id', { count: 'exact', head: true }).eq('status', 'Open'),
+      client.from('student_issues').select('id', { count: 'exact', head: true }).eq('status', 'Open'),
       ...YEAR_KEYS.flatMap((yr) => [
         client.from('notes').select('id', { count: 'exact', head: true }).eq('year', yr),
         client.from('pyqs').select('id', { count: 'exact', head: true }).eq('year', yr),
@@ -97,6 +99,7 @@ export async function recomputeAndSaveMaterialCounts(
     totalFiles: notes + pyqs + lectures,
     coordinators: coordsTotal.count ?? 0,
     openIssues: openIssuesTotal.error ? 0 : (openIssuesTotal.count ?? 0),
+    openStudentIssues: openStudentIssuesTotal.error ? 0 : (openStudentIssuesTotal.count ?? 0),
     years,
     updatedAt: new Date().toISOString(),
   };
@@ -182,6 +185,7 @@ export async function adjustMaterialCounts(
     lectures?: number;
     coordinators?: number;
     openIssues?: number;
+    openStudentIssues?: number;
     year?: string | null;
     yearDelta?: number;
     prevYear?: string | null;
@@ -217,6 +221,7 @@ export async function adjustMaterialCounts(
       const lectures = Math.max(0, (curr.lectures || 0) + (delta.lectures || 0));
       const coordinators = Math.max(0, (curr.coordinators || 0) + (delta.coordinators || 0));
       const openIssues = Math.max(0, (curr.openIssues || 0) + (delta.openIssues || 0));
+      const openStudentIssues = Math.max(0, (curr.openStudentIssues || 0) + (delta.openStudentIssues || 0));
 
       const years: MaterialCountsSnapshot['years'] = {
         '1st Year': curr.years?.['1st Year'] || 0,
@@ -251,6 +256,7 @@ export async function adjustMaterialCounts(
         totalFiles: notes + pyqs + lectures,
         coordinators,
         openIssues,
+        openStudentIssues,
         years,
         updatedAt: new Date().toISOString(),
       };

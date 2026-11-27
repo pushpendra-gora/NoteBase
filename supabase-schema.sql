@@ -189,6 +189,26 @@ alter table public.coordinator_issues add column if not exists updated_at timest
 create index if not exists idx_coordinator_issues_lookup on public.coordinator_issues(year, branch, status);
 
 
+-- 5C. STUDENT ISSUES TABLE (Student-submitted issues viewed, solved, & deleted only by Admin)
+create table if not exists public.student_issues (
+  id text primary key,
+  student_name text not null,
+  year text not null,
+  branch text not null,
+  subject text not null,
+  description text not null,
+  status text not null default 'Open',
+  admin_reply text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.student_issues add column if not exists admin_reply text;
+alter table public.student_issues add column if not exists updated_at timestamp with time zone default timezone('utc'::text, now()) not null;
+
+create index if not exists idx_student_issues_lookup on public.student_issues(year, branch, status);
+
+
 -- =====================================================================
 -- 6. PERMISSIONS & ROW LEVEL SECURITY (RLS) POLICIES
 -- Clean, idempotent policies using FOR ALL to ensure SELECT, INSERT,
@@ -204,6 +224,7 @@ alter table public.lectures enable row level security;
 alter table public.coordinators enable row level security;
 alter table public.admin_credentials enable row level security;
 alter table public.coordinator_issues enable row level security;
+alter table public.student_issues enable row level security;
 
 -- Notes Policies (clean drop & recreate)
 drop policy if exists "Allow all for notes" on public.notes;
@@ -265,6 +286,10 @@ create policy "Allow all for admin_credentials" on public.admin_credentials for 
 drop policy if exists "Allow all for coordinator_issues" on public.coordinator_issues;
 create policy "Allow all for coordinator_issues" on public.coordinator_issues for all using (true) with check (true);
 
+-- Student Issues Policies
+drop policy if exists "Allow all for student_issues" on public.student_issues;
+create policy "Allow all for student_issues" on public.student_issues for all using (true) with check (true);
+
 -- Grant public API permissions to Supabase roles
 grant usage on schema public to anon, authenticated, service_role;
 grant all on all tables in schema public to anon, authenticated, service_role;
@@ -284,3 +309,5 @@ grant all on all routines in schema public to anon, authenticated, service_role;
 -- create policy "Deny anon for coordinators" on public.coordinators for all to anon, authenticated using (false) with check (false);
 -- drop policy if exists "Allow all for coordinator_issues" on public.coordinator_issues;
 -- create policy "Deny anon for coordinator_issues" on public.coordinator_issues for all to anon, authenticated using (false) with check (false);
+-- drop policy if exists "Allow all for student_issues" on public.student_issues;
+-- create policy "Deny anon for student_issues" on public.student_issues for all to anon, authenticated using (false) with check (false);

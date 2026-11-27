@@ -47,6 +47,7 @@ import {
   Loader2,
   Menu,
   MessageSquareWarning,
+  GraduationCap,
   Send
 } from 'lucide-react';
 import { 
@@ -62,7 +63,7 @@ import {
   STANDARD_BRANCHES,
   YEARS
 } from '../../data/notesData';
-import { YearOption, BranchOption, SemesterOption, NoteDocument, SubjectMeta, CoordinatorIssue } from '../../types';
+import { YearOption, BranchOption, SemesterOption, NoteDocument, SubjectMeta, CoordinatorIssue, StudentIssue } from '../../types';
 import { 
   insertDocumentToSupabase, 
   deleteDocumentFromSupabase,
@@ -104,6 +105,7 @@ import { openSafeExternalUrl } from '../../lib/urlSafety';
 import PdfPreviewModal from '../../components/PdfPreviewModal';
 import UploadProgressBar, { UploadProgressInfo } from '../../components/UploadProgressBar';
 import PortalAboutMenu from '../../components/PortalAboutMenu';
+import AdminIssuesPanel from '../../components/AdminIssuesPanel';
 
 interface AdminMaterial {
   id: string;
@@ -153,12 +155,12 @@ export default function AdminPage() {
 
   // Active Navigation Tab State & Mobile Drawer Toggle
   const [activeNav, setActiveNav] = useState<
-    'Dashboard' | 'Coordinators' | 'Issues' | 'All Materials' | 'Upload Material' | 'Add Subject' | 'Manage by Year' | 'Manage by Branch' | 'Statistics' | 'Settings'
+    'Dashboard' | 'Coordinators' | 'Issues' | 'Student Issues' | 'All Materials' | 'Upload Material' | 'Add Subject' | 'Manage by Year' | 'Manage by Branch' | 'Statistics' | 'Settings'
   >('Dashboard');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   const selectAdminNav = (
-    nav: 'Dashboard' | 'Coordinators' | 'Issues' | 'All Materials' | 'Upload Material' | 'Add Subject' | 'Manage by Year' | 'Manage by Branch' | 'Statistics' | 'Settings'
+    nav: 'Dashboard' | 'Coordinators' | 'Issues' | 'Student Issues' | 'All Materials' | 'Upload Material' | 'Add Subject' | 'Manage by Year' | 'Manage by Branch' | 'Statistics' | 'Settings'
   ) => {
     setActiveNav(nav);
     setIsMobileSidebarOpen(false);
@@ -172,6 +174,15 @@ export default function AdminPage() {
   const [issueStatusFilter, setIssueStatusFilter] = useState<'All' | 'Open' | 'Resolved'>('All');
   const [issueReplyDrafts, setIssueReplyDrafts] = useState<Record<string, string>>({});
   const [issueBusyId, setIssueBusyId] = useState<string | null>(null);
+
+  // Student Issues Management State (Admin-only read/solve/delete; never exposed to students)
+  const [studentIssues, setStudentIssues] = useState<StudentIssue[]>([]);
+  const [isLoadingStudentIssues, setIsLoadingStudentIssues] = useState(false);
+  const [studentIssuesTableMissing, setStudentIssuesTableMissing] = useState(false);
+  const [studentIssuesError, setStudentIssuesError] = useState<string | null>(null);
+  const [studentIssueStatusFilter, setStudentIssueStatusFilter] = useState<'All' | 'Open' | 'Resolved'>('All');
+  const [studentIssueReplyDrafts, setStudentIssueReplyDrafts] = useState<Record<string, string>>({});
+  const [studentIssueBusyId, setStudentIssueBusyId] = useState<string | null>(null);
 
   // Manage by Year / Manage by Branch View State
   const [selectedManageYear, setSelectedManageYear] = useState<YearOption>('1st Year');
@@ -222,6 +233,7 @@ export default function AdminPage() {
     totalFiles: number;
     coordinators: number;
     openIssues: number;
+    openStudentIssues?: number;
     years: Record<string, number>;
   } | null>(null);
 
@@ -230,6 +242,7 @@ export default function AdminPage() {
     materials: boolean;
     coordinators: boolean;
     issues: boolean;
+    studentIssues: boolean;
     subjects: boolean;
     drives: boolean;
     status: boolean;
@@ -238,6 +251,7 @@ export default function AdminPage() {
     materials: false,
     coordinators: false,
     issues: false,
+    studentIssues: false,
     subjects: false,
     drives: false,
     status: false,
@@ -389,6 +403,17 @@ export default function AdminPage() {
     }
   }, [isLoggedIn]);
 
+  const buildAdminSupabaseHeaders = (withJson = false) => {
+    const creds = getSupabaseCredentials();
+    const headers: Record<string, string> = {};
+    if (withJson) headers['Content-Type'] = 'application/json';
+    if (creds.url && creds.key) {
+      headers['x-supabase-url'] = creds.url;
+      headers['x-supabase-key'] = creds.key;
+    }
+    return headers;
+  };
+
   // 3. Sync Coordinator Issues ONLY when Admin opens Issues tab (or Refresh)
   const syncAdminIssues = useCallback(async (force = false) => {
     if (!isLoggedIn) return;
@@ -396,13 +421,10 @@ export default function AdminPage() {
     setIsLoadingIssues(true);
     setIssuesError(null);
     try {
-      const creds = getSupabaseCredentials();
-      const headers: Record<string, string> = {};
-      if (creds.url && creds.key) {
-        headers['x-supabase-url'] = creds.url;
-        headers['x-supabase-key'] = creds.key;
-      }
-      const res = await fetch('/api/issues', { cache: 'no-store', headers });
+      const res = await fetch('/api/issues', {
+        cache: 'no-store',
+        headers: buildAdminSupabaseHeaders(),
+      });
       const data = await res.json();
       if (res.ok && data?.success && Array.isArray(data.issues)) {
         loadedResourcesRef.current.issues = true;
@@ -416,6 +438,33 @@ export default function AdminPage() {
       setIssuesError('Unable to reach server to fetch issues.');
     } finally {
       setIsLoadingIssues(false);
+    }
+  }, [isLoggedIn]);
+
+  // 3B. Sync Student Issues ONLY when Admin opens Students Issues tab (or Refresh)
+  const syncAdminStudentIssues = useCallback(async (force = false) => {
+    if (!isLoggedIn) return;
+    if (!force && loadedResourcesRef.current.studentIssues) return;
+    setIsLoadingStudentIssues(true);
+    setStudentIssuesError(null);
+    try {
+      const res = await fetch('/api/student-issues', {
+        cache: 'no-store',
+        headers: buildAdminSupabaseHeaders(),
+      });
+      const data = await res.json();
+      if (res.ok && data?.success && Array.isArray(data.issues)) {
+        loadedResourcesRef.current.studentIssues = true;
+        setStudentIssues(data.issues);
+        setStudentIssuesTableMissing(false);
+      } else {
+        setStudentIssuesTableMissing(Boolean(data?.tableMissing));
+        setStudentIssuesError(data?.error || 'Could not load student issues.');
+      }
+    } catch {
+      setStudentIssuesError('Unable to reach server to fetch student issues.');
+    } finally {
+      setIsLoadingStudentIssues(false);
     }
   }, [isLoggedIn]);
 
@@ -443,20 +492,21 @@ export default function AdminPage() {
     } catch {}
   }, [isLoggedIn]);
 
-  const handleToggleResolveIssue = async (issue: CoordinatorIssue, nextStatus: 'Open' | 'Resolved') => {
-    setIssueBusyId(issue.id);
+  const toggleIssueStatusByEndpoint = async <T extends { id: string; subject: string; admin_reply?: string | null }>(
+    endpoint: '/api/issues' | '/api/student-issues',
+    issue: T,
+    nextStatus: 'Open' | 'Resolved',
+    replyDrafts: Record<string, string>,
+    setBusy: (id: string | null) => void,
+    setList: React.Dispatch<React.SetStateAction<T[]>>
+  ) => {
+    setBusy(issue.id);
     try {
-      const creds = getSupabaseCredentials();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (creds.url && creds.key) {
-        headers['x-supabase-url'] = creds.url;
-        headers['x-supabase-key'] = creds.key;
-      }
-      const draft = issueReplyDrafts[issue.id];
+      const draft = replyDrafts[issue.id];
       const finalReply = draft !== undefined ? draft : issue.admin_reply || '';
-      const res = await fetch('/api/issues', {
+      const res = await fetch(endpoint, {
         method: 'PATCH',
-        headers,
+        headers: buildAdminSupabaseHeaders(true),
         body: JSON.stringify({
           id: issue.id,
           status: nextStatus,
@@ -465,7 +515,7 @@ export default function AdminPage() {
       });
       const data = await res.json();
       if (res.ok && data?.success && data.issue) {
-        setAdminIssues((prev) => prev.map((it) => (it.id === issue.id ? data.issue : it)));
+        setList((prev) => prev.map((it) => (it.id === issue.id ? data.issue : it)));
         showToast(
           nextStatus === 'Resolved'
             ? `Issue "${issue.subject}" marked as Solved!`
@@ -477,28 +527,27 @@ export default function AdminPage() {
     } catch {
       showToast('Network error while updating issue.', 'error');
     } finally {
-      setIssueBusyId(null);
+      setBusy(null);
     }
   };
 
-  const handleDeleteSingleIssue = (issue: CoordinatorIssue) => {
+  const deleteSingleIssueByEndpoint = <T extends { id: string; subject: string }>(
+    endpoint: '/api/issues' | '/api/student-issues',
+    issue: T,
+    warningTail: string,
+    setList: React.Dispatch<React.SetStateAction<T[]>>
+  ) => {
     setDeleteConfirm({
       title: 'Delete Issue',
-      message: `Are you sure you want to delete "${issue.subject}" permanently from the database? Once deleted, it will no longer appear for ${issue.coordinator_name} or Admin.`,
+      message: `Are you sure you want to delete "${issue.subject}" permanently from the database? ${warningTail}`,
       onConfirm: async () => {
-        const creds = getSupabaseCredentials();
-        const headers: Record<string, string> = {};
-        if (creds.url && creds.key) {
-          headers['x-supabase-url'] = creds.url;
-          headers['x-supabase-key'] = creds.key;
-        }
-        const res = await fetch(`/api/issues?id=${encodeURIComponent(issue.id)}`, {
+        const res = await fetch(`${endpoint}?id=${encodeURIComponent(issue.id)}`, {
           method: 'DELETE',
-          headers,
+          headers: buildAdminSupabaseHeaders(),
         });
         const data = await res.json();
         if (res.ok && data?.success) {
-          setAdminIssues((prev) => prev.filter((it) => it.id !== issue.id));
+          setList((prev) => prev.filter((it) => it.id !== issue.id));
           showToast(`Issue "${issue.subject}" permanently deleted from database!`, 'success');
         } else {
           showToast(data?.error || 'Failed to delete issue from database.', 'error');
@@ -507,11 +556,17 @@ export default function AdminPage() {
     });
   };
 
-  const handleBulkDeleteIssues = (mode: 'resolved' | 'all') => {
+  const bulkDeleteIssuesByEndpoint = <T extends { status: 'Open' | 'Resolved' }>(
+    endpoint: '/api/issues' | '/api/student-issues',
+    list: T[],
+    labelPrefix: string,
+    mode: 'resolved' | 'all',
+    setList: React.Dispatch<React.SetStateAction<T[]>>
+  ) => {
     const targetCount =
       mode === 'resolved'
-        ? adminIssues.filter((i) => i.status === 'Resolved').length
-        : adminIssues.length;
+        ? list.filter((i) => i.status === 'Resolved').length
+        : list.length;
     if (targetCount === 0) {
       showToast(mode === 'resolved' ? 'No solved issues to delete.' : 'No issues to delete.', 'error');
       return;
@@ -520,22 +575,16 @@ export default function AdminPage() {
       title: mode === 'resolved' ? `Delete ${targetCount} Solved Issue(s)` : `Delete All ${targetCount} Issue(s)`,
       message:
         mode === 'resolved'
-          ? `Delete all ${targetCount} solved issue(s) permanently from database? They will also be removed from Coordinators' dashboards.`
-          : `Delete ALL ${targetCount} coordinator issue(s) permanently from database? Coordinators will no longer see them.`,
+          ? `Delete all ${targetCount} solved ${labelPrefix} issue(s) permanently from database?`
+          : `Delete ALL ${targetCount} ${labelPrefix} issue(s) permanently from database?`,
       onConfirm: async () => {
-        const creds = getSupabaseCredentials();
-        const headers: Record<string, string> = {};
-        if (creds.url && creds.key) {
-          headers['x-supabase-url'] = creds.url;
-          headers['x-supabase-key'] = creds.key;
-        }
-        const res = await fetch(`/api/issues?mode=${mode}`, {
+        const res = await fetch(`${endpoint}?mode=${mode}`, {
           method: 'DELETE',
-          headers,
+          headers: buildAdminSupabaseHeaders(),
         });
         const data = await res.json();
         if (res.ok && data?.success) {
-          setAdminIssues((prev) =>
+          setList((prev) =>
             mode === 'all' ? [] : prev.filter((it) => it.status !== 'Resolved')
           );
           showToast(
@@ -550,6 +599,41 @@ export default function AdminPage() {
       },
     });
   };
+
+  const handleToggleResolveIssue = (issue: CoordinatorIssue, nextStatus: 'Open' | 'Resolved') =>
+    toggleIssueStatusByEndpoint('/api/issues', issue, nextStatus, issueReplyDrafts, setIssueBusyId, setAdminIssues);
+
+  const handleDeleteSingleIssue = (issue: CoordinatorIssue) =>
+    deleteSingleIssueByEndpoint(
+      '/api/issues',
+      issue,
+      `Once deleted, it will no longer appear for ${issue.coordinator_name} or Admin.`,
+      setAdminIssues
+    );
+
+  const handleBulkDeleteIssues = (mode: 'resolved' | 'all') =>
+    bulkDeleteIssuesByEndpoint('/api/issues', adminIssues, 'coordinator', mode, setAdminIssues);
+
+  const handleToggleResolveStudentIssue = (issue: StudentIssue, nextStatus: 'Open' | 'Resolved') =>
+    toggleIssueStatusByEndpoint(
+      '/api/student-issues',
+      issue,
+      nextStatus,
+      studentIssueReplyDrafts,
+      setStudentIssueBusyId,
+      setStudentIssues
+    );
+
+  const handleDeleteSingleStudentIssue = (issue: StudentIssue) =>
+    deleteSingleIssueByEndpoint(
+      '/api/student-issues',
+      issue,
+      `Submitted by ${issue.student_name} (${issue.year} • ${issue.branch}).`,
+      setStudentIssues
+    );
+
+  const handleBulkDeleteStudentIssues = (mode: 'resolved' | 'all') =>
+    bulkDeleteIssuesByEndpoint('/api/student-issues', studentIssues, 'student', mode, setStudentIssues);
 
   useEffect(() => {
     let active = true;
@@ -796,6 +880,10 @@ export default function AdminPage() {
     ? adminIssues.filter((i) => i.status === 'Open').length
     : (dashboardSummary?.openIssues ?? 0);
 
+  const liveOpenStudentIssuesCount = loadedResourcesRef.current.studentIssues
+    ? studentIssues.filter((i) => i.status === 'Open').length
+    : (dashboardSummary?.openStudentIssues ?? 0);
+
   const handleSetActiveDrive = async (driveId: string, driveName: string) => {
     setIsSwitchingDriveId(driveId);
     try {
@@ -937,6 +1025,8 @@ export default function AdminPage() {
       syncCoordinators();
     } else if (activeNav === 'Issues') {
       syncAdminIssues();
+    } else if (activeNav === 'Student Issues') {
+      syncAdminStudentIssues();
     } else if (activeNav === 'Manage by Year' || activeNav === 'Manage by Branch') {
       syncAllMaterials();
       syncCoordinators();
@@ -957,6 +1047,7 @@ export default function AdminPage() {
     syncDashboardSummary,
     syncCoordinators,
     syncAdminIssues,
+    syncAdminStudentIssues,
     syncAllMaterials,
     syncAllSubjects,
     syncDriveRegistry,
@@ -2316,6 +2407,7 @@ export default function AdminPage() {
     setRecentMaterials([]);
     setHasMoreRecent(false);
     setAdminIssues([]);
+    setStudentIssues([]);
     setCoordinators([]);
     setDriveList([]);
     setDashboardSummary(null);
@@ -2324,6 +2416,7 @@ export default function AdminPage() {
       materials: false,
       coordinators: false,
       issues: false,
+      studentIssues: false,
       subjects: false,
       drives: false,
       status: false,
@@ -2629,6 +2722,31 @@ export default function AdminPage() {
                     : 'bg-amber-100 text-amber-800'
                 }`}>
                   {liveOpenIssuesCount}
+                </span>
+              )}
+            </button>
+
+            {/* 2C. Students Issues */}
+            <button
+              type="button"
+              onClick={() => selectAdminNav('Student Issues')}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl transition-all cursor-pointer text-left ${
+                activeNav === 'Student Issues'
+                  ? 'bg-[#3b49df] text-white font-bold shadow-md shadow-indigo-100'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              }`}
+            >
+              <span className="flex items-center space-x-3.5">
+                <GraduationCap className="w-4 h-4" />
+                <span>Students Issues</span>
+              </span>
+              {liveOpenStudentIssuesCount > 0 && (
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                  activeNav === 'Student Issues'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {liveOpenStudentIssuesCount}
                 </span>
               )}
             </button>
@@ -5466,14 +5584,12 @@ export default function AdminPage() {
         {/* =================================================================
             VIEW 9: COORDINATOR ISSUES MANAGEMENT VIEW
            ================================================================= */}
-        {activeNav === 'Issues' && (() => {
-          const openCount = adminIssues.filter((i) => i.status === 'Open').length;
-          const resolvedCount = adminIssues.filter((i) => i.status === 'Resolved').length;
-          const filteredIssues = adminIssues.filter((i) =>
-            issueStatusFilter === 'All' ? true : i.status === issueStatusFilter
-          );
-
-          const ISSUES_SQL = `create table if not exists public.coordinator_issues (
+        {activeNav === 'Issues' && (
+          <AdminIssuesPanel
+            title="Coordinator Issues"
+            subtitle="Solve issues reported by coordinators or delete them permanently from Supabase database."
+            missingTableName="coordinator_issues"
+            missingTableSql={`create table if not exists public.coordinator_issues (
   id text primary key,
   coordinator_id text,
   coordinator_name text not null,
@@ -5489,256 +5605,114 @@ export default function AdminPage() {
 alter table public.coordinator_issues enable row level security;
 drop policy if exists "Allow all for coordinator_issues" on public.coordinator_issues;
 create policy "Allow all for coordinator_issues" on public.coordinator_issues for all using (true) with check (true);
-grant all on public.coordinator_issues to anon, authenticated, service_role;`;
+grant all on public.coordinator_issues to anon, authenticated, service_role;`}
+            replyPlaceholder="Optional resolution note / reply for coordinator..."
+            emptyTitle="No coordinator issues found"
+            emptySubtitle="Issues submitted by any branch or year coordinator will appear here."
+            loadingText="Loading coordinator issues..."
+            issues={adminIssues.map((i) => ({
+              id: i.id,
+              senderName: i.coordinator_name,
+              year: i.year,
+              branch: i.branch,
+              subject: i.subject,
+              description: i.description,
+              status: i.status,
+              admin_reply: i.admin_reply,
+              created_at: i.created_at,
+            }))}
+            isLoading={isLoadingIssues}
+            tableMissing={issuesTableMissing}
+            error={issuesError}
+            statusFilter={issueStatusFilter}
+            onStatusFilterChange={setIssueStatusFilter}
+            replyDrafts={issueReplyDrafts}
+            onReplyDraftChange={(id, val) =>
+              setIssueReplyDrafts((prev) => ({ ...prev, [id]: val }))
+            }
+            busyId={issueBusyId}
+            onRefresh={() => syncAdminIssues(true)}
+            onBulkDelete={handleBulkDeleteIssues}
+            onToggleResolve={(id, nextStatus) => {
+              const target = adminIssues.find((i) => i.id === id);
+              if (target) handleToggleResolveIssue(target, nextStatus);
+            }}
+            onDeleteSingle={(id) => {
+              const target = adminIssues.find((i) => i.id === id);
+              if (target) handleDeleteSingleIssue(target);
+            }}
+            onCopySql={(sql) => {
+              navigator.clipboard?.writeText(sql);
+              showToast('Issues table SQL copied to clipboard!');
+            }}
+          />
+        )}
 
-          return (
-            <div className="space-y-6 animate-in fade-in duration-200">
-              <div className="bg-white rounded-3xl border border-slate-100/90 p-5 sm:p-8 shadow-[0_2px_14px_rgba(0,0,0,0.02)] space-y-5">
-                {/* Header & Action Controls */}
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-5">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
-                      <MessageSquareWarning className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h2 className="text-lg font-bold text-slate-900">
-                        Coordinator Issues ({adminIssues.length})
-                      </h2>
-                      <p className="text-xs text-slate-400">
-                        Solve issues reported by coordinators or delete them permanently from Supabase database.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => syncAdminIssues(true)}
-                      disabled={isLoadingIssues}
-                      className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isLoadingIssues ? 'animate-spin' : ''}`} />
-                      <span>Refresh</span>
-                    </button>
-
-                    {resolvedCount > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => handleBulkDeleteIssues('resolved')}
-                        className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-bold transition-colors cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Delete Solved ({resolvedCount})</span>
-                      </button>
-                    )}
-
-                    {adminIssues.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => handleBulkDeleteIssues('all')}
-                        className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-bold transition-colors cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Delete All ({adminIssues.length})</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Filter Pills */}
-                <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
-                  <button
-                    type="button"
-                    onClick={() => setIssueStatusFilter('All')}
-                    className={`px-4 py-1.5 rounded-xl transition-all cursor-pointer ${
-                      issueStatusFilter === 'All'
-                        ? 'bg-[#3b49df] text-white shadow-sm'
-                        : 'bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100'
-                    }`}
-                  >
-                    All ({adminIssues.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIssueStatusFilter('Open')}
-                    className={`px-4 py-1.5 rounded-xl transition-all cursor-pointer ${
-                      issueStatusFilter === 'Open'
-                        ? 'bg-amber-600 text-white shadow-sm'
-                        : 'bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100'
-                    }`}
-                  >
-                    Open ({openCount})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIssueStatusFilter('Resolved')}
-                    className={`px-4 py-1.5 rounded-xl transition-all cursor-pointer ${
-                      issueStatusFilter === 'Resolved'
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
-                    }`}
-                  >
-                    Solved ({resolvedCount})
-                  </button>
-                </div>
-
-                {/* Setup Notice if table hasn't been created in Supabase yet */}
-                {issuesTableMissing && (
-                  <div className="p-4 rounded-2xl bg-red-50 border border-red-200 space-y-2.5 text-xs text-red-800">
-                    <div className="font-bold flex items-center space-x-2">
-                      <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
-                      <span>Supabase Table &quot;coordinator_issues&quot; Missing</span>
-                    </div>
-                    <p>
-                      Run the SQL below inside your Supabase Dashboard &rarr; <strong>SQL Editor</strong> so issues are stored and synced in the database:
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard?.writeText(ISSUES_SQL);
-                        showToast('Issues table SQL copied to clipboard!');
-                      }}
-                      className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                      <span>Copy Issues Table SQL</span>
-                    </button>
-                  </div>
-                )}
-
-                {issuesError && !issuesTableMissing && (
-                  <div className="p-3.5 rounded-xl bg-red-50 border border-red-100 text-xs text-red-700 flex items-center space-x-2">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>{issuesError}</span>
-                  </div>
-                )}
-
-                {/* Issues List */}
-                {isLoadingIssues && adminIssues.length === 0 ? (
-                  <div className="py-12 text-center text-xs text-slate-400 font-medium">
-                    Loading coordinator issues...
-                  </div>
-                ) : filteredIssues.length > 0 ? (
-                  <div className="space-y-4">
-                    {filteredIssues.map((issue) => {
-                      const replyValue =
-                        issueReplyDrafts[issue.id] !== undefined
-                          ? issueReplyDrafts[issue.id]
-                          : issue.admin_reply || '';
-                      const isBusy = issueBusyId === issue.id;
-
-                      return (
-                        <div
-                          key={issue.id}
-                          className="p-4 sm:p-5 rounded-2xl border border-slate-200/80 bg-slate-50/50 hover:bg-white transition-colors space-y-3"
-                        >
-                          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2.5">
-                            <div className="space-y-1 min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
-                                  {issue.coordinator_name}
-                                </span>
-                                <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700">
-                                  {issue.year} • {issue.branch}
-                                </span>
-                                <span className="text-[11px] text-slate-400 font-medium">
-                                  {new Date(issue.created_at).toLocaleString()}
-                                </span>
-                              </div>
-                              <h3 className="text-sm sm:text-base font-bold text-slate-900 break-words">
-                                {issue.subject}
-                              </h3>
-                            </div>
-
-                            <span
-                              className={`self-start inline-flex items-center space-x-1 text-[11px] font-bold px-3 py-1 rounded-full border shrink-0 ${
-                                issue.status === 'Resolved'
-                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                  : 'bg-amber-50 text-amber-700 border-amber-200'
-                              }`}
-                            >
-                              {issue.status === 'Resolved' ? (
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                              ) : (
-                                <AlertCircle className="w-3.5 h-3.5" />
-                              )}
-                              <span>{issue.status === 'Resolved' ? 'Solved' : 'Open'}</span>
-                            </span>
-                          </div>
-
-                          <p className="text-xs sm:text-sm text-slate-700 whitespace-pre-wrap break-words bg-white p-3.5 rounded-xl border border-slate-100 leading-relaxed">
-                            {issue.description}
-                          </p>
-
-                          {/* Admin Reply + Actions */}
-                          <div className="flex flex-col md:flex-row md:items-center gap-2.5 pt-1">
-                            <input
-                              type="text"
-                              value={replyValue}
-                              onChange={(e) =>
-                                setIssueReplyDrafts((prev) => ({
-                                  ...prev,
-                                  [issue.id]: e.target.value,
-                                }))
-                              }
-                              placeholder="Optional resolution note / reply for coordinator..."
-                              className="flex-1 h-10 px-3.5 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                            />
-
-                            <div className="flex items-center gap-2 shrink-0">
-                              {issue.status === 'Open' ? (
-                                <button
-                                  type="button"
-                                  disabled={isBusy}
-                                  onClick={() => handleToggleResolveIssue(issue, 'Resolved')}
-                                  className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm transition-colors cursor-pointer disabled:opacity-60"
-                                >
-                                  {isBusy ? (
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                  ) : (
-                                    <CheckCircle2 className="w-3.5 h-3.5" />
-                                  )}
-                                  <span>Mark Solved</span>
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={isBusy}
-                                  onClick={() => handleToggleResolveIssue(issue, 'Open')}
-                                  className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold transition-colors cursor-pointer disabled:opacity-60"
-                                >
-                                  <RotateCcw className="w-3.5 h-3.5" />
-                                  <span>Reopen</span>
-                                </button>
-                              )}
-
-                              <button
-                                type="button"
-                                disabled={isBusy}
-                                onClick={() => handleDeleteSingleIssue(issue)}
-                                className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-bold transition-colors cursor-pointer disabled:opacity-60"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>Delete</span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="py-12 text-center space-y-1.5">
-                    <p className="text-sm font-bold text-slate-700">No coordinator issues found</p>
-                    <p className="text-xs text-slate-400">
-                      Issues submitted by any branch or year coordinator will appear here.
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })()}
+        {/* =================================================================
+            VIEW 10: STUDENTS ISSUES MANAGEMENT VIEW
+           ================================================================= */}
+        {activeNav === 'Student Issues' && (
+          <AdminIssuesPanel
+            title="Students Issues"
+            subtitle="Review issues reported by students, mark them solved, or delete them permanently from Supabase database."
+            missingTableName="student_issues"
+            missingTableSql={`create table if not exists public.student_issues (
+  id text primary key,
+  student_name text not null,
+  year text not null,
+  branch text not null,
+  subject text not null,
+  description text not null,
+  status text not null default 'Open',
+  admin_reply text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+alter table public.student_issues enable row level security;
+drop policy if exists "Allow all for student_issues" on public.student_issues;
+create policy "Allow all for student_issues" on public.student_issues for all using (true) with check (true);
+grant all on public.student_issues to anon, authenticated, service_role;`}
+            replyPlaceholder="Optional internal resolution note..."
+            emptyTitle="No student issues found"
+            emptySubtitle="Issues submitted by students via the 3-dot Issue form will appear here for Admin review."
+            loadingText="Loading student issues..."
+            issues={studentIssues.map((i) => ({
+              id: i.id,
+              senderName: i.student_name,
+              year: i.year,
+              branch: i.branch,
+              subject: i.subject,
+              description: i.description,
+              status: i.status,
+              admin_reply: i.admin_reply,
+              created_at: i.created_at,
+            }))}
+            isLoading={isLoadingStudentIssues}
+            tableMissing={studentIssuesTableMissing}
+            error={studentIssuesError}
+            statusFilter={studentIssueStatusFilter}
+            onStatusFilterChange={setStudentIssueStatusFilter}
+            replyDrafts={studentIssueReplyDrafts}
+            onReplyDraftChange={(id, val) =>
+              setStudentIssueReplyDrafts((prev) => ({ ...prev, [id]: val }))
+            }
+            busyId={studentIssueBusyId}
+            onRefresh={() => syncAdminStudentIssues(true)}
+            onBulkDelete={handleBulkDeleteStudentIssues}
+            onToggleResolve={(id, nextStatus) => {
+              const target = studentIssues.find((i) => i.id === id);
+              if (target) handleToggleResolveStudentIssue(target, nextStatus);
+            }}
+            onDeleteSingle={(id) => {
+              const target = studentIssues.find((i) => i.id === id);
+              if (target) handleDeleteSingleStudentIssue(target);
+            }}
+            onCopySql={(sql) => {
+              navigator.clipboard?.writeText(sql);
+              showToast('Student issues table SQL copied to clipboard!');
+            }}
+          />
+        )}
 
       </main>
 

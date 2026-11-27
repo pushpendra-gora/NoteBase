@@ -258,6 +258,7 @@ export default function NoteBaseHome() {
           
           {/* Top-Right 3-Dot Menu */}
           <PortalAboutMenu
+            enableStudentIssue
             onOpenMenu={() => {
               setYearOpen(false);
               setBranchOpen(false);

@@ -89,3 +89,16 @@ export interface CoordinatorIssue {
   created_at: string;
   updated_at?: string;
 }
+
+export interface StudentIssue {
+  id: string;
+  student_name: string;
+  year: string;
+  branch: string;
+  subject: string;
+  description: string;
+  status: 'Open' | 'Resolved';
+  admin_reply?: string | null;
+  created_at: string;
+  updated_at?: string;
+}
