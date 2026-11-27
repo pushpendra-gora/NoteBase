@@ -215,6 +215,12 @@ export default function NoteBaseHome() {
       type: selectedType
     }).toString();
 
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem(`notebase_active_subj_${selectedYear}_${selectedBranch}_${selectedSemester}`);
+      } catch {}
+    }
+
     const targetUrl = `/results?${query}`;
     const bridge = typeof window !== 'undefined' ? (window as any).NoteBaseAndroid : null;
     const isOffline =

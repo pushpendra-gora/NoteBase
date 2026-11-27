@@ -412,13 +412,17 @@ export async function deleteSubjectFromSupabase(
  */
 export async function fetchLecturesFromSupabase(
   year?: YearOption | string,
-  branch?: BranchOption | string
+  branch?: BranchOption | string,
+  semester?: SemesterOption | string,
+  subject?: string
 ): Promise<LectureRecord[] | null> {
   try {
     if (typeof window !== 'undefined') {
       const q = new URLSearchParams();
       if (year && year !== 'All') q.set('year', year);
       if (branch && branch !== 'All') q.set('branch', branch);
+      if (semester && semester !== 'All') q.set('semester', semester);
+      if (subject && subject !== 'All') q.set('subject', subject);
       const res = await fetch(`/api/lectures${q.toString() ? `?${q.toString()}` : ''}`, {
         cache: 'no-store',
         headers: getClientApiHeaders(),
@@ -434,6 +438,8 @@ export async function fetchLecturesFromSupabase(
     let query = client.from('lectures').select('*');
     if (year && year !== 'All') query = query.eq('year', year);
     if (branch && branch !== 'All') query = query.eq('branch', branch);
+    if (semester && semester !== 'All') query = query.eq('semester', semester);
+    if (subject && subject !== 'All') query = query.eq('subject', subject);
     const { data, error } = await query.order('date', { ascending: false });
     if (error || !data) return null;
     return data as LectureRecord[];

@@ -420,85 +420,28 @@ function ResultsContent() {
 
   const handleSelectSubject = (subjTitle: string) => {
     setSelectedSubject(subjTitle);
-    if (fetchedSubjectsRef.current.has(subjTitle)) {
-      setIsLoadingSubjectDocs(false);
-    }
-    if (typeof window !== 'undefined' && year && branch && semester) {
+    if (year && branch && semester && type) {
+      if (type === 'Lectures') {
+        const lecKey = `${year}___${branch}___${semester}___Lectures___${subjTitle}`;
+        if (fetchedLecturesRef.current.has(lecKey)) {
+          setIsLoadingLectures(false);
+        } else if (!(subjTitle in subjectLecturesCacheRef.current)) {
+          setIsLoadingLectures(true);
+        }
+      } else {
+        const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+        const docKey = `${year}___${branch}___${semester}___${targetType}___${subjTitle}`;
+        if (fetchedSubjectsRef.current.has(docKey)) {
+          setIsLoadingSubjectDocs(false);
+        } else if (!(subjTitle in subjectDocsCacheRef.current)) {
+          setIsLoadingSubjectDocs(true);
+        }
+      }
       try {
         localStorage.setItem(`notebase_active_subj_${year}_${branch}_${semester}`, subjTitle);
       } catch {}
     }
   };
-
-  // Lecture items (from LocalStorage and Supabase Cloud)
-  const [localLectures, setLocalLectures] = useState<LectureItem[]>([]);
-  const [cloudLectures, setCloudLectures] = useState<LectureItem[]>([]);
-  const [isLoadingLectures, setIsLoadingLectures] = useState<boolean>(() => type === 'Lectures');
-
-  useEffect(() => {
-    let isMounted = true;
-    if (type !== 'Lectures') {
-      setIsLoadingLectures(false);
-      return;
-    }
-
-    // 1. LocalStorage
-    const loadLocalLectures = () => {
-      try {
-        const raw = localStorage.getItem('notehub_custom_lectures');
-        if (raw) {
-          const parsed: LectureItem[] = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            setLocalLectures(parsed);
-          }
-        }
-      } catch {}
-    };
-
-    loadLocalLectures();
-    window.addEventListener('storage', loadLocalLectures);
-
-    // 2. Supabase Cloud (via /api/lectures server route)
-    if (year && branch) {
-      setIsLoadingLectures(true);
-      fetchLecturesFromSupabase(year, branch).then((cloudData) => {
-        if (isMounted) {
-          if (Array.isArray(cloudData)) {
-            const mapped = cloudData.map((l) => ({
-              id: l.id,
-              title: l.title,
-              subject: l.subject,
-              semester: l.semester,
-              faculty: l.faculty,
-              link: l.link,
-              date: l.date
-            }));
-            setCloudLectures(mapped);
-            try {
-              const raw = localStorage.getItem('notehub_custom_lectures');
-              const existing: any[] = raw ? JSON.parse(raw) : [];
-              const otherBranch = existing.filter(
-                (item) => !(item.year === year && item.branch === branch)
-              );
-              const nextLocal = [...cloudData, ...otherBranch];
-              localStorage.setItem('notehub_custom_lectures', JSON.stringify(nextLocal));
-              setLocalLectures(nextLocal);
-            } catch {}
-          }
-          setIsLoadingLectures(false);
-        }
-      }).catch(() => {
-        if (isMounted) setIsLoadingLectures(false);
-      });
-    } else {
-      setIsLoadingLectures(false);
-    }
-
-    return () => {
-      isMounted = false;
-      window.removeEventListener('storage', loadLocalLectures);
-    };
-  }, [year, branch, semester, type]);
 
   // Active selected subject (defaults to 1st subject, or 1st subject with cached files when offline in app)
   const activeSubject = useMemo(() => {
@@ -532,6 +475,58 @@ function ResultsContent() {
     semester,
   ]);
 
+  const activeSubjectRef = useRef<string>(activeSubject);
+  activeSubjectRef.current = activeSubject;
+
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+    };
+  }, []);
+
+  // Per-subject lecture cache (initialized from localStorage per semester/subject for instant display)
+  const [subjectLecturesCache, setSubjectLecturesCache] = useState<Record<string, LectureItem[]>>(() => {
+    const grouped: Record<string, LectureItem[]> = {};
+    if (typeof window !== 'undefined' && year && branch && semester && type === 'Lectures') {
+      try {
+        const raw = localStorage.getItem('notehub_custom_lectures');
+        if (raw) {
+          const parsed: any[] = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+              if (
+                item &&
+                item.year === year &&
+                item.branch === branch &&
+                item.semester === semester &&
+                item.subject
+              ) {
+                if (!grouped[item.subject]) grouped[item.subject] = [];
+                grouped[item.subject].push({
+                  id: item.id,
+                  title: item.title,
+                  subject: item.subject,
+                  semester: item.semester,
+                  faculty: item.faculty,
+                  link: item.link,
+                  date: item.date,
+                });
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+    return grouped;
+  });
+  const subjectLecturesCacheRef = useRef(subjectLecturesCache);
+  subjectLecturesCacheRef.current = subjectLecturesCache;
+  const [isLoadingLectures, setIsLoadingLectures] = useState<boolean>(false);
+  const fetchedLecturesRef = useRef<Set<string>>(new Set());
+  const inFlightLecturesRef = useRef<Set<string>>(new Set());
+
   // Per-subject progressive cache: initializes with localStorage + local verified documents for zero-wait display
   const [subjectDocsCache, setSubjectDocsCache] = useState<Record<string, NoteDocument[]>>(() => {
     const initial: Record<string, NoteDocument[]> = {};
@@ -561,14 +556,18 @@ function ResultsContent() {
     }
     return initial;
   });
+  const subjectDocsCacheRef = useRef(subjectDocsCache);
+  subjectDocsCacheRef.current = subjectDocsCache;
   const [isLoadingSubjectDocs, setIsLoadingSubjectDocs] = useState<boolean>(false);
   // Tracks subjects whose metadata has already been fetched in this session so switching back never re-loads
   const fetchedSubjectsRef = useRef<Set<string>>(new Set());
-  const semesterWarmedRef = useRef<string>('');
+  const inFlightSubjectsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     fetchedSubjectsRef.current.clear();
-    semesterWarmedRef.current = '';
+    inFlightSubjectsRef.current.clear();
+    fetchedLecturesRef.current.clear();
+    inFlightLecturesRef.current.clear();
   }, [year, branch, semester, type]);
 
   // Shared helper to reconcile server docs with localStorage + Android disk cache
@@ -580,9 +579,10 @@ function ResultsContent() {
     const bridge = getAndroidBridge();
 
     try {
-      const subjectsToCheck = scopedSubject ? [scopedSubject] : Object.keys(subjectDocsCache);
+      const currentCache = subjectDocsCacheRef.current;
+      const subjectsToCheck = scopedSubject ? [scopedSubject] : Object.keys(currentCache);
       for (const subj of subjectsToCheck) {
-        const prevDocs = subjectDocsCache[subj] || [];
+        const prevDocs = currentCache[subj] || [];
         for (const prevDoc of prevDocs) {
           if (!fetchedIds.has(prevDoc.id)) {
             deletedIds.add(prevDoc.id);
@@ -668,90 +668,119 @@ function ResultsContent() {
     }
   }, [subjectDocsCache, year, branch, semester, type]);
 
-  // Warm cache for all subjects of this semester ONCE so switching subjects (and back) is instant with zero reload
+  // Lazy per-subject Lectures fetch: loads ONLY the selected subject once and caches it for instant back-switching
   useEffect(() => {
-    let isMounted = true;
-    if (!year || !branch || !semester || !type || type === 'Lectures') return;
+    if (!year || !branch || !semester || !activeSubject || type !== 'Lectures') {
+      return;
+    }
 
-    const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+    const subjToFetch = activeSubject;
+    const fetchKey = `${year}___${branch}___${semester}___Lectures___${subjToFetch}`;
 
-    const warmSemesterDocs = async () => {
-      let allDocs: NoteDocument[] = [];
-      let succeeded = false;
+    if (fetchedLecturesRef.current.has(fetchKey)) {
+      setIsLoadingLectures(false);
+      return;
+    }
+
+    if (inFlightLecturesRef.current.has(fetchKey)) {
+      return;
+    }
+
+    if (isOffline) {
+      setIsLoadingLectures(false);
+      return;
+    }
+
+    inFlightLecturesRef.current.add(fetchKey);
+    if (!(subjToFetch in subjectLecturesCacheRef.current)) {
+      setIsLoadingLectures(true);
+    }
+
+    const loadSubjectLectures = async () => {
       try {
-        const res = await fetch(
-          `/api/documents?year=${encodeURIComponent(year)}&branch=${encodeURIComponent(branch)}&semester=${encodeURIComponent(semester)}&type=${encodeURIComponent(targetType)}`
-        );
-        const data = await res.json();
-        if (res.ok && data.success && Array.isArray(data.documents)) {
-          allDocs = data.documents;
-          succeeded = true;
-        } else if (isSupabaseConfigured()) {
-          allDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType);
-          succeeded = true;
-        }
-      } catch {
-        if (isSupabaseConfigured()) {
+        const cloudData = await fetchLecturesFromSupabase(year, branch, semester, subjToFetch);
+        if (Array.isArray(cloudData)) {
+          fetchedLecturesRef.current.add(fetchKey);
+          const mapped: LectureItem[] = cloudData.map((l) => ({
+            id: l.id,
+            title: l.title,
+            subject: l.subject,
+            semester: l.semester,
+            faculty: l.faculty,
+            link: l.link,
+            date: l.date,
+          }));
+          if (!unmountedRef.current) {
+            setSubjectLecturesCache((prev) => ({
+              ...prev,
+              [subjToFetch]: mapped,
+            }));
+          }
           try {
-            allDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType);
-            succeeded = true;
+            const raw = localStorage.getItem('notehub_custom_lectures');
+            const existing: any[] = raw ? JSON.parse(raw) : [];
+            const others = existing.filter(
+              (item) =>
+                !(
+                  item.year === year &&
+                  item.branch === branch &&
+                  item.semester === semester &&
+                  item.subject === subjToFetch
+                )
+            );
+            localStorage.setItem('notehub_custom_lectures', JSON.stringify([...cloudData, ...others]));
           } catch {}
         }
-      }
-
-      if (!isMounted || !succeeded) return;
-
-      const grouped: Record<string, NoteDocument[]> = {};
-      for (const doc of allDocs) {
-        if (doc.subject) {
-          if (!grouped[doc.subject]) grouped[doc.subject] = [];
-          grouped[doc.subject].push(doc);
-          fetchedSubjectsRef.current.add(doc.subject);
+      } catch {
+        // Offline / transient failure: keep cached entries intact
+      } finally {
+        inFlightLecturesRef.current.delete(fetchKey);
+        if (!unmountedRef.current && activeSubjectRef.current === subjToFetch) {
+          setIsLoadingLectures(false);
         }
       }
-      semesterWarmedRef.current = `${year}___${branch}___${semester}___${type}`;
-
-      reconcileServerDocsWithLocal(allDocs);
-      setSubjectDocsCache(grouped);
-      setIsLoadingSubjectDocs(false);
     };
 
-    warmSemesterDocs();
+    loadSubjectLectures();
+  }, [year, branch, semester, type, activeSubject, isOffline]);
 
-    return () => {
-      isMounted = false;
-    };
-  }, [year, branch, semester, type]);
-
-  // Progressive load metadata ONLY if activeSubject has not already been fetched in this session
+  // Lazy per-subject Notes/PYQ fetch: fetches ONLY the active subject once; switching back uses in-memory cache with zero refetch
   useEffect(() => {
-    let isMounted = true;
     if (!year || !branch || !semester || !activeSubject || type === 'Lectures') {
       return;
     }
 
-    const warmKey = `${year}___${branch}___${semester}___${type}`;
-    if (semesterWarmedRef.current === warmKey || fetchedSubjectsRef.current.has(activeSubject)) {
-      fetchedSubjectsRef.current.add(activeSubject);
+    const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+    const subjToFetch = activeSubject;
+    const fetchKey = `${year}___${branch}___${semester}___${targetType}___${subjToFetch}`;
+
+    if (fetchedSubjectsRef.current.has(fetchKey)) {
       setIsLoadingSubjectDocs(false);
       return;
     }
 
-    const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+    if (inFlightSubjectsRef.current.has(fetchKey)) {
+      return;
+    }
 
-    // Seed local documents immediately if not yet in cache so student never waits
+    // Seed local verified documents immediately if not yet in cache so student never waits
     const localDocs = getDocumentsFor(year, branch, semester).filter(
-      (d) => d.type === targetType && d.subject === activeSubject
+      (d) => d.type === targetType && d.subject === subjToFetch
     );
-    if (localDocs.length > 0 && (!subjectDocsCache[activeSubject] || subjectDocsCache[activeSubject].length === 0)) {
+    if (localDocs.length > 0 && (!subjectDocsCacheRef.current[subjToFetch] || subjectDocsCacheRef.current[subjToFetch].length === 0)) {
       setSubjectDocsCache((prev) => ({
         ...prev,
-        [activeSubject]: localDocs
+        [subjToFetch]: localDocs,
       }));
     }
 
-    // Only trigger network spinner if absolutely zero cached entry exists for this subject
-    const alreadyHasEntry = activeSubject in subjectDocsCache || localDocs.length > 0;
+    if (isOffline) {
+      setIsLoadingSubjectDocs(false);
+      return;
+    }
+
+    inFlightSubjectsRef.current.add(fetchKey);
+    const alreadyHasEntry = subjToFetch in subjectDocsCacheRef.current || localDocs.length > 0;
     if (!alreadyHasEntry) {
       setIsLoadingSubjectDocs(true);
     }
@@ -761,64 +790,52 @@ function ResultsContent() {
       let fetchSucceeded = false;
       try {
         const res = await fetch(
-          `/api/documents?year=${encodeURIComponent(year)}&branch=${encodeURIComponent(branch)}&semester=${encodeURIComponent(semester)}&type=${encodeURIComponent(targetType)}&subject=${encodeURIComponent(activeSubject)}`
+          `/api/documents?year=${encodeURIComponent(year)}&branch=${encodeURIComponent(branch)}&semester=${encodeURIComponent(semester)}&type=${encodeURIComponent(targetType)}&subject=${encodeURIComponent(subjToFetch)}`
         );
         const data = await res.json();
         if (res.ok && data.success && Array.isArray(data.documents)) {
           fetchedDocs = data.documents;
           fetchSucceeded = true;
         } else if (isSupabaseConfigured()) {
-          fetchedDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType, activeSubject);
+          fetchedDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType, subjToFetch);
           fetchSucceeded = true;
         }
       } catch {
         if (isSupabaseConfigured()) {
           try {
-            fetchedDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType, activeSubject);
+            fetchedDocs = await fetchDocumentsFromSupabase(year, branch, semester, targetType, subjToFetch);
             fetchSucceeded = true;
           } catch {}
         }
+      } finally {
+        inFlightSubjectsRef.current.delete(fetchKey);
       }
 
       if (fetchSucceeded) {
-        fetchedSubjectsRef.current.add(activeSubject);
-        reconcileServerDocsWithLocal(fetchedDocs, activeSubject);
+        fetchedSubjectsRef.current.add(fetchKey);
+        reconcileServerDocsWithLocal(fetchedDocs, subjToFetch);
 
-        if (isMounted) {
+        if (!unmountedRef.current) {
           setSubjectDocsCache((prev) => ({
             ...prev,
-            [activeSubject]: fetchedDocs
+            [subjToFetch]: fetchedDocs,
           }));
-          setIsLoadingSubjectDocs(false);
         }
-      } else {
-        // Offline mode: Network is off, keep existing local storage documents active so student can study
-        if (isMounted) {
-          setIsLoadingSubjectDocs(false);
-        }
+      }
+
+      if (!unmountedRef.current && activeSubjectRef.current === subjToFetch) {
+        setIsLoadingSubjectDocs(false);
       }
     };
 
     loadSubjectMetadata();
+  }, [year, branch, semester, type, activeSubject, isOffline]);
 
-    return () => {
-      isMounted = false;
-    };
-  }, [year, branch, semester, type, activeSubject, subjectsVersion]);
-
-  // Filtered lectures for current activeSubject and semester (Supabase Cloud is primary)
+  // Filtered lectures strictly for current activeSubject from per-subject cache
   const displayedLectures = useMemo(() => {
     if (!activeSubject) return [];
-
-    const cloudIds = new Set(cloudLectures.map((l) => l.id));
-    const merged = [...cloudLectures, ...localLectures.filter((l) => !cloudIds.has(l.id))];
-
-    return merged.filter((l) => {
-      const matchSubj = l.subject.trim().toLowerCase() === activeSubject.trim().toLowerCase();
-      const matchSem = !semester || l.semester.trim().toLowerCase() === semester.trim().toLowerCase();
-      return matchSubj && matchSem;
-    });
-  }, [localLectures, cloudLectures, activeSubject, semester]);
+    return subjectLecturesCache[activeSubject] || [];
+  }, [subjectLecturesCache, activeSubject]);
 
   // Displayed documents strictly for the currently viewed subject (app-only offline shows locally cached files)
   const displayedDocuments = useMemo(() => {
@@ -847,6 +864,7 @@ function ResultsContent() {
     subjectDocsCache,
     activeSubject,
     isOffline,
+    isAndroidApp,
     allSavedOfflineDocs,
     year,
     branch,
@@ -860,10 +878,12 @@ function ResultsContent() {
     if (type === 'Lectures') return false;
     if (displayedDocuments.length > 0) return false;
     if (isLoadingSubjects && subjectsList.length === 0) return true;
-    if (!activeSubject) return false;
-    if (fetchedSubjectsRef.current.has(activeSubject)) return false;
+    if (!activeSubject || !year || !branch || !semester) return false;
+    const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+    const fetchKey = `${year}___${branch}___${semester}___${targetType}___${activeSubject}`;
+    if (fetchedSubjectsRef.current.has(fetchKey)) return false;
     return isLoadingSubjectDocs && !(activeSubject in subjectDocsCache);
-  }, [type, displayedDocuments.length, isLoadingSubjects, subjectsList.length, activeSubject, isLoadingSubjectDocs, subjectDocsCache]);
+  }, [type, displayedDocuments.length, isLoadingSubjects, subjectsList.length, activeSubject, year, branch, semester, isLoadingSubjectDocs, subjectDocsCache]);
 
   const extractYouTubeVideoId = (url?: string): string => {
     if (!url) return '';
