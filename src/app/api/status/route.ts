@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient, getSupabaseCredentials } from '@/lib/supabase';
-import { getStaffSession } from '@/lib/serverAuth';
+import { getAdminSession, getStaffSession } from '@/lib/serverAuth';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const isStaff = Boolean(getStaffSession(req));
-  const customUrl = isStaff ? (req.headers.get('x-supabase-url') || undefined) : undefined;
-  const customKey = isStaff ? (req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined) : undefined;
+  const isAdmin = Boolean(getAdminSession(req));
+  const isStaff = isAdmin || Boolean(getStaffSession(req));
+  const customUrl = isAdmin ? (req.headers.get('x-supabase-url') || undefined) : undefined;
+  const customKey = isAdmin ? (req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined) : undefined;
 
   const creds = getSupabaseCredentials(customUrl, customKey);
   let driveWebhookUrl = process.env.GOOGLE_DRIVE_WEBHOOK_URL || process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL || '';
@@ -17,9 +18,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: false,
       connected: false,
-      error: 'Supabase credentials are missing. Please set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY on Vercel or enter them in Admin Settings.',
-      tables: {},
-      googleDrive: { 
+      ...(isStaff
+        ? {
+            error:
+              'Supabase credentials are missing. Please set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY on Vercel or enter them in Admin Settings.',
+            tables: {},
+          }
+        : {}),
+      googleDrive: {
         configured: Boolean(driveWebhookUrl),
         ...(isStaff ? { webhookUrl: driveWebhookUrl || undefined, folderId: driveFolderId || undefined } : {}),
       },
@@ -31,12 +37,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: false,
       connected: false,
-      error: 'Failed to initialize Supabase client with provided URL and Key. Ensure URL starts with https:// and Key is valid.',
-      tables: {},
-      googleDrive: { 
+      ...(isStaff
+        ? {
+            error:
+              'Failed to initialize Supabase client with provided URL and Key. Ensure URL starts with https:// and Key is valid.',
+            tables: {},
+          }
+        : {}),
+      googleDrive: {
         configured: Boolean(driveWebhookUrl),
-        webhookUrl: driveWebhookUrl || undefined,
-        folderId: driveFolderId || undefined,
+        ...(isStaff ? { webhookUrl: driveWebhookUrl || undefined, folderId: driveFolderId || undefined } : {}),
       },
     });
   }
@@ -96,10 +106,15 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     success: !hasAnyTableError,
     connected: !hasAnyTableError,
-    ...(isStaff ? { supabaseUrl: creds.url } : {}),
-    error: hasAnyTableError ? (primaryError || 'One or more Supabase tables are missing. Please run supabase-schema.sql in Supabase SQL Editor.') : null,
-    tables: tablesStatus,
-    googleDrive: { 
+    ...(isStaff ? { supabaseUrl: creds.url, tables: tablesStatus } : {}),
+    ...(isStaff
+      ? {
+          error: hasAnyTableError
+            ? primaryError || 'One or more Supabase tables are missing. Please run supabase-schema.sql in Supabase SQL Editor.'
+            : null,
+        }
+      : {}),
+    googleDrive: {
       configured: Boolean(driveWebhookUrl),
       ...(isStaff ? { webhookUrl: driveWebhookUrl || undefined, folderId: driveFolderId || undefined } : {}),
     },

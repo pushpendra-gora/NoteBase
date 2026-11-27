@@ -3,13 +3,19 @@ import { getSupabaseClient } from '@/lib/supabase';
 import { isBranchMatch } from '@/lib/coordinatorService';
 import {
   COORDINATOR_COOKIE_NAME,
+  checkLoginRateLimit,
   createSignedSessionToken,
+  getClientIp,
   getCoordinatorSession,
   hashPassword,
+  isSafeCredentialInput,
+  resetLoginRateLimit,
   verifyPassword,
 } from '@/lib/serverAuth';
 
 export const dynamic = 'force-dynamic';
+
+const ALLOWED_YEARS = new Set(['1st Year', '2nd Year', '3rd Year', '4th Year']);
 
 export async function GET(req: NextRequest) {
   const session = getCoordinatorSession(req);
@@ -35,22 +41,37 @@ export async function DELETE() {
 
 export async function POST(req: NextRequest) {
   try {
+    const ipKey = `coord-login:${getClientIp(req)}`;
+    const limit = checkLoginRateLimit(ipKey);
+    if (!limit.allowed) {
+      return NextResponse.json(
+        { success: false, error: `Too many login attempts. Please wait ${limit.retryAfterSec}s before trying again.` },
+        { status: 429 }
+      );
+    }
+
     const body = await req.json();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ success: false, error: 'Invalid request payload.' }, { status: 400 });
+    }
     const { year, branch, password } = body;
 
-    if (!year || !branch) {
+    if (!isSafeCredentialInput(year, 32) || !ALLOWED_YEARS.has(year.trim()) || !isSafeCredentialInput(branch, 80)) {
       return NextResponse.json(
-        { success: false, error: 'Please select both Year and Branch.' },
+        { success: false, error: 'Please select valid Year and Branch.' },
         { status: 400 }
       );
     }
 
-    if (!password || !password.trim()) {
+    if (!isSafeCredentialInput(password, 128)) {
       return NextResponse.json(
-        { success: false, error: 'Please enter Coordinator Password.' },
+        { success: false, error: 'Please enter a valid Coordinator Password.' },
         { status: 400 }
       );
     }
+
+    const cleanYear = year.trim();
+    const cleanBranch = branch.trim();
 
     const client = getSupabaseClient();
     if (!client) {
@@ -64,21 +85,21 @@ export async function POST(req: NextRequest) {
     const { data, error } = await client
       .from('coordinators')
       .select('id, name, branch, year, initials, status, password')
-      .eq('year', year);
+      .eq('year', cleanYear);
 
     if (error || !data || data.length === 0) {
       return NextResponse.json(
-        { success: false, error: `No coordinator account found for ${year} - ${branch}. Please ask Admin to register you first.` },
+        { success: false, error: `No coordinator account found for ${cleanYear} - ${cleanBranch}. Please ask Admin to register you first.` },
         { status: 404 }
       );
     }
 
     // Find coordinator matching branch
-    const matchingCoord = data.find((c) => isBranchMatch(c.branch, branch));
+    const matchingCoord = data.find((c) => isBranchMatch(c.branch, cleanBranch));
 
     if (!matchingCoord) {
       return NextResponse.json(
-        { success: false, error: `No coordinator account found for ${year} - ${branch}. Please ask Admin to register you first.` },
+        { success: false, error: `No coordinator account found for ${cleanYear} - ${cleanBranch}. Please ask Admin to register you first.` },
         { status: 404 }
       );
     }
@@ -99,6 +120,8 @@ export async function POST(req: NextRequest) {
         { status: 401 }
       );
     }
+
+    resetLoginRateLimit(ipKey);
 
     // Success: Set signed coordinator session cookie & return info WITHOUT password
     const response = NextResponse.json({

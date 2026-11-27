@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
-import { getStaffSession } from '@/lib/serverAuth';
+import { getAdminSession, getCoordinatorSession, getStaffSession } from '@/lib/serverAuth';
+import { isBranchMatch } from '@/lib/coordinatorService';
 import { deleteFileFromGoogleDriveServer } from '@/lib/serverDrive';
 
 export const dynamic = 'force-dynamic';
 
 function resolveClient(req: NextRequest) {
-  const customUrl = req.headers.get('x-supabase-url') || undefined;
-  const customKey = req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined;
+  const isAdmin = Boolean(getAdminSession(req));
+  const customUrl = isAdmin ? (req.headers.get('x-supabase-url') || undefined) : undefined;
+  const customKey = isAdmin
+    ? (req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined)
+    : undefined;
   return getSupabaseClient(customUrl, customKey);
 }
 
@@ -86,7 +90,9 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
-    if (!getStaffSession(req)) {
+    const adminSession = getAdminSession(req);
+    const coordSession = getCoordinatorSession(req);
+    if (!adminSession && !coordSession) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Staff sign-in required.' },
         { status: 401 }
@@ -101,6 +107,20 @@ export async function POST(req: NextRequest) {
         { success: false, error: 'Title, Subject, Year, Branch, and Semester are required.' },
         { status: 400 }
       );
+    }
+
+    // Coordinators can only upload within their own assigned Year & Branch
+    if (!adminSession && coordSession) {
+      if (
+        String(year).trim() !== coordSession.year ||
+        !coordSession.branch ||
+        !isBranchMatch(String(branch).trim(), coordSession.branch)
+      ) {
+        return NextResponse.json(
+          { success: false, error: 'Forbidden. You can only manage materials for your assigned Year & Branch.' },
+          { status: 403 }
+        );
+      }
     }
 
     const client = resolveClient(req);
@@ -174,7 +194,9 @@ export async function POST(req: NextRequest) {
  */
 export async function PATCH(req: NextRequest) {
   try {
-    if (!getStaffSession(req)) {
+    const adminSession = getAdminSession(req);
+    const coordSession = getCoordinatorSession(req);
+    if (!adminSession && !coordSession) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Staff sign-in required.' },
         { status: 401 }
@@ -184,7 +206,7 @@ export async function PATCH(req: NextRequest) {
     const body = await req.json();
     const { id, title, type } = body;
 
-    if (!id || !title || !title.trim()) {
+    if (!id || !title || !String(title).trim()) {
       return NextResponse.json(
         { success: false, error: 'Document ID and Title are required.' },
         { status: 400 }
@@ -197,6 +219,30 @@ export async function PATCH(req: NextRequest) {
         { success: false, error: 'Supabase client is not connected.' },
         { status: 503 }
       );
+    }
+
+    // If Coordinator, verify target document belongs to their assigned Year & Branch
+    if (!adminSession && coordSession) {
+      const [nRes, pRes] = await Promise.all([
+        type !== 'PYQ' && type !== 'PYQs'
+          ? client.from('notes').select('year, branch').eq('id', id).limit(1).maybeSingle()
+          : Promise.resolve({ data: null }),
+        type !== 'Notes'
+          ? client.from('pyqs').select('year, branch').eq('id', id).limit(1).maybeSingle()
+          : Promise.resolve({ data: null }),
+      ]);
+      const row = nRes.data || pRes.data;
+      if (
+        !row ||
+        row.year !== coordSession.year ||
+        !coordSession.branch ||
+        !isBranchMatch(row.branch, coordSession.branch)
+      ) {
+        return NextResponse.json(
+          { success: false, error: 'Forbidden. You cannot modify documents outside your assigned Year & Branch.' },
+          { status: 403 }
+        );
+      }
     }
 
     const cleanTitle = title.trim();
@@ -225,7 +271,9 @@ export async function PATCH(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   try {
-    if (!getStaffSession(req)) {
+    const adminSession = getAdminSession(req);
+    const coordSession = getCoordinatorSession(req);
+    if (!adminSession && !coordSession) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Staff sign-in required.' },
         { status: 401 }
@@ -254,27 +302,45 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    // Look up existing file_url / file_path before deleting DB row so Drive file can also be deleted
-    let fileRefToDelete: string | null = paramFileUrl || paramFilePath || null;
-    if (!fileRefToDelete) {
-      try {
-        if (type === 'PYQ' || type === 'PYQs') {
-          const { data } = await client.from('pyqs').select('file_url, file_path').eq('id', id).limit(1).maybeSingle();
-          fileRefToDelete = data?.file_url || data?.file_path || null;
-        } else if (type === 'Notes') {
-          const { data } = await client.from('notes').select('file_url, file_path').eq('id', id).limit(1).maybeSingle();
-          fileRefToDelete = data?.file_url || data?.file_path || null;
-        } else {
-          const [nRes, pRes] = await Promise.all([
-            client.from('notes').select('file_url, file_path').eq('id', id).limit(1).maybeSingle(),
-            client.from('pyqs').select('file_url, file_path').eq('id', id).limit(1).maybeSingle(),
-          ]);
-          fileRefToDelete = nRes.data?.file_url || nRes.data?.file_path || pRes.data?.file_url || pRes.data?.file_path || null;
-        }
-      } catch {
-        // Ignore lookup error and proceed
+    // Look up existing DB row for authorization and Drive cleanup
+    let dbRow: { year?: string; branch?: string; file_url?: string | null; file_path?: string | null } | null = null;
+    try {
+      if (type === 'PYQ' || type === 'PYQs') {
+        const { data } = await client.from('pyqs').select('year, branch, file_url, file_path').eq('id', id).limit(1).maybeSingle();
+        dbRow = data;
+      } else if (type === 'Notes') {
+        const { data } = await client.from('notes').select('year, branch, file_url, file_path').eq('id', id).limit(1).maybeSingle();
+        dbRow = data;
+      } else {
+        const [nRes, pRes] = await Promise.all([
+          client.from('notes').select('year, branch, file_url, file_path').eq('id', id).limit(1).maybeSingle(),
+          client.from('pyqs').select('year, branch, file_url, file_path').eq('id', id).limit(1).maybeSingle(),
+        ]);
+        dbRow = nRes.data || pRes.data || null;
+      }
+    } catch {
+      // Ignore lookup error for Admin fallback
+    }
+
+    if (!adminSession && coordSession) {
+      if (
+        !dbRow ||
+        dbRow.year !== coordSession.year ||
+        !coordSession.branch ||
+        !dbRow.branch ||
+        !isBranchMatch(dbRow.branch, coordSession.branch)
+      ) {
+        return NextResponse.json(
+          { success: false, error: 'Forbidden. You cannot delete documents outside your assigned Year & Branch.' },
+          { status: 403 }
+        );
       }
     }
+
+    const fileRefToDelete: string | null =
+      dbRow?.file_url ||
+      dbRow?.file_path ||
+      (adminSession ? paramFileUrl || paramFilePath || null : null);
 
     // Delete file from Google Drive first (best-effort, never blocks DB cleanup if Drive URL isn't set)
     const driveResult = await deleteFileFromGoogleDriveServer(fileRefToDelete, client, customWebhook);

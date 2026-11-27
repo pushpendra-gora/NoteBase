@@ -31,6 +31,7 @@ import { BranchOption, NoteDocument, SemesterOption, YearOption, LectureItem } f
 import { isSupabaseConfigured } from '../../lib/supabase';
 import { fetchDocumentsFromSupabase, fetchLecturesFromSupabase, fetchSubjectsFromSupabase } from '../../lib/supabaseService';
 import { formatFileSize } from '../../lib/pdfMetadata';
+import { openSafeExternalUrl } from '../../lib/urlSafety';
 import PdfPreviewModal from '../../components/PdfPreviewModal';
 
 function ResultsContent() {
@@ -773,7 +774,7 @@ function ResultsContent() {
       const intentUrl = `intent://www.youtube.com/watch?v=${videoId}#Intent;package=com.google.android.youtube;scheme=https;end`;
       window.location.href = intentUrl;
     } else {
-      window.open(link, '_blank');
+      openSafeExternalUrl(link);
     }
   };
 
@@ -1135,14 +1136,15 @@ function ResultsContent() {
 
                       <div className="space-y-1 min-w-0 flex-1">
                         <div className="flex items-center space-x-2 min-w-0">
-                          <h4 className="text-sm sm:text-base font-bold text-slate-900 group-hover:text-indigo-600 transition-colors truncate">
+                          <h4 className="text-sm sm:text-base font-bold text-slate-900 group-hover:text-indigo-600 transition-colors line-clamp-2 sm:truncate">
                             {doc.title}
                           </h4>
                           {cachedPdfIds.has(doc.id) && (
-                            <span className="inline-flex items-center space-x-1 text-[9px] sm:text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
-                              <Check className="w-2.5 h-2.5" />
-                              <span>Saved Offline</span>
-                            </span>
+                            <span
+                              className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 inline-block ring-2 ring-emerald-200"
+                              title="Saved Offline"
+                              aria-label="Saved Offline"
+                            />
                           )}
                         </div>
 

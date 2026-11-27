@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useState, useMemo, useRef, useEffect } from 'react';
+import React, { Suspense, useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { 
@@ -41,7 +41,10 @@ import {
   RefreshCw,
   Settings,
   Menu,
-  MoreVertical
+  MoreVertical,
+  Send,
+  Loader2,
+  MessageSquareWarning
 } from 'lucide-react';
 import { 
   getDocumentsFor, 
@@ -55,7 +58,7 @@ import {
   deleteCustomUploadedDocument, 
   YEAR_SEMESTER_MAP 
 } from '../../../data/notesData';
-import { BranchOption, NoteDocument, SemesterOption, YearOption } from '../../../types';
+import { BranchOption, NoteDocument, SemesterOption, YearOption, CoordinatorIssue } from '../../../types';
 import { isSupabaseConfigured, getSupabaseCredentials } from '../../../lib/supabase';
 import { 
   insertDocumentToSupabase, 
@@ -68,10 +71,7 @@ import {
   insertLectureToSupabase,
   updateLectureInSupabase,
   deleteLectureFromSupabase,
-  fetchLecturesFromSupabase,
-  updateCoordinatorInSupabase,
-  updateCoordinatorPasswordInSupabase,
-  fetchCoordinatorsFromSupabase
+  fetchLecturesFromSupabase
 } from '../../../lib/supabaseService';
 import { getStoredCoordinators, saveStoredCoordinators, isBranchMatch } from '../../../lib/coordinatorService';
 import { 
@@ -113,21 +113,45 @@ function DashboardContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  const yearParam = (searchParams.get('year') as YearOption) || '2nd Year';
-  const branchParam = (searchParams.get('branch') as BranchOption) || 'CSE(AI&ML)';
-
-  // Auth Guard: Verify signed coordinator session cookie on mount
+  // Verified server-side coordinator session (NEVER trust raw URL query params alone)
+  const [verifiedSession, setVerifiedSession] = useState<{
+    id: string;
+    name: string;
+    year: YearOption;
+    branch: BranchOption;
+  } | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+
   useEffect(() => {
     let active = true;
-    fetch('/api/coordinator/auth')
+    fetch('/api/coordinator/auth', { cache: 'no-store' })
       .then((res) => res.json())
       .then((data) => {
         if (!active) return;
-        if (!data?.authenticated) {
+        if (!data?.authenticated || !data?.coordinator?.year || !data?.coordinator?.branch) {
           router.replace('/coordinator');
-        } else {
-          setAuthChecked(true);
+          return;
+        }
+        const sess = {
+          id: String(data.coordinator.id || ''),
+          name: String(data.coordinator.name || 'Coordinator'),
+          year: data.coordinator.year as YearOption,
+          branch: data.coordinator.branch as BranchOption,
+        };
+        setVerifiedSession(sess);
+        setAuthChecked(true);
+
+        // Lock URL parameters strictly to the verified session so editing the URL cannot switch year/branch/identity
+        const urlYear = searchParams.get('year');
+        const urlBranch = searchParams.get('branch');
+        const urlName = searchParams.get('name');
+        if (urlYear !== sess.year || urlBranch !== sess.branch || urlName !== sess.name) {
+          const canonicalQuery = new URLSearchParams({
+            year: sess.year,
+            branch: sess.branch,
+            name: sess.name,
+          }).toString();
+          router.replace(`/coordinator/dashboard?${canonicalQuery}`);
         }
       })
       .catch(() => {
@@ -136,29 +160,119 @@ function DashboardContent() {
     return () => {
       active = false;
     };
-  }, [router]);
+  }, [router, searchParams]);
 
-  // Active logged-in coordinator name
-  const coordinatorDisplayName = useMemo(() => {
-    const nameInUrl = searchParams.get('name');
-    if (nameInUrl) return nameInUrl;
-    if (typeof window !== 'undefined') {
-      try {
-        const active = sessionStorage.getItem('notehub_active_coordinator');
-        if (active) {
-          const parsed = JSON.parse(active);
-          if (parsed?.name) return parsed.name;
-        }
-      } catch {}
-    }
-    const currentList = getStoredCoordinators();
-    const found = currentList.find(c => c.year === yearParam && isBranchMatch(c.branch, branchParam));
-    return found ? found.name : 'Coordinator';
-  }, [searchParams, yearParam, branchParam]);
+  // Always derive year, branch, and coordinator name strictly from verified server session
+  const yearParam: YearOption = verifiedSession?.year || '2nd Year';
+  const branchParam: BranchOption = verifiedSession?.branch || 'CSE(AI&ML)';
+  const coordinatorDisplayName = verifiedSession?.name || 'Coordinator';
 
   // Left sidebar active navigation tab & mobile drawer state
-  const [activeNav, setActiveNav] = useState<'Dashboard' | 'Upload' | 'Notes' | 'PYQs' | 'Lectures' | 'Add Subject'>('Dashboard');
+  const [activeNav, setActiveNav] = useState<'Dashboard' | 'Upload' | 'Notes' | 'PYQs' | 'Lectures' | 'Add Subject' | 'Issues'>('Dashboard');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+
+  // Coordinator Issues State (Stored in Supabase; only Admin can resolve/delete)
+  const [myIssues, setMyIssues] = useState<CoordinatorIssue[]>([]);
+  const [issueSubject, setIssueSubject] = useState('');
+  const [issueDescription, setIssueDescription] = useState('');
+  const [isLoadingIssues, setIsLoadingIssues] = useState(false);
+  const [isSubmittingIssue, setIsSubmittingIssue] = useState(false);
+  const [issuesError, setIssuesError] = useState<string | null>(null);
+
+  const fetchMyIssues = useCallback(async () => {
+    setIsLoadingIssues(true);
+    setIssuesError(null);
+    try {
+      const creds = getSupabaseCredentials();
+      const headers: Record<string, string> = {};
+      if (creds.url && creds.key) {
+        headers['x-supabase-url'] = creds.url;
+        headers['x-supabase-key'] = creds.key;
+      }
+      const res = await fetch('/api/issues', { cache: 'no-store', headers });
+      const data = await res.json();
+      if (res.ok && data?.success && Array.isArray(data.issues)) {
+        setMyIssues(data.issues);
+      } else {
+        setIssuesError(data?.error || 'Could not load issues.');
+      }
+    } catch {
+      setIssuesError('Unable to reach server to load issues.');
+    } finally {
+      setIsLoadingIssues(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!authChecked) return;
+    fetchMyIssues();
+  }, [authChecked, fetchMyIssues]);
+
+  useEffect(() => {
+    if (!authChecked) return;
+    if (activeNav === 'Issues') {
+      fetchMyIssues();
+    }
+  }, [activeNav, authChecked, fetchMyIssues]);
+
+  useEffect(() => {
+    if (!authChecked) return;
+    const onFocus = () => {
+      fetchMyIssues();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [authChecked, fetchMyIssues]);
+
+  const handleSubmitIssue = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmittingIssue) return;
+    if (!issueSubject.trim()) {
+      showToast('Please enter an Issue Subject / Title.');
+      return;
+    }
+    if (!issueDescription.trim()) {
+      showToast('Please describe the issue before sending.');
+      return;
+    }
+
+    setIsSubmittingIssue(true);
+    setIssuesError(null);
+    try {
+      const creds = getSupabaseCredentials();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (creds.url && creds.key) {
+        headers['x-supabase-url'] = creds.url;
+        headers['x-supabase-key'] = creds.key;
+      }
+      const res = await fetch('/api/issues', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          coordinator_name: coordinatorDisplayName,
+          year: yearParam,
+          branch: branchParam,
+          subject: issueSubject.trim(),
+          description: issueDescription.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.success && data.issue) {
+        setMyIssues((prev) => [data.issue, ...prev]);
+        setIssueSubject('');
+        setIssueDescription('');
+        showToast('Issue sent to Admin and saved in database!');
+      } else {
+        setIssuesError(data?.error || 'Failed to submit issue.');
+        showToast(data?.error || 'Failed to submit issue.');
+      }
+    } catch {
+      setIssuesError('Network error while submitting issue.');
+      showToast('Network error while submitting issue.');
+    } finally {
+      setIsSubmittingIssue(false);
+    }
+  };
 
   // Lecture Edit & Search State
   const [editingLecture, setEditingLecture] = useState<LectureItem | null>(null);
@@ -387,8 +501,9 @@ function DashboardContent() {
     }
   }, [yearParam, branchParam, supabaseConnected]);
 
-  // Fetch cloud subjects from Supabase for all coordinator semesters on mount (authoritative source)
+  // Fetch cloud subjects from Supabase only after coordinator session is verified
   useEffect(() => {
+    if (!authChecked || !verifiedSession) return;
     if (isSupabaseConfigured()) {
       coordinatorSemesters.forEach((sem) => {
         fetchSubjectsFromSupabase(yearParam, branchParam, sem).then((cloudSubjs) => {
@@ -399,13 +514,14 @@ function DashboardContent() {
         }).catch(() => {});
       });
     }
-  }, [yearParam, branchParam, coordinatorSemesters, supabaseConnected]);
+  }, [authChecked, verifiedSession, yearParam, branchParam, coordinatorSemesters, supabaseConnected]);
 
   // Initial files generated corresponding to coordinator's year & branch
   const [files, setFiles] = useState<CoordinatorFile[]>([]);
 
-  // Synchronize files whenever subjects or coordinator parameters update, Supabase connects, or window refocuses
+  // Synchronize files whenever subjects or verified coordinator session update, Supabase connects, or window refocuses
   useEffect(() => {
+    if (!authChecked || !verifiedSession) return;
     let isMounted = true;
     const sem1 = coordinatorSemesters[0] || 'Semester 1';
     const sem2 = coordinatorSemesters[1] || 'Semester 2';
@@ -535,7 +651,7 @@ function DashboardContent() {
       isMounted = false;
       window.removeEventListener('focus', handleFocus);
     };
-  }, [yearParam, branchParam, coordinatorSemesters, subjectsVersion, supabaseConnected]);
+  }, [authChecked, verifiedSession, yearParam, branchParam, coordinatorSemesters, subjectsVersion, supabaseConnected]);
 
   // Statistics
   const notesCount = useMemo(() => files.filter((f) => f.type === 'Notes').length, [files]);
@@ -1139,7 +1255,7 @@ function DashboardContent() {
   };
 
   // Navigation handlers
-  const navigateToSection = (section: 'Dashboard' | 'Upload' | 'Notes' | 'PYQs' | 'Lectures' | 'Add Subject') => {
+  const navigateToSection = (section: 'Dashboard' | 'Upload' | 'Notes' | 'PYQs' | 'Lectures' | 'Add Subject' | 'Issues') => {
     setActiveNav(section);
     setIsMobileSidebarOpen(false);
     if (section === 'Notes') {
@@ -1150,7 +1266,7 @@ function DashboardContent() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  if (!authChecked) {
+  if (!authChecked || !verifiedSession) {
     return (
       <div className="h-[100dvh] w-full bg-[#f8fafc] flex items-center justify-center text-slate-500 text-sm font-semibold">
         Verifying coordinator session...
@@ -1314,6 +1430,30 @@ function DashboardContent() {
             >
               <BookOpen className="w-5 h-5" />
               <span>Add Subject</span>
+            </button>
+
+            {/* 8. Report Issue to Admin */}
+            <button
+              onClick={() => navigateToSection('Issues')}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl text-sm font-semibold transition-all cursor-pointer ${
+                activeNav === 'Issues'
+                  ? 'bg-[#3b49df] text-white shadow-md'
+                  : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+              }`}
+            >
+              <span className="flex items-center space-x-3.5">
+                <MessageSquareWarning className="w-5 h-5" />
+                <span>Report Issue</span>
+              </span>
+              {myIssues.filter((i) => i.status === 'Open').length > 0 && (
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                  activeNav === 'Issues'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {myIssues.filter((i) => i.status === 'Open').length}
+                </span>
+              )}
             </button>
           </nav>
         </div>
@@ -2356,6 +2496,165 @@ function DashboardContent() {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* =================================================================
+            VIEW 7: REPORT ISSUE TO ADMIN VIEW
+           ================================================================= */}
+        {activeNav === 'Issues' && (
+          <div className="space-y-6 animate-in fade-in duration-200">
+            {/* Submit New Issue Form */}
+            <div className="bg-white rounded-3xl border border-slate-100/90 p-5 sm:p-8 shadow-[0_2px_14px_rgba(0,0,0,0.02)] space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                    <MessageSquareWarning className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-900">Report an Issue to Admin</h3>
+                    <p className="text-xs text-slate-400">
+                      Facing a technical, upload, or subject problem? Write it below to notify the Admin directly.
+                    </p>
+                  </div>
+                </div>
+                <span className="self-start sm:self-auto text-[11px] font-bold px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+                  {yearParam} • {branchParam}
+                </span>
+              </div>
+
+              <form onSubmit={handleSubmitIssue} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-700 block">Issue Subject / Title</label>
+                  <input
+                    type="text"
+                    value={issueSubject}
+                    onChange={(e) => setIssueSubject(e.target.value)}
+                    placeholder="e.g., Unable to upload PDF for Semester 3 / Missing Subject"
+                    className="w-full h-12 px-4 rounded-2xl border border-slate-200 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-700 block">Issue Details</label>
+                  <textarea
+                    rows={4}
+                    value={issueDescription}
+                    onChange={(e) => setIssueDescription(e.target.value)}
+                    placeholder="Explain the issue clearly so the Admin can solve it quickly..."
+                    className="w-full p-4 rounded-2xl border border-slate-200 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-y"
+                  />
+                </div>
+
+                {issuesError && (
+                  <div className="flex items-center space-x-2 text-xs text-red-700 bg-red-50 p-3 rounded-xl border border-red-100">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{issuesError}</span>
+                  </div>
+                )}
+
+                <div className="flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={isSubmittingIssue}
+                    className="inline-flex items-center space-x-2 px-6 py-3 rounded-2xl bg-[#3b49df] hover:bg-[#323fc0] disabled:opacity-70 text-white text-xs sm:text-sm font-bold shadow-sm transition-all cursor-pointer"
+                  >
+                    {isSubmittingIssue ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Sending to Admin...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-4 h-4" />
+                        <span>Send Issue to Admin</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            {/* Sent Issues List */}
+            <div className="bg-white rounded-3xl border border-slate-100/90 p-5 sm:p-8 shadow-[0_2px_14px_rgba(0,0,0,0.02)] space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                <div>
+                  <h4 className="text-base font-bold text-slate-900">
+                    Your Submitted Issues ({myIssues.length})
+                  </h4>
+                  <p className="text-xs text-slate-400">
+                    Live status from database. Once Admin deletes an issue, it is removed permanently.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={fetchMyIssues}
+                  disabled={isLoadingIssues}
+                  className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingIssues ? 'animate-spin' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+              </div>
+
+              {isLoadingIssues && myIssues.length === 0 ? (
+                <div className="py-10 text-center text-xs text-slate-400 font-medium">
+                  Loading issues from database...
+                </div>
+              ) : myIssues.length > 0 ? (
+                <div className="space-y-3">
+                  {myIssues.map((issue) => (
+                    <div
+                      key={issue.id}
+                      className="p-4 sm:p-5 rounded-2xl border border-slate-200/80 bg-slate-50/50 space-y-2.5"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="space-y-0.5 min-w-0 flex-1">
+                          <h5 className="text-sm sm:text-base font-bold text-slate-900 break-words">
+                            {issue.subject}
+                          </h5>
+                          <p className="text-[11px] text-slate-400 font-medium">
+                            Submitted on {new Date(issue.created_at).toLocaleString()}
+                          </p>
+                        </div>
+                        <span
+                          className={`inline-flex items-center space-x-1 text-[11px] font-bold px-2.5 py-1 rounded-full border shrink-0 ${
+                            issue.status === 'Resolved'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-amber-50 text-amber-700 border-amber-200'
+                          }`}
+                        >
+                          {issue.status === 'Resolved' ? (
+                            <CheckCircle2 className="w-3 h-3" />
+                          ) : (
+                            <AlertCircle className="w-3 h-3" />
+                          )}
+                          <span>{issue.status === 'Resolved' ? 'Solved by Admin' : 'Pending / Open'}</span>
+                        </span>
+                      </div>
+
+                      <p className="text-xs sm:text-sm text-slate-700 whitespace-pre-wrap break-words leading-relaxed">
+                        {issue.description}
+                      </p>
+
+                      {issue.admin_reply && (
+                        <div className="mt-2 p-3 rounded-xl bg-indigo-50/80 border border-indigo-100 text-xs text-indigo-900 space-y-0.5">
+                          <div className="font-bold text-indigo-700">Admin Reply:</div>
+                          <div className="whitespace-pre-wrap break-words">{issue.admin_reply}</div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="py-10 text-center space-y-1.5">
+                  <p className="text-sm font-bold text-slate-700">No issues reported yet</p>
+                  <p className="text-xs text-slate-400">
+                    Use the form above if you need help from the Admin.
+                  </p>
                 </div>
               )}
             </div>

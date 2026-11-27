@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
-import { getStaffSession, isValidGoogleScriptUrl } from '@/lib/serverAuth';
-import { deleteFileFromGoogleDriveServer } from '@/lib/serverDrive';
+import { getAdminSession, getCoordinatorSession, isValidGoogleScriptUrl } from '@/lib/serverAuth';
+import { isBranchMatch } from '@/lib/coordinatorService';
+import { deleteFileFromGoogleDriveServer, extractGoogleDriveFileId } from '@/lib/serverDrive';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
-    if (!getStaffSession(req)) {
+    const adminSession = getAdminSession(req);
+    const coordSession = getCoordinatorSession(req);
+    if (!adminSession && !coordSession) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Please log in as Admin or Coordinator.' },
         { status: 401 }
@@ -18,19 +21,19 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { scriptUrl, fileName, mimeType, base64, folderId } = body;
 
-    // 1. Determine Google Apps Script Web App URL:
-    // Priority 1: Server environment variables (GOOGLE_DRIVE_WEBHOOK_URL, NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL, GDRIVE_WEBHOOK_URL)
-    // Priority 2: Client provided scriptUrl (from Admin settings)
-    // Priority 3: Stored in Supabase admin_credentials table
-    let targetScriptUrl = 
-      process.env.GOOGLE_DRIVE_WEBHOOK_URL || 
-      process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL || 
-      process.env.GDRIVE_WEBHOOK_URL || 
-      scriptUrl;
-    let targetFolderId = 
-      folderId || 
-      process.env.GOOGLE_DRIVE_FOLDER_ID || 
-      process.env.NEXT_PUBLIC_GOOGLE_DRIVE_FOLDER_ID || 
+    // 1. Determine Google Apps Script Web App URL (only Admin may supply custom scriptUrl fallback):
+    // Priority 1: Server environment variables
+    // Priority 2: Stored in Supabase admin_credentials table
+    // Priority 3: Admin-provided scriptUrl (never Coordinator-provided)
+    let targetScriptUrl =
+      process.env.GOOGLE_DRIVE_WEBHOOK_URL ||
+      process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL ||
+      process.env.GDRIVE_WEBHOOK_URL ||
+      undefined;
+    let targetFolderId =
+      (adminSession ? folderId : undefined) ||
+      process.env.GOOGLE_DRIVE_FOLDER_ID ||
+      process.env.NEXT_PUBLIC_GOOGLE_DRIVE_FOLDER_ID ||
       undefined;
 
     if (!targetScriptUrl) {
@@ -54,6 +57,10 @@ export async function POST(req: NextRequest) {
       } catch (dbErr) {
         console.warn('Could not check Supabase for Google Drive webhook:', dbErr);
       }
+    }
+
+    if (!targetScriptUrl && adminSession && scriptUrl) {
+      targetScriptUrl = scriptUrl;
     }
 
     if (!targetScriptUrl) {
@@ -217,7 +224,9 @@ export async function GET() {
 
 export async function DELETE(req: NextRequest) {
   try {
-    if (!getStaffSession(req)) {
+    const adminSession = getAdminSession(req);
+    const coordSession = getCoordinatorSession(req);
+    if (!adminSession && !coordSession) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Please log in as Admin or Coordinator.' },
         { status: 401 }
@@ -229,7 +238,43 @@ export async function DELETE(req: NextRequest) {
     const candidate = fileUrl || filePath || (fileId ? `gdrive://${fileId}` : '');
     const client = getSupabaseClient();
 
-    const result = await deleteFileFromGoogleDriveServer(candidate, client, scriptUrl);
+    // Coordinators may only delete Drive files belonging to their own Year & Branch
+    if (!adminSession && coordSession) {
+      const targetId = extractGoogleDriveFileId(candidate);
+      if (!targetId || !client) {
+        return NextResponse.json(
+          { success: false, error: 'Forbidden. Cannot verify document ownership for Drive deletion.' },
+          { status: 403 }
+        );
+      }
+
+      const [notesMatch, pyqsMatch] = await Promise.all([
+        client.from('notes').select('year, branch, file_url, file_path').eq('year', coordSession.year),
+        client.from('pyqs').select('year, branch, file_url, file_path').eq('year', coordSession.year),
+      ]);
+
+      const rows = [...(notesMatch.data || []), ...(pyqsMatch.data || [])];
+      const ownsFile = rows.some((r: any) => {
+        if (!coordSession.branch || !isBranchMatch(r.branch || '', coordSession.branch)) return false;
+        return (
+          extractGoogleDriveFileId(r.file_url) === targetId ||
+          extractGoogleDriveFileId(r.file_path) === targetId
+        );
+      });
+
+      if (!ownsFile) {
+        return NextResponse.json(
+          { success: false, error: 'Forbidden. You cannot delete Google Drive files outside your assigned Year & Branch.' },
+          { status: 403 }
+        );
+      }
+    }
+
+    const result = await deleteFileFromGoogleDriveServer(
+      candidate,
+      client,
+      adminSession ? scriptUrl : undefined
+    );
     if (!result.attempted && !result.deleted) {
       return NextResponse.json(
         { success: false, error: result.error || 'No valid Google Drive file ID provided.' },

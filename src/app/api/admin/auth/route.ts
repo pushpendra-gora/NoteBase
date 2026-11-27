@@ -2,9 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
 import {
   ADMIN_COOKIE_NAME,
+  checkLoginRateLimit,
   createSignedSessionToken,
   getAdminSession,
+  getClientIp,
   hashPassword,
+  isSafeCredentialInput,
+  resetLoginRateLimit,
+  timingSafeEqualString,
   verifyPassword,
 } from '@/lib/serverAuth';
 
@@ -13,7 +18,7 @@ export const dynamic = 'force-dynamic';
 /**
  * Helper to fetch credentials securely on the server
  */
-async function getAdminServerCredentials(): Promise<{ id: string; password: string }> {
+async function getAdminServerCredentials(targetId?: string): Promise<{ id: string; password: string }> {
   const client = getSupabaseClient();
   const defaultId = process.env.ADMIN_DEFAULT_ID || 'admin';
   const defaultPassword = process.env.ADMIN_DEFAULT_PASSWORD || 'admin123';
@@ -23,16 +28,32 @@ async function getAdminServerCredentials(): Promise<{ id: string; password: stri
   }
 
   try {
+    if (targetId) {
+      const { data: exactData, error: exactErr } = await client
+        .from('admin_credentials')
+        .select('id, password')
+        .eq('id', targetId)
+        .limit(1);
+
+      if (!exactErr && exactData && exactData.length > 0) {
+        return {
+          id: exactData[0].id || defaultId,
+          password: exactData[0].password || defaultPassword,
+        };
+      }
+    }
+
     const { data, error } = await client
       .from('admin_credentials')
       .select('id, password')
       .limit(1);
 
     if (error || !data || data.length === 0) {
-      // Seed default admin in database if not present
-      const defaultAdmin = { id: defaultId, password: defaultPassword, updated_at: new Date().toISOString() };
+      // Seed default admin with hashed password if table is empty
+      const hashedDefault = hashPassword(defaultPassword);
+      const defaultAdmin = { id: defaultId, password: hashedDefault, updated_at: new Date().toISOString() };
       await client.from('admin_credentials').upsert(defaultAdmin);
-      return { id: defaultId, password: defaultPassword };
+      return { id: defaultId, password: hashedDefault };
     }
 
     return {
@@ -51,20 +72,33 @@ async function getAdminServerCredentials(): Promise<{ id: string; password: stri
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ success: false, error: 'Invalid request payload.' }, { status: 400 });
+    }
     const { action, id, password, currentPassword, newPassword } = body;
 
     // 1. ACTION: LOGIN
     if (action === 'login') {
-      if (!id || !password) {
+      const ipKey = `admin-login:${getClientIp(req)}`;
+      const limit = checkLoginRateLimit(ipKey);
+      if (!limit.allowed) {
         return NextResponse.json(
-          { success: false, error: 'Please enter both Admin ID and Password.' },
+          { success: false, error: `Too many login attempts. Please wait ${limit.retryAfterSec}s before trying again.` },
+          { status: 429 }
+        );
+      }
+
+      if (!isSafeCredentialInput(id, 64) || !isSafeCredentialInput(password, 128)) {
+        return NextResponse.json(
+          { success: false, error: 'Please enter valid Admin ID and Password.' },
           { status: 400 }
         );
       }
 
-      const creds = await getAdminServerCredentials();
+      const cleanId = id.trim();
+      const creds = await getAdminServerCredentials(cleanId);
 
-      const isIdMatch = id.trim() === creds.id.trim();
+      const isIdMatch = timingSafeEqualString(cleanId, (creds.id || '').trim());
       const isPassMatch = verifyPassword(password, creds.password);
 
       if (!isIdMatch || !isPassMatch) {
@@ -73,6 +107,8 @@ export async function POST(req: NextRequest) {
           { status: 401 }
         );
       }
+
+      resetLoginRateLimit(ipKey);
 
       // Login success: Set signed secure session cookie
       const response = NextResponse.json({
@@ -103,9 +139,9 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      if (!currentPassword || !newPassword) {
+      if (!isSafeCredentialInput(currentPassword, 128) || !isSafeCredentialInput(newPassword, 128)) {
         return NextResponse.json(
-          { success: false, error: 'Current password and new password are required.' },
+          { success: false, error: 'Valid current password and new password are required.' },
           { status: 400 }
         );
       }

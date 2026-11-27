@@ -5,8 +5,9 @@ import { getAdminSession, hashPassword } from '@/lib/serverAuth';
 export const dynamic = 'force-dynamic';
 
 function resolveClient(req: NextRequest) {
-  const customUrl = req.headers.get('x-supabase-url') || undefined;
-  const customKey = req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined;
+  const isAdmin = Boolean(getAdminSession(req));
+  const customUrl = isAdmin ? (req.headers.get('x-supabase-url') || undefined) : undefined;
+  const customKey = isAdmin ? (req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined) : undefined;
   return getSupabaseClient(customUrl, customKey);
 }
 
@@ -113,18 +114,20 @@ export async function POST(req: NextRequest) {
       status: status || 'Active',
     };
 
+    const SAFE_COLUMNS = 'id, name, branch, year, initials, status, created_at';
+
     // Attempt upsert on primary key `id`
     let { data, error } = await client
       .from('coordinators')
       .upsert(record, { onConflict: 'id' })
-      .select();
+      .select(SAFE_COLUMNS);
 
     // If upsert fails, try direct insert
     if (error) {
       const insertResult = await client
         .from('coordinators')
         .insert(record)
-        .select();
+        .select(SAFE_COLUMNS);
       if (!insertResult.error) {
         data = insertResult.data;
         error = null;
@@ -221,7 +224,8 @@ export async function PUT(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ success: true, updated: updatePayload });
+    const { password: _omitPassword, ...safeUpdated } = updatePayload;
+    return NextResponse.json({ success: true, updated: safeUpdated });
   } catch (err: any) {
     console.error('API /api/coordinators PUT error:', err);
     return NextResponse.json(

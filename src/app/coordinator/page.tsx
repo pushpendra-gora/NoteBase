@@ -14,7 +14,8 @@ import {
   LogIn, 
   ShieldCheck, 
   ArrowLeft,
-  AlertCircle
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 import { 
   FIRST_YEAR_GROUPS, 
@@ -38,6 +39,7 @@ export default function CoordinatorLoginPage() {
 
   // Submission feedback
   const [errorMsg, setErrorMsg] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginSuccess, setLoginSuccess] = useState(false);
 
   const yearRef = useRef<HTMLDivElement>(null);
@@ -91,6 +93,7 @@ export default function CoordinatorLoginPage() {
   // Handle Login Submission (Authenticates against Admin-managed coordinators in Supabase / LocalStorage)
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoggingIn) return;
     setErrorMsg('');
 
     if (!selectedYear) {
@@ -105,6 +108,8 @@ export default function CoordinatorLoginPage() {
       setErrorMsg('Please enter Coordinator Password.');
       return;
     }
+
+    setIsLoggingIn(true);
 
     // Authenticate securely via server-side /api/coordinator/auth (No passwords exposed to browser)
     try {
@@ -143,20 +148,24 @@ export default function CoordinatorLoginPage() {
       }
 
       setErrorMsg(data.error || 'Authentication failed.');
+      setIsLoggingIn(false);
       return;
     } catch {
       setErrorMsg('Unable to reach authentication server. Please check your internet connection and try again.');
+      setIsLoggingIn(false);
       return;
     }
   };
 
   return (
-    <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f3effb] relative flex flex-col items-center justify-center pt-[max(env(safe-area-inset-top),1.5rem)] pb-[max(env(safe-area-inset-bottom),1.5rem)] px-4 sm:p-6 overflow-y-auto overflow-x-hidden selection:bg-purple-200">
+    <div className="h-[100dvh] max-h-[100dvh] w-full max-w-[100vw] bg-[#f3effb] relative flex flex-col items-center justify-center pt-[max(env(safe-area-inset-top),1.5rem)] pb-[max(env(safe-area-inset-bottom),1.5rem)] px-4 sm:p-6 overflow-y-auto overflow-x-hidden overscroll-none overscroll-x-none touch-pan-y select-none selection:bg-purple-200">
       
-      {/* Background Soft Pastel Blobs matching the theme */}
-      <div className="absolute top-[-80px] left-[-80px] w-96 h-96 bg-[#e8dcfa]/60 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute bottom-[-100px] right-[-100px] w-[450px] h-[450px] bg-[#dfd4f6]/50 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute top-1/2 left-[-150px] w-80 h-80 bg-[#ede4fc]/40 rounded-full blur-3xl pointer-events-none" />
+      {/* Background Soft Pastel Blobs contained strictly inside viewport */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-[-80px] left-[-80px] w-96 h-96 bg-[#e8dcfa]/60 rounded-full blur-3xl" />
+        <div className="absolute bottom-[-100px] right-[-100px] w-[450px] h-[450px] bg-[#dfd4f6]/50 rounded-full blur-3xl" />
+        <div className="absolute top-1/2 left-[-150px] w-80 h-80 bg-[#ede4fc]/40 rounded-full blur-3xl" />
+      </div>
 
       {/* Main Container */}
       <div className="w-full max-w-xl mx-auto flex flex-col items-center relative z-10 py-8">
@@ -351,10 +360,24 @@ export default function CoordinatorLoginPage() {
               <div className="pt-2">
                 <button
                   type="submit"
-                  className="w-full h-14 sm:h-16 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl font-bold text-base sm:text-lg flex items-center justify-center space-x-2.5 shadow-md hover:shadow-xl hover:-translate-y-0.5 transition-all duration-200 cursor-pointer"
+                  disabled={isLoggingIn}
+                  className={`relative overflow-hidden w-full h-14 sm:h-16 rounded-2xl font-bold text-base sm:text-lg flex items-center justify-center space-x-2.5 transition-all duration-200 ${
+                    isLoggingIn
+                      ? 'bg-gradient-to-r from-indigo-600 via-indigo-700 to-slate-900 text-white shadow-lg ring-2 ring-indigo-300/70 scale-[0.99] cursor-wait'
+                      : 'bg-slate-900 hover:bg-slate-800 active:scale-[0.98] text-white shadow-md hover:shadow-xl hover:-translate-y-0.5 cursor-pointer'
+                  }`}
                 >
-                  <LogIn className="w-5 h-5 text-indigo-400" />
-                  <span>Login</span>
+                  {isLoggingIn ? (
+                    <>
+                      <Loader2 className="w-5 h-5 text-indigo-200 animate-spin shrink-0" />
+                      <span className="animate-pulse">Logging in...</span>
+                    </>
+                  ) : (
+                    <>
+                      <LogIn className="w-5 h-5 text-indigo-400" />
+                      <span>Login</span>
+                    </>
+                  )}
                 </button>
               </div>
 

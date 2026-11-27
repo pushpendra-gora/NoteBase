@@ -234,12 +234,14 @@ export default function NoteBaseHome() {
   }, [selectedBranch]);
 
   return (
-    <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f3effb] relative flex flex-col items-center justify-center overflow-y-auto overscroll-y-none pt-[max(env(safe-area-inset-top),2rem)] pb-[max(env(safe-area-inset-bottom),1.5rem)] px-3.5 sm:p-6 select-none selection:bg-purple-200">
+    <div className="h-[100dvh] max-h-[100dvh] w-full max-w-[100vw] bg-[#f3effb] relative flex flex-col items-center justify-center overflow-x-hidden overflow-y-auto overscroll-none overscroll-x-none overscroll-y-none touch-pan-y pt-[max(env(safe-area-inset-top),2rem)] pb-[max(env(safe-area-inset-bottom),1.5rem)] px-3.5 sm:p-6 select-none selection:bg-purple-200">
       
-      {/* Background Soft Pastel Blobs matching the reference image */}
-      <div className="absolute top-[-80px] left-[-80px] w-96 h-96 bg-[#e8dcfa]/60 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute bottom-[-100px] right-[-100px] w-[450px] h-[450px] bg-[#dfd4f6]/50 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute top-1/2 left-[-150px] w-80 h-80 bg-[#ede4fc]/40 rounded-full blur-3xl pointer-events-none" />
+      {/* Background Soft Pastel Blobs contained strictly inside viewport so horizontal scrolling never appears */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-[-80px] left-[-80px] w-96 h-96 bg-[#e8dcfa]/60 rounded-full blur-3xl" />
+        <div className="absolute bottom-[-100px] right-[-100px] w-[450px] h-[450px] bg-[#dfd4f6]/50 rounded-full blur-3xl" />
+        <div className="absolute top-1/2 left-[-150px] w-80 h-80 bg-[#ede4fc]/40 rounded-full blur-3xl" />
+      </div>
 
       {/* Main Container */}
       <div className="w-full max-w-xl mx-auto flex flex-col items-center relative z-10 py-4 sm:py-8">

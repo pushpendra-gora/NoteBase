@@ -13,6 +13,62 @@ export interface SessionPayload {
   exp: number;
 }
 
+// In-memory login attempt tracking per IP/action (mitigates brute-force & SQLi fuzzing)
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+export function getClientIp(req: NextRequest): string {
+  const forwarded = req.headers.get('x-forwarded-for');
+  if (forwarded) {
+    const first = forwarded.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  return req.headers.get('x-real-ip')?.trim() || 'unknown';
+}
+
+export function checkLoginRateLimit(
+  key: string,
+  maxAttempts = 12,
+  windowMs = 5 * 60 * 1000
+): { allowed: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  const entry = loginAttempts.get(key);
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, retryAfterSec: 0 };
+  }
+  if (entry.count >= maxAttempts) {
+    return {
+      allowed: false,
+      retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)),
+    };
+  }
+  entry.count += 1;
+  return { allowed: true, retryAfterSec: 0 };
+}
+
+export function resetLoginRateLimit(key: string): void {
+  loginAttempts.delete(key);
+}
+
+export function isSafeCredentialInput(value: unknown, maxLen = 128): value is string {
+  if (typeof value !== 'string') return false;
+  if (value.includes('\0')) return false;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= maxLen;
+}
+
+export function timingSafeEqualString(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const aBuf = Buffer.from(a, 'utf8');
+  const bBuf = Buffer.from(b, 'utf8');
+  if (aBuf.length !== bBuf.length) {
+    // Compare dummy equal-length buffer so timing stays uniform
+    crypto.timingSafeEqual(aBuf, aBuf);
+    return false;
+  }
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
 function getSigningSecret(): string {
   const explicit = process.env.ADMIN_SESSION_SECRET || process.env.SESSION_SECRET;
   if (explicit && explicit.trim().length >= 16) {
@@ -20,8 +76,9 @@ function getSigningSecret(): string {
   }
   const seed = [
     process.env.SUPABASE_SERVICE_ROLE_KEY || '',
-    process.env.NEXT_PUBLIC_SUPABASE_URL || '',
     process.env.ADMIN_DEFAULT_PASSWORD || 'notebase-default-seed',
+    process.env.GOOGLE_DRIVE_WEBHOOK_URL || process.env.GDRIVE_WEBHOOK_URL || '',
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '',
   ].join('|');
   return crypto.createHash('sha256').update(seed).digest('hex');
 }
@@ -33,8 +90,11 @@ export function hashPassword(plain: string): string {
 }
 
 export function verifyPassword(plain: string, stored: string): boolean {
-  const cleanPlain = (plain || '').trim();
-  const cleanStored = (stored || '').trim();
+  if (typeof plain !== 'string' || typeof stored !== 'string') return false;
+  if (plain.includes('\0') || stored.includes('\0')) return false;
+
+  const cleanPlain = plain.trim();
+  const cleanStored = stored.trim();
   if (!cleanPlain || !cleanStored) return false;
 
   if (cleanStored.startsWith('scrypt$')) {
@@ -52,10 +112,7 @@ export function verifyPassword(plain: string, stored: string): boolean {
   }
 
   // Legacy plaintext compatibility with constant-time comparison
-  const a = Buffer.from(cleanPlain, 'utf8');
-  const b = Buffer.from(cleanStored, 'utf8');
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
+  return timingSafeEqualString(cleanPlain, cleanStored);
 }
 
 export function createSignedSessionToken(

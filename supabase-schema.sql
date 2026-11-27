@@ -159,6 +159,28 @@ values ('admin', 'admin123')
 on conflict (id) do nothing;
 
 
+-- 5B. COORDINATOR ISSUES TABLE (Coordinator-submitted issues managed & deleted by Admin)
+create table if not exists public.coordinator_issues (
+  id text primary key,
+  coordinator_id text,
+  coordinator_name text not null,
+  year text not null,
+  branch text not null,
+  subject text not null,
+  description text not null,
+  status text not null default 'Open',
+  admin_reply text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.coordinator_issues add column if not exists coordinator_id text;
+alter table public.coordinator_issues add column if not exists admin_reply text;
+alter table public.coordinator_issues add column if not exists updated_at timestamp with time zone default timezone('utc'::text, now()) not null;
+
+create index if not exists idx_coordinator_issues_lookup on public.coordinator_issues(year, branch, status);
+
+
 -- =====================================================================
 -- 6. PERMISSIONS & ROW LEVEL SECURITY (RLS) POLICIES
 -- Clean, idempotent policies using FOR ALL to ensure SELECT, INSERT,
@@ -173,6 +195,7 @@ alter table public.subjects enable row level security;
 alter table public.lectures enable row level security;
 alter table public.coordinators enable row level security;
 alter table public.admin_credentials enable row level security;
+alter table public.coordinator_issues enable row level security;
 
 -- Notes Policies (clean drop & recreate)
 drop policy if exists "Allow all for notes" on public.notes;
@@ -230,8 +253,26 @@ drop policy if exists "Allow update for admin_credentials" on public.admin_crede
 drop policy if exists "Allow delete for admin_credentials" on public.admin_credentials;
 create policy "Allow all for admin_credentials" on public.admin_credentials for all using (true) with check (true);
 
+-- Coordinator Issues Policies
+drop policy if exists "Allow all for coordinator_issues" on public.coordinator_issues;
+create policy "Allow all for coordinator_issues" on public.coordinator_issues for all using (true) with check (true);
+
 -- Grant public API permissions to Supabase roles
 grant usage on schema public to anon, authenticated, service_role;
 grant all on all tables in schema public to anon, authenticated, service_role;
 grant all on all sequences in schema public to anon, authenticated, service_role;
 grant all on all routines in schema public to anon, authenticated, service_role;
+
+-- =====================================================================
+-- 7. OPTIONAL STRICT PRODUCTION RLS LOCKDOWN
+-- IMPORTANT: Run the commented statements below ONLY AFTER adding
+-- SUPABASE_SERVICE_ROLE_KEY and ADMIN_SESSION_SECRET in Vercel Env Vars!
+-- Once active, browser `anon` keys can NEVER read or write credentials,
+-- and only Next.js server APIs (with service_role) can manage staff tables.
+-- =====================================================================
+-- drop policy if exists "Allow all for admin_credentials" on public.admin_credentials;
+-- create policy "Deny anon for admin_credentials" on public.admin_credentials for all to anon, authenticated using (false) with check (false);
+-- drop policy if exists "Allow all for coordinators" on public.coordinators;
+-- create policy "Deny anon for coordinators" on public.coordinators for all to anon, authenticated using (false) with check (false);
+-- drop policy if exists "Allow all for coordinator_issues" on public.coordinator_issues;
+-- create policy "Deny anon for coordinator_issues" on public.coordinator_issues for all to anon, authenticated using (false) with check (false);

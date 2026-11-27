@@ -1,5 +1,16 @@
-import { getSupabaseClient, isSupabaseConfigured } from './supabase';
+import { getSupabaseClient, getSupabaseCredentials, isSupabaseConfigured } from './supabase';
 import { NoteDocument, SubjectMeta, YearOption, BranchOption, SemesterOption } from '../types';
+
+function getClientApiHeaders(includeJson = false): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (includeJson) headers['Content-Type'] = 'application/json';
+  const creds = getSupabaseCredentials();
+  if (creds.url && creds.key) {
+    headers['x-supabase-url'] = creds.url;
+    headers['x-supabase-key'] = creds.key;
+  }
+  return headers;
+}
 
 // Supabase storage bucket is disabled; all PDFs are stored exclusively in Google Drive.
 // Supabase is used strictly for PostgreSQL database metadata (tables: documents, coordinators, lectures, subjects).
@@ -222,17 +233,40 @@ export async function deleteDocumentFromSupabase(
 }
 
 /**
- * Fetches all custom subjects from Supabase `subjects` table.
+ * Fetches all custom subjects via server /api/subjects route.
  */
 export async function fetchSubjectsFromSupabase(
   year: YearOption,
   branch: BranchOption,
   semester: SemesterOption
 ): Promise<SubjectMeta[]> {
-  const client = getSupabaseClient();
-  if (!client) return [];
-
   try {
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams({ year, branch, semester });
+      const res = await fetch(`/api/subjects?${q.toString()}`, {
+        cache: 'no-store',
+        headers: getClientApiHeaders(),
+      });
+      if (!res.ok) return [];
+      const json = await res.json();
+      if (!json?.success || !Array.isArray(json.subjects)) return [];
+      return json.subjects.map((row: any) => ({
+        title: row.title,
+        code: row.code,
+        unitSnippets: row.unit_snippets || [
+          `${row.title} Unit 1 fundamental concepts.`,
+          `${row.title} Unit 2 problem solving.`,
+          `${row.title} Unit 3 practical implementations.`,
+        ],
+        pyqSnippets: row.pyq_snippets || [
+          `Explain the core mechanism of ${row.title}.`,
+          `Solve standard university numerical problem for ${row.title}.`,
+        ],
+      }));
+    }
+
+    const client = getSupabaseClient();
+    if (!client) return [];
     const { data, error } = await client
       .from('subjects')
       .select('*')
@@ -240,21 +274,12 @@ export async function fetchSubjectsFromSupabase(
       .eq('branch', branch)
       .eq('semester', semester)
       .order('created_at', { ascending: true });
-
     if (error) return [];
-
     return ((data || []) as any[]).map((row) => ({
       title: row.title,
       code: row.code,
-      unitSnippets: row.unit_snippets || [
-        `${row.title} Unit 1 fundamental concepts.`,
-        `${row.title} Unit 2 problem solving.`,
-        `${row.title} Unit 3 practical implementations.`
-      ],
-      pyqSnippets: row.pyq_snippets || [
-        `Explain the core mechanism of ${row.title}.`,
-        `Solve standard university numerical problem for ${row.title}.`
-      ]
+      unitSnippets: row.unit_snippets || [],
+      pyqSnippets: row.pyq_snippets || [],
     }));
   } catch {
     return [];
@@ -262,20 +287,38 @@ export async function fetchSubjectsFromSupabase(
 }
 
 /**
- * Fetches all custom subjects from Supabase across all years and branches.
+ * Fetches all custom subjects via server /api/subjects route across all years and branches.
  */
 export async function fetchAllSubjectsFromSupabase(): Promise<{ year: YearOption; branch: BranchOption; semester: SemesterOption; subject: SubjectMeta }[]> {
-  const client = getSupabaseClient();
-  if (!client) return [];
-
   try {
+    if (typeof window !== 'undefined') {
+      const res = await fetch('/api/subjects', {
+        cache: 'no-store',
+        headers: getClientApiHeaders(),
+      });
+      if (!res.ok) return [];
+      const json = await res.json();
+      if (!json?.success || !Array.isArray(json.subjects)) return [];
+      return json.subjects.map((row: any) => ({
+        year: row.year as YearOption,
+        branch: row.branch as BranchOption,
+        semester: row.semester as SemesterOption,
+        subject: {
+          title: row.title,
+          code: row.code,
+          unitSnippets: row.unit_snippets || [],
+          pyqSnippets: row.pyq_snippets || [],
+        },
+      }));
+    }
+
+    const client = getSupabaseClient();
+    if (!client) return [];
     const { data, error } = await client
       .from('subjects')
       .select('*')
       .order('created_at', { ascending: true });
-
     if (error || !data) return [];
-
     return data.map((row) => ({
       year: row.year as YearOption,
       branch: row.branch as BranchOption,
@@ -284,8 +327,8 @@ export async function fetchAllSubjectsFromSupabase(): Promise<{ year: YearOption
         title: row.title,
         code: row.code,
         unitSnippets: row.unit_snippets || [],
-        pyqSnippets: row.pyq_snippets || []
-      }
+        pyqSnippets: row.pyq_snippets || [],
+      },
     }));
   } catch {
     return [];
@@ -293,7 +336,7 @@ export async function fetchAllSubjectsFromSupabase(): Promise<{ year: YearOption
 }
 
 /**
- * Inserts a new subject into Supabase `subjects` table.
+ * Inserts a new subject via authenticated server /api/subjects route.
  */
 export async function insertSubjectToSupabase(
   year: YearOption,
@@ -301,28 +344,29 @@ export async function insertSubjectToSupabase(
   semester: SemesterOption,
   subj: SubjectMeta
 ): Promise<boolean> {
-  const client = getSupabaseClient();
-  if (!client) return false;
-
   try {
-    const { error } = await client.from('subjects').insert([
-      {
-        title: subj.title,
-        code: subj.code,
+    const res = await fetch('/api/subjects', {
+      method: 'POST',
+      headers: getClientApiHeaders(true),
+      body: JSON.stringify({
         year,
         branch,
         semester,
-        created_at: new Date().toISOString()
-      }
-    ]);
-    return !error;
+        title: subj.title,
+        code: subj.code,
+        unitSnippets: subj.unitSnippets,
+        pyqSnippets: subj.pyqSnippets,
+      }),
+    });
+    const data = await res.json();
+    return Boolean(res.ok && data?.success);
   } catch {
     return false;
   }
 }
 
 /**
- * Updates a subject in Supabase `subjects` table.
+ * Updates a subject via authenticated server /api/subjects route.
  */
 export async function updateSubjectInSupabase(
   year: YearOption,
@@ -332,62 +376,22 @@ export async function updateSubjectInSupabase(
   newTitle: string,
   newCode: string
 ): Promise<boolean> {
-  const client = getSupabaseClient();
-  if (!client) return false;
-
   try {
-    const { error } = await client
-      .from('subjects')
-      .update({
-        title: newTitle,
-        code: newCode
-      })
-      .eq('year', year)
-      .eq('branch', branch)
-      .eq('semester', semester)
-      .eq('title', oldTitle);
-
-    if (error) {
-      console.error('Error updating subject in Supabase:', error.message);
-      return false;
-    }
-
-    // Keep existing notes, pyqs, and lectures synced if subject was renamed
-    if (oldTitle !== newTitle) {
-      await Promise.all([
-        client
-          .from('notes')
-          .update({ subject: newTitle })
-          .eq('year', year)
-          .eq('branch', branch)
-          .eq('semester', semester)
-          .eq('subject', oldTitle),
-        client
-          .from('pyqs')
-          .update({ subject: newTitle })
-          .eq('year', year)
-          .eq('branch', branch)
-          .eq('semester', semester)
-          .eq('subject', oldTitle),
-        client
-          .from('lectures')
-          .update({ subject: newTitle })
-          .eq('year', year)
-          .eq('branch', branch)
-          .eq('semester', semester)
-          .eq('subject', oldTitle)
-      ]);
-    }
-
-    return true;
+    const res = await fetch('/api/subjects', {
+      method: 'PATCH',
+      headers: getClientApiHeaders(true),
+      body: JSON.stringify({ year, branch, semester, oldTitle, newTitle, newCode }),
+    });
+    const data = await res.json();
+    return Boolean(res.ok && data?.success);
   } catch (err) {
-    console.error('Failed to update subject in Supabase:', err);
+    console.error('Failed to update subject:', err);
     return false;
   }
 }
 
 /**
- * Deletes a custom subject from Supabase `subjects` table.
+ * Deletes a custom subject via authenticated server /api/subjects route.
  */
 export async function deleteSubjectFromSupabase(
   year: YearOption,
@@ -395,46 +399,47 @@ export async function deleteSubjectFromSupabase(
   semester: SemesterOption,
   title: string
 ): Promise<boolean> {
-  const client = getSupabaseClient();
-  if (!client) return false;
-
   try {
-    const { error } = await client
-      .from('subjects')
-      .delete()
-      .eq('year', year)
-      .eq('branch', branch)
-      .eq('semester', semester)
-      .eq('title', title);
-
-    return !error;
+    const q = new URLSearchParams({ year, branch, semester, title });
+    const res = await fetch(`/api/subjects?${q.toString()}`, {
+      method: 'DELETE',
+      headers: getClientApiHeaders(),
+    });
+    const data = await res.json();
+    return Boolean(res.ok && data?.success);
   } catch {
     return false;
   }
 }
 
 /**
- * Fetches lectures from Supabase `lectures` table.
- * Supports filtering by Year, Branch, or fetching all lectures.
+ * Fetches lectures via server /api/lectures route.
  */
 export async function fetchLecturesFromSupabase(
   year?: YearOption | string,
   branch?: BranchOption | string
 ): Promise<LectureRecord[]> {
-  const client = getSupabaseClient();
-  if (!client) return [];
-
   try {
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams();
+      if (year && year !== 'All') q.set('year', year);
+      if (branch && branch !== 'All') q.set('branch', branch);
+      const res = await fetch(`/api/lectures${q.toString() ? `?${q.toString()}` : ''}`, {
+        cache: 'no-store',
+        headers: getClientApiHeaders(),
+      });
+      if (!res.ok) return [];
+      const json = await res.json();
+      if (!json?.success || !Array.isArray(json.lectures)) return [];
+      return json.lectures as LectureRecord[];
+    }
+
+    const client = getSupabaseClient();
+    if (!client) return [];
     let query = client.from('lectures').select('*');
-    if (year && year !== 'All') {
-      query = query.eq('year', year);
-    }
-    if (branch && branch !== 'All') {
-      query = query.eq('branch', branch);
-    }
-
+    if (year && year !== 'All') query = query.eq('year', year);
+    if (branch && branch !== 'All') query = query.eq('branch', branch);
     const { data, error } = await query.order('date', { ascending: false });
-
     if (error || !data) return [];
     return data as LectureRecord[];
   } catch {
@@ -443,73 +448,65 @@ export async function fetchLecturesFromSupabase(
 }
 
 /**
- * Fetches all lectures from Supabase `lectures` table across all years and branches.
+ * Fetches all lectures across all years and branches.
  */
 export async function fetchAllLecturesFromSupabase(): Promise<LectureRecord[]> {
   return fetchLecturesFromSupabase();
 }
 
 /**
- * Inserts or updates a lecture record in Supabase `lectures` table.
+ * Inserts or updates a lecture record via authenticated server /api/lectures route.
  */
 export async function insertLectureToSupabase(
   lec: { id: string; title: string; subject: string; semester: string; link?: string; date: string },
   year: YearOption | string,
   branch: BranchOption | string
 ): Promise<boolean> {
-  const client = getSupabaseClient();
-  if (!client) return false;
-
   try {
-    const { error } = await client.from('lectures').upsert({
-      id: lec.id,
-      title: lec.title,
-      subject: lec.subject,
-      semester: lec.semester,
-      link: lec.link || null,
-      year,
-      branch,
-      date: lec.date,
-      created_at: new Date().toISOString()
+    const res = await fetch('/api/lectures', {
+      method: 'POST',
+      headers: getClientApiHeaders(true),
+      body: JSON.stringify({ ...lec, year, branch }),
     });
-    return !error;
+    const data = await res.json();
+    return Boolean(res.ok && data?.success);
   } catch {
     return false;
   }
 }
 
 /**
- * Deletes a lecture from Supabase `lectures` table.
+ * Deletes a lecture via authenticated server /api/lectures route.
  */
 export async function deleteLectureFromSupabase(id: string): Promise<boolean> {
-  const client = getSupabaseClient();
-  if (!client) return false;
-
   try {
-    const { error } = await client.from('lectures').delete().eq('id', id);
-    return !error;
+    const res = await fetch(`/api/lectures?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: getClientApiHeaders(),
+    });
+    const data = await res.json();
+    return Boolean(res.ok && data?.success);
   } catch {
     return false;
   }
 }
 
 /**
- * Updates a lecture title and link in Supabase `lectures` table.
+ * Updates a lecture title and link via authenticated server /api/lectures route.
  */
 export async function updateLectureInSupabase(
   id: string,
   title: string,
   link?: string
 ): Promise<boolean> {
-  const client = getSupabaseClient();
-  if (!client) return false;
-
   try {
-    const { error } = await client
-      .from('lectures')
-      .update({ title, link })
-      .eq('id', id);
-    return !error;
+    const res = await fetch('/api/lectures', {
+      method: 'PATCH',
+      headers: getClientApiHeaders(true),
+      body: JSON.stringify({ id, title, link }),
+    });
+    const data = await res.json();
+    return Boolean(res.ok && data?.success);
   } catch {
     return false;
   }
@@ -535,7 +532,7 @@ export async function fetchCoordinatorsFromSupabase(): Promise<CoordinatorRecord
   try {
     const { data, error } = await client
       .from('coordinators')
-      .select('*')
+      .select('id, name, branch, year, initials, status')
       .order('name', { ascending: true });
 
     if (error || !data) return [];
@@ -643,85 +640,4 @@ export async function updateCoordinatorPasswordInSupabase(
 export interface AdminCredentials {
   id: string;
   password: string;
-}
-
-/**
- * Fetches the Admin ID and Password from Supabase.
- * Checks `admin_credentials` table (fallback to `admins`).
- * If table exists but is empty, seeds the default admin ('admin' / 'admin123').
- */
-export async function fetchAdminCredentialsFromSupabase(): Promise<AdminCredentials | null> {
-  const client = getSupabaseClient();
-  if (!client) return null;
-
-  try {
-    // 1. Try querying admin_credentials table
-    let { data, error } = await client
-      .from('admin_credentials')
-      .select('id, password')
-      .limit(1);
-
-    // Fallback to admins table if admin_credentials doesn't exist
-    if (error && (error.message.includes('relation') || error.code === '42P01')) {
-      const fallback = await client.from('admins').select('id, password').limit(1);
-      if (!fallback.error && fallback.data) {
-        data = fallback.data;
-        error = null;
-      }
-    }
-
-    if (error) {
-      console.warn('Supabase fetch admin credentials warning:', error.message);
-      return null;
-    }
-
-    if (data && data.length > 0) {
-      return {
-        id: data[0].id,
-        password: data[0].password
-      };
-    }
-
-    // If table exists but has no rows, seed the default admin
-    const fallbackId = process.env.ADMIN_DEFAULT_ID || 'admin';
-    const fallbackPassword = process.env.ADMIN_DEFAULT_PASSWORD || 'admin123';
-    const defaultAdmin = { id: fallbackId, password: fallbackPassword, updated_at: new Date().toISOString() };
-    await client.from('admin_credentials').upsert(defaultAdmin);
-    return { id: fallbackId, password: fallbackPassword };
-  } catch (err) {
-    console.error('Failed to fetch admin credentials from Supabase:', err);
-    return null;
-  }
-}
-
-/**
- * Updates the Admin password in Supabase PostgreSQL table.
- */
-export async function updateAdminPasswordInSupabase(newPassword: string, adminId: string = 'admin'): Promise<boolean> {
-  const client = getSupabaseClient();
-  if (!client) return false;
-
-  try {
-    // 1. Try updating admin_credentials
-    const { error } = await client.from('admin_credentials').upsert({
-      id: adminId,
-      password: newPassword,
-      updated_at: new Date().toISOString()
-    });
-
-    if (error) {
-      // 2. Try fallback to admins table
-      const fallback = await client.from('admins').upsert({
-        id: adminId,
-        password: newPassword,
-        updated_at: new Date().toISOString()
-      });
-      return !fallback.error;
-    }
-
-    return true;
-  } catch (err) {
-    console.error('Failed to update admin password in Supabase:', err);
-    return false;
-  }
 }

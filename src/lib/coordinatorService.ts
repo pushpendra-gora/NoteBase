@@ -31,7 +31,9 @@ export function getStoredCoordinators(): CoordinatorRecord[] {
 export function saveStoredCoordinators(list: CoordinatorRecord[]) {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(list));
+    // Never persist coordinator passwords into browser localStorage
+    const sanitized = list.map(({ password: _ignored, ...safe }) => safe);
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(sanitized));
   } catch (err) {
     console.error('Failed to save coordinators to localStorage', err);
   }

@@ -75,3 +75,17 @@ export interface NoteDocument {
 }
 
 export type NoteItem = NoteDocument;
+
+export interface CoordinatorIssue {
+  id: string;
+  coordinator_id?: string | null;
+  coordinator_name: string;
+  year: string;
+  branch: string;
+  subject: string;
+  description: string;
+  status: 'Open' | 'Resolved';
+  admin_reply?: string | null;
+  created_at: string;
+  updated_at?: string;
+}
