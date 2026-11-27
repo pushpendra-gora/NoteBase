@@ -79,19 +79,14 @@ import {
 } from '../../lib/supabaseService';
 import { 
   isSupabaseConfigured, 
-  getSupabaseCredentials, 
-  saveSupabaseCredentials, 
-  clearSupabaseCredentials
+  getSupabaseCredentials
 } from '../../lib/supabase';
 import { getStoredCoordinators, saveStoredCoordinators, isBranchMatch } from '../../lib/coordinatorService';
 import {
-  getGoogleDriveConfig,
-  saveGoogleDriveConfig,
   isGoogleDriveConfigured,
   uploadPdfToGoogleDrive,
   uploadUnifiedPdf,
   GOOGLE_APPS_SCRIPT_TEMPLATE,
-  GoogleDriveConfig,
   lastGoogleDriveError,
   deleteDocumentEverywhere
 } from '../../lib/googleDriveService';
@@ -525,12 +520,25 @@ export default function AdminPage() {
         if (active) setAuthChecked(true);
       });
 
-    // Sync Google Drive server configuration status
+    // Clear any legacy secret keys/URLs from browser localStorage so nothing sensitive is inspectable
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem('notehub_supabase_url');
+        localStorage.removeItem('notehub_supabase_anon_key');
+        localStorage.removeItem('notehub_gdrive_webhook_url');
+        localStorage.removeItem('notehub_gdrive_folder_id');
+      } catch {}
+    }
+
+    // Sync Google Drive server configuration status (boolean only)
     fetch('/api/upload-drive')
       .then((res) => res.json())
       .then((data) => {
+        if (!active) return;
+        const configured = Boolean(data?.configured);
+        setDriveServerConfigured(configured);
         if (typeof window !== 'undefined' && data && data.configured !== undefined) {
-          localStorage.setItem('notebase_gdrive_server_configured', data.configured ? 'true' : 'false');
+          localStorage.setItem('notebase_gdrive_server_configured', configured ? 'true' : 'false');
         }
       })
       .catch(() => {});
@@ -612,18 +620,14 @@ export default function AdminPage() {
       })
       .catch(() => {});
 
-    fetch('/api/status', { headers })
+    fetch('/api/status', { cache: 'no-store' })
       .then((res) => res.json())
       .then((data) => {
         if (!active) return;
-        if (data?.googleDrive?.webhookUrl && !getGoogleDriveConfig().webhookUrl) {
-          const syncedCfg = {
-            webhookUrl: data.googleDrive.webhookUrl,
-            folderId: data.googleDrive.folderId || '',
-            enabled: true,
-          };
-          setGdriveConfig(syncedCfg);
-          saveGoogleDriveConfig(syncedCfg);
+        const configured = Boolean(data?.googleDrive?.configured);
+        setDriveServerConfigured(configured);
+        if (typeof window !== 'undefined' && data?.googleDrive?.configured !== undefined) {
+          localStorage.setItem('notebase_gdrive_server_configured', configured ? 'true' : 'false');
         }
       })
       .catch(() => {});
@@ -651,11 +655,7 @@ export default function AdminPage() {
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const [toast, setToast] = useState<{ message: string; type?: 'success' | 'info' | 'error' } | null>(null);
 
-  // Supabase Database Cloud Configuration State
-  const [supabaseConfig, setSupabaseConfig] = useState(() => {
-    const creds = getSupabaseCredentials();
-    return { url: creds.url, key: creds.key };
-  });
+  // Server Env Health & Test States (zero credentials stored or shown in client)
   const [isSupabaseTesting, setIsSupabaseTesting] = useState(false);
   const [supabaseTestDetails, setSupabaseTestDetails] = useState<{
     connected: boolean;
@@ -702,92 +702,34 @@ export default function AdminPage() {
     }, 2800);
   };
 
-  // Google Drive Cloud Storage Settings State
-  const [gdriveConfig, setGdriveConfig] = useState<GoogleDriveConfig>({
-    webhookUrl: '',
-    folderId: '',
-    enabled: false
-  });
+  // Google Drive Server Env Status State (configured strictly via Vercel/server environment variables)
+  const [driveServerConfigured, setDriveServerConfigured] = useState(false);
   const [isGdriveTesting, setIsGdriveTesting] = useState(false);
   const [gdriveTestResult, setGdriveTestResult] = useState<{ success: boolean; message: string; fileUrl?: string } | null>(null);
   const [showScriptCode, setShowScriptCode] = useState(false);
   const [copiedScript, setCopiedScript] = useState(false);
 
-  // Load Google Drive Config strictly after authenticated Admin verification via server API
+  // Sync Google Drive status strictly from server (boolean only, never exposes secret URLs or IDs)
   useEffect(() => {
     if (!isLoggedIn || typeof window === 'undefined') return;
-    const cfg = getGoogleDriveConfig();
-    if (cfg.webhookUrl) {
-      setGdriveConfig(cfg);
-      return;
-    }
-
-    const creds = getSupabaseCredentials();
-    const headers: Record<string, string> = {};
-    if (creds.url && creds.key) {
-      headers['x-supabase-url'] = creds.url;
-      headers['x-supabase-key'] = creds.key;
-    }
-
-    fetch('/api/admin/config', { cache: 'no-store', headers })
+    fetch('/api/admin/config', { cache: 'no-store' })
       .then((res) => res.json())
       .then((data) => {
-        if (data?.success && data.webhookUrl) {
-          const cloudCfg = {
-            webhookUrl: data.webhookUrl,
-            folderId: data.folderId || '',
-            enabled: true,
-          };
-          setGdriveConfig(cloudCfg);
-          saveGoogleDriveConfig(cloudCfg);
+        if (data?.success !== undefined) {
+          const configured = Boolean(data.configured);
+          setDriveServerConfigured(configured);
+          localStorage.setItem('notebase_gdrive_server_configured', configured ? 'true' : 'false');
         }
       })
       .catch(() => {});
   }, [isLoggedIn]);
 
-  // Save Google Drive Config via authenticated server /api/admin/config
-  const handleSaveGoogleDriveConfig = async (e: React.FormEvent) => {
-    e.preventDefault();
-    saveGoogleDriveConfig(gdriveConfig);
-
-    try {
-      const creds = getSupabaseCredentials();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (creds.url && creds.key) {
-        headers['x-supabase-url'] = creds.url;
-        headers['x-supabase-key'] = creds.key;
-      }
-      const res = await fetch('/api/admin/config', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          webhookUrl: gdriveConfig.webhookUrl.trim(),
-          folderId: gdriveConfig.folderId.trim(),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data?.success) {
-        showToast(`⚠️ ${data?.error || 'Saved locally, but server sync failed.'}`, 'error');
-        return;
-      }
-    } catch (err) {
-      console.warn('Could not sync drive config to server:', err);
-    }
-
-    showToast('Google Drive configuration saved & synced to all coordinators!', 'success');
-  };
-
-  // Test Supabase Connection & Table Availability
+  // Test Supabase Connection & Table Availability (via Server Env Variables)
   const handleTestSupabaseConnection = async () => {
     setIsSupabaseTesting(true);
     setSupabaseTestDetails(null);
     try {
-      const headers: Record<string, string> = {};
-      if (supabaseConfig.url.trim() && supabaseConfig.key.trim()) {
-        headers['x-supabase-url'] = supabaseConfig.url.trim();
-        headers['x-supabase-key'] = supabaseConfig.key.trim();
-      }
-      const res = await fetch('/api/status', { headers });
+      const res = await fetch('/api/status', { cache: 'no-store' });
       const data = await res.json();
       setSupabaseTestDetails({
         connected: Boolean(data.connected),
@@ -799,28 +741,23 @@ export default function AdminPage() {
         connected: Boolean(data.connected),
         error: data.error || null
       });
+      if (data?.googleDrive?.configured !== undefined) {
+        const driveOk = Boolean(data.googleDrive.configured);
+        setDriveServerConfigured(driveOk);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('notebase_gdrive_server_configured', driveOk ? 'true' : 'false');
+        }
+      }
       if (data.connected) {
-        showToast('✅ Supabase database is connected & all tables verified!', 'success');
+        showToast('✅ Supabase database is connected via Server Env Variables!', 'success');
       } else {
         showToast(`⚠️ Supabase: ${data.error || 'Connection failed'}`, 'error');
       }
-    } catch (err: any) {
+    } catch {
       showToast('⚠️ Could not run Supabase connection check.', 'error');
     } finally {
       setIsSupabaseTesting(false);
     }
-  };
-
-  // Save Supabase Credentials
-  const handleSaveSupabaseConfig = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!supabaseConfig.url.trim() || !supabaseConfig.key.trim()) {
-      showToast('Please enter both Supabase URL and Anon Key.', 'error');
-      return;
-    }
-    saveSupabaseCredentials(supabaseConfig.url, supabaseConfig.key);
-    showToast('Supabase database credentials saved locally!', 'success');
-    handleTestSupabaseConnection();
   };
 
   // Copy SQL to create coordinators table
@@ -832,10 +769,10 @@ export default function AdminPage() {
     }
   };
 
-  // Test Google Drive Upload
+  // Test Google Drive Upload (using Server Environment Variable GOOGLE_DRIVE_WEBHOOK_URL)
   const handleTestGoogleDriveUpload = async () => {
-    if (!gdriveConfig.webhookUrl) {
-      showToast('Please enter your Google Apps Script Web App URL first.', 'error');
+    if (!driveServerConfigured && !isGoogleDriveConfigured()) {
+      showToast('Google Drive is not configured in Vercel/server environment variables.', 'error');
       return;
     }
     setIsGdriveTesting(true);
@@ -845,7 +782,7 @@ export default function AdminPage() {
       const testContent = '%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R >>\nendobj\nxref\n0 4\ntrailer\n<< /Root 1 0 R >>\n%%EOF';
       const testFile = new File([testContent], `test_drive_connection_${Date.now()}.pdf`, { type: 'application/pdf' });
       
-      const res = await uploadPdfToGoogleDrive(testFile, gdriveConfig.folderId);
+      const res = await uploadPdfToGoogleDrive(testFile);
       if (res.success && res.fileUrl) {
         setGdriveTestResult({
           success: true,
@@ -3500,8 +3437,8 @@ export default function AdminPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    setGdriveConfig(getGoogleDriveConfig());
-                    showToast('Statistics refreshed from Cloud Database!', 'info');
+                    syncAllMaterials();
+                    handleTestSupabaseConnection();
                   }}
                   className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-bold transition-all shadow-sm cursor-pointer"
                 >
@@ -3640,11 +3577,11 @@ export default function AdminPage() {
                         Google Drive PDF Storage Integration
                       </h3>
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                        isGoogleDriveConfigured()
+                        (driveServerConfigured || isGoogleDriveConfigured())
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                           : 'bg-amber-50 text-amber-700 border-amber-200'
                       }`}>
-                        {isGoogleDriveConfigured() ? '● Active' : '○ Setup Required'}
+                        {(driveServerConfigured || isGoogleDriveConfigured()) ? '● Active (Env Connected)' : '○ Env Setup Required'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 mt-0.5">
@@ -3723,91 +3660,36 @@ export default function AdminPage() {
                 </div>
               )}
 
-              {/* Google Drive Configuration Form */}
-              <form onSubmit={handleSaveGoogleDriveConfig} className="space-y-4">
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {/* Web App URL */}
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-800 flex items-center justify-between">
-                      <span>Google Apps Script Web App URL <span className="text-red-500">*</span></span>
-                      <span className="text-[10px] text-slate-400 font-normal">Exec URL</span>
-                    </label>
-                    <input
-                      type="url"
-                      required
-                      value={gdriveConfig.webhookUrl}
-                      onChange={(e) => setGdriveConfig({ ...gdriveConfig, webhookUrl: e.target.value })}
-                      placeholder="https://script.google.com/macros/s/AKfycbx.../exec"
-                      className="w-full h-11 px-3.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
-                    />
-                    <p className="text-[10px] text-slate-400">
-                      Paste the Web App deployment URL generated from Google Apps Script.
-                    </p>
-                  </div>
-
-                  {/* Target Folder ID (Optional) */}
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-800 flex items-center justify-between">
-                      <span>Google Drive Folder ID (Optional)</span>
-                      <span className="text-[10px] text-slate-400 font-normal">Leave blank for auto-folder</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={gdriveConfig.folderId}
-                      onChange={(e) => setGdriveConfig({ ...gdriveConfig, folderId: e.target.value })}
-                      placeholder="e.g. 1a2B3c4D5e6F... or leave blank"
-                      className="w-full h-11 px-3.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
-                    />
-                    <p className="text-[10px] text-slate-400">
-                      Defaults to auto-creating a dedicated folder named <strong>"College Notes App Uploads"</strong> in your Google Drive.
-                    </p>
-                  </div>
+              {/* Environment-only Status & Connection Test (No secret URLs or Folder IDs shown in UI/Inspect) */}
+              <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-t border-slate-100">
+                <div className="flex items-start sm:items-center space-x-2.5 text-xs text-slate-600">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5 sm:mt-0" />
+                  <span>
+                    Managed securely via Server Environment Variables (<code>GOOGLE_DRIVE_WEBHOOK_URL</code> &amp; optional <code>GOOGLE_DRIVE_FOLDER_ID</code>). Hidden from browser inspect.
+                  </span>
                 </div>
 
-                {/* Enable Toggle & Action Buttons */}
-                <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-t border-slate-100">
-                  <label className="flex items-center space-x-2.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={gdriveConfig.enabled}
-                      onChange={(e) => setGdriveConfig({ ...gdriveConfig, enabled: e.target.checked })}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 cursor-pointer"
-                    />
-                    <span className="text-xs font-bold text-slate-700">
-                      Enable Google Drive as primary PDF storage for all uploads
-                    </span>
-                  </label>
-
-                  <div className="flex items-center space-x-2">
-                    <button
-                      type="button"
-                      disabled={isGdriveTesting}
-                      onClick={handleTestGoogleDriveUpload}
-                      className="inline-flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      {isGdriveTesting ? (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-slate-500" />
-                          <span>Testing Upload...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Upload className="w-3.5 h-3.5 text-slate-500" />
-                          <span>Test Google Drive Connection</span>
-                        </>
-                      )}
-                    </button>
-
-                    <button
-                      type="submit"
-                      className="inline-flex items-center space-x-1.5 px-5 py-2.5 rounded-xl bg-[#3b49df] hover:bg-indigo-700 text-white text-xs font-bold shadow-md shadow-indigo-100 transition-colors cursor-pointer"
-                    >
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Save Drive Settings</span>
-                    </button>
-                  </div>
+                <div className="flex items-center space-x-2 shrink-0">
+                  <button
+                    type="button"
+                    disabled={isGdriveTesting}
+                    onClick={handleTestGoogleDriveUpload}
+                    className="inline-flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {isGdriveTesting ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-slate-500" />
+                        <span>Testing Upload...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Test Google Drive Connection</span>
+                      </>
+                    )}
+                  </button>
                 </div>
-              </form>
+              </div>
 
               {/* Test Connection Output Alert */}
               {gdriveTestResult && (
@@ -3875,9 +3757,10 @@ export default function AdminPage() {
 
                 <div className="space-y-2.5 text-xs">
                   <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">
-                    <span className="text-slate-500 font-medium">Supabase Host</span>
-                    <span className="text-slate-800 font-bold font-mono text-[11px] truncate max-w-[200px]">
-                      {getSupabaseCredentials().url || 'https://default.supabase.co'}
+                    <span className="text-slate-500 font-medium">Connection Mode</span>
+                    <span className="text-emerald-700 font-bold text-[11px] flex items-center space-x-1">
+                      <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                      <span>Server Env Variables (Hidden)</span>
                     </span>
                   </div>
                   <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">
@@ -3900,60 +3783,26 @@ export default function AdminPage() {
                   </div>
                 </div>
 
-                {/* Direct Credentials & Testing Actions */}
-                <div className="pt-2 border-t border-slate-100 space-y-3">
-                  <form onSubmit={handleSaveSupabaseConfig} className="space-y-2">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-600 mb-0.5">Supabase URL</label>
-                        <input
-                          type="text"
-                          value={supabaseConfig.url}
-                          onChange={(e) => setSupabaseConfig({ ...supabaseConfig, url: e.target.value })}
-                          placeholder="https://xyz.supabase.co"
-                          className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-mono text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-600 mb-0.5">Anon Key</label>
-                        <input
-                          type="password"
-                          value={supabaseConfig.key}
-                          onChange={(e) => setSupabaseConfig({ ...supabaseConfig, key: e.target.value })}
-                          placeholder="eyJhbGciOi..."
-                          className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-mono text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        />
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between pt-1">
-                      <button
-                        type="button"
-                        onClick={handleCopyCoordinatorsSql}
-                        className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center space-x-1 cursor-pointer"
-                        title="Copy SQL query to create coordinators table in Supabase"
-                      >
-                        <Copy className="w-3 h-3" />
-                        <span>Copy Coordinators SQL</span>
-                      </button>
-                      <div className="flex items-center space-x-2">
-                        <button
-                          type="button"
-                          onClick={handleTestSupabaseConnection}
-                          disabled={isSupabaseTesting}
-                          className="px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold transition-all cursor-pointer flex items-center space-x-1"
-                        >
-                          {isSupabaseTesting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                          <span>Test Check</span>
-                        </button>
-                        <button
-                          type="submit"
-                          className="px-3.5 py-1.5 rounded-lg bg-[#3b49df] hover:bg-indigo-700 text-white text-xs font-bold transition-all cursor-pointer"
-                        >
-                          Save Credentials
-                        </button>
-                      </div>
-                    </div>
-                  </form>
+                {/* Env-Only Status Actions (No URL or Key inputs exposed in UI) */}
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyCoordinatorsSql}
+                    className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center space-x-1 cursor-pointer"
+                    title="Copy SQL query to create coordinators table in Supabase"
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span>Copy Coordinators SQL</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleTestSupabaseConnection}
+                    disabled={isSupabaseTesting}
+                    className="px-3.5 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5"
+                  >
+                    {isSupabaseTesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                    <span>Test Connection</span>
+                  </button>
                 </div>
               </div>
 

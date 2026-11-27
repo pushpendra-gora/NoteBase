@@ -45,8 +45,12 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      webhookUrl: data?.gdrive_webhook || '',
-      folderId: data?.gdrive_folder_id || '',
+      configured: Boolean(
+        process.env.GOOGLE_DRIVE_WEBHOOK_URL ||
+          process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL ||
+          process.env.GDRIVE_WEBHOOK_URL ||
+          data?.gdrive_webhook
+      ),
     });
   } catch (err: any) {
     return NextResponse.json(

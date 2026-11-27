@@ -197,7 +197,11 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET() {
-  let isConfigured = Boolean(process.env.GOOGLE_DRIVE_WEBHOOK_URL);
+  let isConfigured = Boolean(
+    process.env.GOOGLE_DRIVE_WEBHOOK_URL ||
+      process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL ||
+      process.env.GDRIVE_WEBHOOK_URL
+  );
   if (!isConfigured) {
     try {
       const client = getSupabaseClient();

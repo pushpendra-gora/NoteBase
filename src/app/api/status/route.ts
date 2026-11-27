@@ -27,7 +27,6 @@ export async function GET(req: NextRequest) {
         : {}),
       googleDrive: {
         configured: Boolean(driveWebhookUrl),
-        ...(isStaff ? { webhookUrl: driveWebhookUrl || undefined, folderId: driveFolderId || undefined } : {}),
       },
     });
   }
@@ -46,7 +45,6 @@ export async function GET(req: NextRequest) {
         : {}),
       googleDrive: {
         configured: Boolean(driveWebhookUrl),
-        ...(isStaff ? { webhookUrl: driveWebhookUrl || undefined, folderId: driveFolderId || undefined } : {}),
       },
     });
   }
@@ -106,7 +104,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     success: !hasAnyTableError,
     connected: !hasAnyTableError,
-    ...(isStaff ? { supabaseUrl: creds.url, tables: tablesStatus } : {}),
+    ...(isStaff ? { tables: tablesStatus } : {}),
     ...(isStaff
       ? {
           error: hasAnyTableError
@@ -116,7 +114,6 @@ export async function GET(req: NextRequest) {
       : {}),
     googleDrive: {
       configured: Boolean(driveWebhookUrl),
-      ...(isStaff ? { webhookUrl: driveWebhookUrl || undefined, folderId: driveFolderId || undefined } : {}),
     },
   });
 }
