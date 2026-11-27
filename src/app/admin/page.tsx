@@ -194,137 +194,196 @@ export default function AdminPage() {
   } | null>(null);
   const [isDeletingConfirm, setIsDeletingConfirm] = useState(false);
 
-  // Real Materials List State (populated strictly after authenticated Admin verification)
+  // Real Materials List State & Lazy Cache Tracking (fetch ONLY the section Admin clicks!)
   const [materials, setMaterials] = useState<AdminMaterial[]>([]);
+  const [recentMaterials, setRecentMaterials] = useState<AdminMaterial[]>([]);
+  const [hasMoreRecent, setHasMoreRecent] = useState(false);
+  const [isLoadingRecent, setIsLoadingRecent] = useState(false);
+  const [isLoadingMoreRecent, setIsLoadingMoreRecent] = useState(false);
+  const [counterColumnMissing, setCounterColumnMissing] = useState(false);
+  const [isLoadingMaterials, setIsLoadingMaterials] = useState(false);
+  const [isLoadingCoordinators, setIsLoadingCoordinators] = useState(false);
+  const [isLoadingSummary, setIsLoadingSummary] = useState(false);
+  const [dashboardSummary, setDashboardSummary] = useState<{
+    notes: number;
+    pyqs: number;
+    lectures: number;
+    totalFiles: number;
+    coordinators: number;
+    openIssues: number;
+    years: Record<string, number>;
+  } | null>(null);
 
-  // Sync authoritative uploaded materials from Cloud/Supabase (never resurrect deleted localStorage records)
-  const syncAllMaterials = useCallback(async () => {
-    let cloudDocs: NoteDocument[] | null = null;
-    let cloudLecs: any[] | null = null;
+  const loadedResourcesRef = useRef<{
+    summary: boolean;
+    materials: boolean;
+    coordinators: boolean;
+    issues: boolean;
+    subjects: boolean;
+    drives: boolean;
+    status: boolean;
+  }>({
+    summary: false,
+    materials: false,
+    coordinators: false,
+    issues: false,
+    subjects: false,
+    drives: false,
+    status: false,
+  });
 
+  // 1. Lightweight Dashboard summary read from single `material_counts` DB column (0 full table scans!)
+  const syncDashboardSummary = useCallback(async (force = false, recompute = false) => {
+    if (!isLoggedIn) return;
+    if (!force && loadedResourcesRef.current.summary) return;
+    setIsLoadingSummary(true);
     try {
-      const creds = getSupabaseCredentials();
-      const headers: Record<string, string> = {};
-      if (creds.url && creds.key) {
-        headers['x-supabase-url'] = creds.url;
-        headers['x-supabase-key'] = creds.key;
-      }
-      const res = await fetch('/api/documents', { cache: 'no-store', headers });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.success && Array.isArray(data.documents)) {
-          cloudDocs = data.documents;
-        }
+      const res = await fetch(`/api/admin/summary${recompute ? '?recompute=1' : ''}`, { cache: 'no-store' });
+      const data = await res.json();
+      setCounterColumnMissing(Boolean(data?.counterColumnMissing));
+      if (res.ok && data?.success && data.counts) {
+        loadedResourcesRef.current.summary = true;
+        setDashboardSummary(data.counts);
+        setSupabaseHealth({
+          checked: true,
+          connected: Boolean(data.connected),
+          error: data.error || null,
+        });
+      } else if (data?.connected !== undefined) {
+        setSupabaseHealth({
+          checked: true,
+          connected: Boolean(data.connected),
+          error: data.error || null,
+        });
       }
     } catch {
-      // Fallback to direct Supabase query below
+      // Keep UI responsive on transient error
+    } finally {
+      setIsLoadingSummary(false);
     }
+  }, [isLoggedIn]);
 
-    if (cloudDocs === null && isSupabaseConfigured()) {
+  // 2. Sync authoritative uploaded materials ONLY when Admin clicks Materials / Manage views (or Refresh)
+  const syncAllMaterials = useCallback(async (force = false) => {
+    if (!isLoggedIn) return;
+    if (!force && loadedResourcesRef.current.materials) return;
+    setIsLoadingMaterials(true);
+    try {
+      let cloudDocs: NoteDocument[] | null = null;
+      let cloudLecs: any[] | null = null;
+
       try {
-        cloudDocs = await fetchAllDocumentsFromSupabase();
-      } catch (err) {
-        console.warn('Could not load documents from Supabase:', err);
+        const creds = getSupabaseCredentials();
+        const headers: Record<string, string> = {};
+        if (creds.url && creds.key) {
+          headers['x-supabase-url'] = creds.url;
+          headers['x-supabase-key'] = creds.key;
+        }
+        const res = await fetch('/api/documents', { cache: 'no-store', headers });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.success && Array.isArray(data.documents)) {
+            cloudDocs = data.documents;
+          }
+        }
+      } catch {
+        // Fallback to direct Supabase query below
       }
-    }
 
-    if (isSupabaseConfigured()) {
-      try {
-        cloudLecs = await fetchAllLecturesFromSupabase();
-      } catch (err) {
-        console.warn('Could not load lectures from Supabase:', err);
+      if (cloudDocs === null && isSupabaseConfigured()) {
+        try {
+          cloudDocs = await fetchAllDocumentsFromSupabase();
+        } catch (err) {
+          console.warn('Could not load documents from Supabase:', err);
+        }
       }
-    }
 
-    if (cloudDocs === null && cloudLecs === null) return;
+      if (isSupabaseConfigured()) {
+        try {
+          cloudLecs = await fetchAllLecturesFromSupabase();
+        } catch (err) {
+          console.warn('Could not load lectures from Supabase:', err);
+        }
+      }
 
-    if (cloudDocs !== null && typeof window !== 'undefined') {
-      try {
-        const normalizedDocs: NoteDocument[] = cloudDocs.map((d: any) => ({
-          id: d.id,
-          title: d.title,
-          subject: d.subject,
-          code: d.code || (d.type === 'PYQ' ? 'PYQ101' : 'DOC101'),
-          year: d.year,
-          branch: d.branch,
-          semester: d.semester,
-          type: (d.type === 'PYQ' ? 'PYQ' : 'Notes') as 'Notes' | 'PYQ',
-          pages: typeof d.pages === 'number' && d.pages > 0 ? d.pages : 0,
-          size: typeof d.size === 'string' ? d.size : '',
-          owner: d.owner || 'Department Faculty',
-          file_url: d.file_url || undefined,
-          file_path: d.file_path || undefined,
-          preview: d.preview || [],
-          created_at: d.created_at,
-        }));
-        localStorage.setItem('notehub_custom_documents', JSON.stringify(normalizedDocs));
-      } catch {}
-    }
+      if (cloudDocs === null && cloudLecs === null) return;
 
-    if (cloudLecs !== null && typeof window !== 'undefined') {
-      try {
-        localStorage.setItem('notehub_custom_lectures', JSON.stringify(cloudLecs));
-      } catch {}
-    }
+      loadedResourcesRef.current.materials = true;
 
-    const newDocs: AdminMaterial[] | null =
-      cloudDocs !== null
-        ? cloudDocs.map((d: any) => ({
+      if (cloudDocs !== null && typeof window !== 'undefined') {
+        try {
+          const normalizedDocs: NoteDocument[] = cloudDocs.map((d: any) => ({
             id: d.id,
-            fileName: d.title?.endsWith('.pdf') ? d.title : `${d.title}.pdf`,
+            title: d.title,
+            subject: d.subject,
+            code: d.code || (d.type === 'PYQ' ? 'PYQ101' : 'DOC101'),
             year: d.year,
             branch: d.branch,
             semester: d.semester,
-            subject: d.subject,
-            type: (d.type === 'PYQ' ? 'PYQs' : 'Notes') as 'Notes' | 'PYQs',
-            uploadedBy: d.owner || 'Department',
-            file_url: d.file_url,
-            file_path: d.file_path,
-          }))
-        : null;
+            type: (d.type === 'PYQ' ? 'PYQ' : 'Notes') as 'Notes' | 'PYQ',
+            pages: typeof d.pages === 'number' && d.pages > 0 ? d.pages : 0,
+            size: typeof d.size === 'string' ? d.size : '',
+            owner: d.owner || 'Department Faculty',
+            file_url: d.file_url || undefined,
+            file_path: d.file_path || undefined,
+            preview: d.preview || [],
+            created_at: d.created_at,
+          }));
+          localStorage.setItem('notehub_custom_documents', JSON.stringify(normalizedDocs));
+        } catch {}
+      }
 
-    const newLecs: AdminMaterial[] | null =
-      cloudLecs !== null
-        ? cloudLecs.map((l: any) => ({
-            id: l.id,
-            fileName: l.title,
-            year: l.year || '2nd Year',
-            branch: l.branch || 'CSE(AI&ML)',
-            semester: l.semester,
-            subject: l.subject,
-            type: 'Lectures' as const,
-            uploadedBy: l.faculty || 'Coordinator',
-            link: l.link,
-          }))
-        : null;
+      if (cloudLecs !== null && typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('notehub_custom_lectures', JSON.stringify(cloudLecs));
+        } catch {}
+      }
 
-    setMaterials((prev) => {
-      const docsPart = newDocs !== null ? newDocs : prev.filter((m) => m.type !== 'Lectures');
-      const lecsPart = newLecs !== null ? newLecs : prev.filter((m) => m.type === 'Lectures');
-      return [...docsPart, ...lecsPart];
-    });
-  }, []);
+      const newDocs: AdminMaterial[] | null =
+        cloudDocs !== null
+          ? cloudDocs.map((d: any) => ({
+              id: d.id,
+              fileName: d.title?.endsWith('.pdf') ? d.title : `${d.title}.pdf`,
+              year: d.year,
+              branch: d.branch,
+              semester: d.semester,
+              subject: d.subject,
+              type: (d.type === 'PYQ' ? 'PYQs' : 'Notes') as 'Notes' | 'PYQs',
+              uploadedBy: d.owner || 'Department',
+              file_url: d.file_url,
+              file_path: d.file_path,
+            }))
+          : null;
 
-  // Re-sync materials strictly after authenticated login, tab focus, or view switching
-  useEffect(() => {
-    if (!isLoggedIn) return;
-    syncAllMaterials();
-  }, [syncAllMaterials, isLoggedIn]);
+      const newLecs: AdminMaterial[] | null =
+        cloudLecs !== null
+          ? cloudLecs.map((l: any) => ({
+              id: l.id,
+              fileName: l.title,
+              year: l.year || '2nd Year',
+              branch: l.branch || 'CSE(AI&ML)',
+              semester: l.semester,
+              subject: l.subject,
+              type: 'Lectures' as const,
+              uploadedBy: l.faculty || 'Coordinator',
+              link: l.link,
+            }))
+          : null;
 
-  useEffect(() => {
-    if (!isLoggedIn) return;
-    if (
-      activeNav === 'Dashboard' ||
-      activeNav === 'All Materials' ||
-      activeNav === 'Manage by Year' ||
-      activeNav === 'Manage by Branch'
-    ) {
-      syncAllMaterials();
+      setMaterials((prev) => {
+        const docsPart = newDocs !== null ? newDocs : prev.filter((m) => m.type !== 'Lectures');
+        const lecsPart = newLecs !== null ? newLecs : prev.filter((m) => m.type === 'Lectures');
+        return [...docsPart, ...lecsPart];
+      });
+    } finally {
+      setIsLoadingMaterials(false);
     }
-  }, [activeNav, isLoggedIn, syncAllMaterials]);
+  }, [isLoggedIn]);
 
-  const syncAdminIssues = useCallback(async () => {
+  // 3. Sync Coordinator Issues ONLY when Admin opens Issues tab (or Refresh)
+  const syncAdminIssues = useCallback(async (force = false) => {
     if (!isLoggedIn) return;
+    if (!force && loadedResourcesRef.current.issues) return;
     setIsLoadingIssues(true);
     setIssuesError(null);
     try {
@@ -337,6 +396,7 @@ export default function AdminPage() {
       const res = await fetch('/api/issues', { cache: 'no-store', headers });
       const data = await res.json();
       if (res.ok && data?.success && Array.isArray(data.issues)) {
+        loadedResourcesRef.current.issues = true;
         setAdminIssues(data.issues);
         setIssuesTableMissing(false);
       } else {
@@ -350,27 +410,29 @@ export default function AdminPage() {
     }
   }, [isLoggedIn]);
 
-  useEffect(() => {
-    if (!isLoggedIn) return;
-    syncAdminIssues();
-  }, [isLoggedIn, syncAdminIssues]);
-
-  useEffect(() => {
-    if (!isLoggedIn) return;
-    if (activeNav === 'Issues') {
-      syncAdminIssues();
-    }
-  }, [activeNav, isLoggedIn, syncAdminIssues]);
-
-  useEffect(() => {
-    if (!isLoggedIn) return;
-    const handleFocus = () => {
-      syncAllMaterials();
-      syncAdminIssues();
-    };
-    window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
-  }, [isLoggedIn, syncAllMaterials, syncAdminIssues]);
+  // 4. Sync All Subjects ONLY when Manage by Year / Manage by Branch is clicked
+  const syncAllSubjects = useCallback(async (force = false) => {
+    if (!isLoggedIn || !isSupabaseConfigured()) return;
+    if (!force && loadedResourcesRef.current.subjects) return;
+    try {
+      const allSubjs = await fetchAllSubjectsFromSupabase();
+      loadedResourcesRef.current.subjects = true;
+      if (allSubjs && allSubjs.length > 0) {
+        const grouped = new Map<string, { year: YearOption; branch: BranchOption; semester: SemesterOption; list: SubjectMeta[] }>();
+        allSubjs.forEach(({ year, branch, semester, subject }) => {
+          const key = `${year}___${branch}___${semester}`;
+          if (!grouped.has(key)) {
+            grouped.set(key, { year, branch, semester, list: [] });
+          }
+          grouped.get(key)!.list.push(subject);
+        });
+        grouped.forEach(({ year, branch, semester, list }) => {
+          saveSubjectsFor(year, branch, semester, list);
+        });
+        setAdminSubjectsVersion((v) => v + 1);
+      }
+    } catch {}
+  }, [isLoggedIn]);
 
   const handleToggleResolveIssue = async (issue: CoordinatorIssue, nextStatus: 'Open' | 'Resolved') => {
     setIssueBusyId(issue.id);
@@ -481,32 +543,8 @@ export default function AdminPage() {
   };
 
   useEffect(() => {
-    if (isLoggedIn && isSupabaseConfigured()) {
-
-      // Also sync all custom subjects from Supabase to local storage (authoritative source of truth)
-      fetchAllSubjectsFromSupabase().then((allSubjs) => {
-        if (allSubjs && allSubjs.length > 0) {
-          const grouped = new Map<string, { year: YearOption; branch: BranchOption; semester: SemesterOption; list: SubjectMeta[] }>();
-          allSubjs.forEach(({ year, branch, semester, subject }) => {
-            const key = `${year}___${branch}___${semester}`;
-            if (!grouped.has(key)) {
-              grouped.set(key, { year, branch, semester, list: [] });
-            }
-            grouped.get(key)!.list.push(subject);
-          });
-          grouped.forEach(({ year, branch, semester, list }) => {
-            saveSubjectsFor(year, branch, semester, list);
-          });
-          setAdminSubjectsVersion((v) => v + 1);
-        }
-      }).catch(() => {});
-
-    }
-  }, [isLoggedIn]);
-
-  useEffect(() => {
     let active = true;
-    // Verify existing admin session from server httpOnly cookie before revealing dashboard
+    // Verify existing admin session from server httpOnly cookie BEFORE querying any DB tables
     fetch('/api/admin/auth', { cache: 'no-store' })
       .then((res) => res.json())
       .then((data) => {
@@ -529,39 +567,6 @@ export default function AdminPage() {
         localStorage.removeItem('notehub_gdrive_folder_id');
       } catch {}
     }
-
-    // Sync Google Drive server configuration status (boolean only)
-    fetch('/api/upload-drive')
-      .then((res) => res.json())
-      .then((data) => {
-        if (!active) return;
-        const configured = Boolean(data?.configured);
-        setDriveServerConfigured(configured);
-        if (typeof window !== 'undefined' && data && data.configured !== undefined) {
-          localStorage.setItem('notebase_gdrive_server_configured', configured ? 'true' : 'false');
-        }
-      })
-      .catch(() => {});
-
-    // Check real Supabase server health & table availability
-    fetch('/api/status')
-      .then((res) => res.json())
-      .then((data) => {
-        if (!active) return;
-        setSupabaseHealth({
-          checked: true,
-          connected: Boolean(data.connected),
-          error: data.error || null,
-        });
-      })
-      .catch((err) => {
-        if (!active) return;
-        setSupabaseHealth({
-          checked: true,
-          connected: false,
-          error: err?.message || 'Could not reach server status API.',
-        });
-      });
 
     return () => {
       active = false;
@@ -598,43 +603,30 @@ export default function AdminPage() {
   // Coordinators List State (Populated strictly after authenticated Admin verification)
   const [coordinators, setCoordinators] = useState<CoordinatorItem[]>([]);
 
-  // Sync latest coordinators & staff Drive config whenever Admin is logged in
-  useEffect(() => {
+  // 5. Sync Coordinators ONLY when Coordinators / Manage by Year / Manage by Branch is clicked
+  const syncCoordinators = useCallback(async (force = false) => {
     if (!isLoggedIn) return;
-    let active = true;
-
-    const creds = getSupabaseCredentials();
-    const headers: Record<string, string> = {};
-    if (creds.url && creds.key) {
-      headers['x-supabase-url'] = creds.url;
-      headers['x-supabase-key'] = creds.key;
+    if (!force && loadedResourcesRef.current.coordinators) return;
+    setIsLoadingCoordinators(true);
+    try {
+      const creds = getSupabaseCredentials();
+      const headers: Record<string, string> = {};
+      if (creds.url && creds.key) {
+        headers['x-supabase-url'] = creds.url;
+        headers['x-supabase-key'] = creds.key;
+      }
+      const res = await fetch('/api/coordinators', { cache: 'no-store', headers });
+      const data = await res.json();
+      if (res.ok && data?.success && Array.isArray(data.coordinators)) {
+        loadedResourcesRef.current.coordinators = true;
+        setCoordinators(data.coordinators);
+        saveStoredCoordinators(data.coordinators);
+      }
+    } catch {
+      // Ignore error
+    } finally {
+      setIsLoadingCoordinators(false);
     }
-
-    fetch('/api/coordinators', { headers })
-      .then((res) => res.json())
-      .then((data) => {
-        if (active && data.success && Array.isArray(data.coordinators)) {
-          setCoordinators(data.coordinators);
-          saveStoredCoordinators(data.coordinators);
-        }
-      })
-      .catch(() => {});
-
-    fetch('/api/status', { cache: 'no-store' })
-      .then((res) => res.json())
-      .then((data) => {
-        if (!active) return;
-        const configured = Boolean(data?.googleDrive?.configured);
-        setDriveServerConfigured(configured);
-        if (typeof window !== 'undefined' && data?.googleDrive?.configured !== undefined) {
-          localStorage.setItem('notebase_gdrive_server_configured', configured ? 'true' : 'false');
-        }
-      })
-      .catch(() => {});
-
-    return () => {
-      active = false;
-    };
   }, [isLoggedIn]);
 
   // Interactive Modals and Popups State
@@ -726,13 +718,15 @@ export default function AdminPage() {
   const [showScriptCode, setShowScriptCode] = useState(false);
   const [copiedScript, setCopiedScript] = useState(false);
 
-  // Sync Google Drive multi-drive registry strictly from server (zero secret URLs/IDs returned)
-  const syncDriveRegistry = useCallback(async () => {
+  // Sync Google Drive multi-drive registry ONLY when Upload Material or Statistics is clicked (or Refresh)
+  const syncDriveRegistry = useCallback(async (force = false) => {
     if (!isLoggedIn || typeof window === 'undefined') return;
+    if (!force && loadedResourcesRef.current.drives) return;
     try {
       const res = await fetch('/api/admin/config', { cache: 'no-store' });
       const data = await res.json();
       if (data?.success !== undefined) {
+        loadedResourcesRef.current.drives = true;
         const configured = Boolean(data.configured);
         setDriveServerConfigured(configured);
         setDriveList(Array.isArray(data.drives) ? data.drives : []);
@@ -746,9 +740,46 @@ export default function AdminPage() {
     } catch {}
   }, [isLoggedIn]);
 
-  useEffect(() => {
-    syncDriveRegistry();
-  }, [syncDriveRegistry]);
+  // Live counts helper: uses loaded materials/coordinators if fetched, otherwise lightweight summary counts
+  const liveCounts = useMemo(() => {
+    if (loadedResourcesRef.current.materials) {
+      const notes = materials.filter((m) => m.type === 'Notes').length;
+      const pyqs = materials.filter((m) => m.type === 'PYQs').length;
+      const lectures = materials.filter((m) => m.type === 'Lectures').length;
+      return {
+        notes,
+        pyqs,
+        lectures,
+        totalFiles: materials.length,
+        years: {
+          '1st Year': materials.filter((m) => m.year?.includes('1st')).length,
+          '2nd Year': materials.filter((m) => m.year?.includes('2nd')).length,
+          '3rd Year': materials.filter((m) => m.year?.includes('3rd')).length,
+          '4th Year': materials.filter((m) => m.year?.includes('4th')).length,
+        },
+      };
+    }
+    return {
+      notes: dashboardSummary?.notes ?? 0,
+      pyqs: dashboardSummary?.pyqs ?? 0,
+      lectures: dashboardSummary?.lectures ?? 0,
+      totalFiles: dashboardSummary?.totalFiles ?? 0,
+      years: dashboardSummary?.years ?? {
+        '1st Year': 0,
+        '2nd Year': 0,
+        '3rd Year': 0,
+        '4th Year': 0,
+      },
+    };
+  }, [materials, dashboardSummary]);
+
+  const liveCoordinatorsCount = loadedResourcesRef.current.coordinators
+    ? coordinators.length
+    : (dashboardSummary?.coordinators ?? 0);
+
+  const liveOpenIssuesCount = loadedResourcesRef.current.issues
+    ? adminIssues.filter((i) => i.status === 'Open').length
+    : (dashboardSummary?.openIssues ?? 0);
 
   const handleSetActiveDrive = async (driveId: string, driveName: string) => {
     setIsSwitchingDriveId(driveId);
@@ -760,7 +791,7 @@ export default function AdminPage() {
       });
       const data = await res.json();
       if (res.ok && data?.success) {
-        await syncDriveRegistry();
+        await syncDriveRegistry(true);
         showToast(`✅ New uploads will now go to "${driveName}"!`, 'success');
       } else {
         if (data?.schemaNeedsMigration) setDriveSchemaNeedsMigration(true);
@@ -794,7 +825,7 @@ export default function AdminPage() {
         const addedName = newDriveForm.name.trim();
         setNewDriveForm({ name: '', webhookUrl: '', folderId: '', setActive: true });
         setIsAddDriveModalOpen(false);
-        await syncDriveRegistry();
+        await syncDriveRegistry(true);
         showToast(`✅ "${addedName}" added securely on server!`, 'success');
       } else {
         if (data?.schemaNeedsMigration) setDriveSchemaNeedsMigration(true);
@@ -819,7 +850,7 @@ export default function AdminPage() {
         });
         const data = await res.json();
         if (res.ok && data?.success) {
-          await syncDriveRegistry();
+          await syncDriveRegistry(true);
           showToast(`Removed "${driveName}" from upload rotation.`, 'success');
         } else {
           showToast(data?.error || 'Failed to remove drive.', 'error');
@@ -837,12 +868,13 @@ export default function AdminPage() {
   };
 
   // Test Supabase Connection & Table Availability (via Server Env Variables)
-  const handleTestSupabaseConnection = async () => {
+  const handleTestSupabaseConnection = async (silentToast = false) => {
     setIsSupabaseTesting(true);
     setSupabaseTestDetails(null);
     try {
       const res = await fetch('/api/status', { cache: 'no-store' });
       const data = await res.json();
+      loadedResourcesRef.current.status = true;
       setSupabaseTestDetails({
         connected: Boolean(data.connected),
         tables: data.tables || {},
@@ -860,17 +892,57 @@ export default function AdminPage() {
           localStorage.setItem('notebase_gdrive_server_configured', driveOk ? 'true' : 'false');
         }
       }
-      if (data.connected) {
-        showToast('✅ Supabase database is connected via Server Env Variables!', 'success');
-      } else {
-        showToast(`⚠️ Supabase: ${data.error || 'Connection failed'}`, 'error');
+      if (!silentToast) {
+        if (data.connected) {
+          showToast('✅ Supabase database is connected via Server Env Variables!', 'success');
+        } else {
+          showToast(`⚠️ Supabase: ${data.error || 'Connection failed'}`, 'error');
+        }
       }
     } catch {
-      showToast('⚠️ Could not run Supabase connection check.', 'error');
+      if (!silentToast) {
+        showToast('⚠️ Could not run Supabase connection check.', 'error');
+      }
     } finally {
       setIsSupabaseTesting(false);
     }
   };
+
+  // STRICT ON-CLICK DATA LOADER: Fetches ONLY the clicked Admin section's data once (saves DB load!)
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    if (activeNav === 'Dashboard') {
+      if (!loadedResourcesRef.current.materials) {
+        syncDashboardSummary();
+      }
+    } else if (activeNav === 'Coordinators') {
+      syncCoordinators();
+    } else if (activeNav === 'Issues') {
+      syncAdminIssues();
+    } else if (activeNav === 'Manage by Year' || activeNav === 'Manage by Branch') {
+      syncAllMaterials();
+      syncCoordinators();
+      syncAllSubjects();
+    } else if (activeNav === 'Upload Material') {
+      syncDriveRegistry();
+    } else if (activeNav === 'Statistics') {
+      syncDriveRegistry();
+      syncAllMaterials();
+      syncCoordinators();
+      if (!loadedResourcesRef.current.status) {
+        handleTestSupabaseConnection(true);
+      }
+    }
+  }, [
+    activeNav,
+    isLoggedIn,
+    syncDashboardSummary,
+    syncCoordinators,
+    syncAdminIssues,
+    syncAllMaterials,
+    syncAllSubjects,
+    syncDriveRegistry,
+  ]);
 
   // Copy SQL to create coordinators table
   const handleCopyCoordinatorsSql = () => {
@@ -989,64 +1061,137 @@ export default function AdminPage() {
     });
 
     return Array.from(subjectSet);
-  }, [yearFilter, branchFilter, semesterFilter, materials]);
+  }, [yearFilter, branchFilter, semesterFilter, materials, adminSubjectsVersion]);
 
-  // Filtered Materials computation: Sirf tabhi documents show honge jab user ne upar se filter lgaya ho ya search kiya ho
-  const isFilterActive = yearFilter !== 'All' || searchQuery.trim().length > 0 || showAllUnfiltered;
+  // Sync subjects ONLY for the chosen (Year, Branch, Semester) so 4th dropdown shows cloud subjects without fetching files
+  useEffect(() => {
+    if (!isLoggedIn || activeNav !== 'All Materials') return;
+    if (yearFilter === 'All' || branchFilter === 'All' || semesterFilter === 'All') return;
+    fetchSubjectsFromSupabase(
+      yearFilter as YearOption,
+      branchFilter as BranchOption,
+      semesterFilter as SemesterOption
+    )
+      .then((cloudSubjs) => {
+        if (cloudSubjs && cloudSubjs.length > 0) {
+          saveSubjectsFor(
+            yearFilter as YearOption,
+            branchFilter as BranchOption,
+            semesterFilter as SemesterOption,
+            cloudSubjs
+          );
+          setAdminSubjectsVersion((v) => v + 1);
+        }
+      })
+      .catch(() => {});
+  }, [isLoggedIn, activeNav, yearFilter, branchFilter, semesterFilter]);
 
-  const filteredMaterials = useMemo(() => {
-    // Agar upar koi filter nahi lagaya hai aur search bhi nahi hai, to niche documents na dikhaye
-    if (!isFilterActive) {
-      return [];
+  const areAllFourFiltersSelected =
+    yearFilter !== 'All' &&
+    branchFilter !== 'All' &&
+    semesterFilter !== 'All' &&
+    subjectFilter !== 'All';
+
+  const canFetchMaterials =
+    areAllFourFiltersSelected || searchQuery.trim().length > 0 || showAllUnfiltered;
+
+  // Paginated 5-by-5 Recent Materials loader for All Materials view (never scans whole DB upfront!)
+  const fetchRecentMaterialsPage = useCallback(
+    async (opts?: { reset?: boolean; offsetOverride?: number }) => {
+      if (!isLoggedIn) return;
+      const reset = opts?.reset ?? false;
+      const offset = reset ? 0 : (opts?.offsetOverride ?? recentMaterials.length);
+      if (reset) setIsLoadingRecent(true);
+      else setIsLoadingMoreRecent(true);
+
+      try {
+        const q = new URLSearchParams({
+          limit: '5',
+          offset: String(offset),
+        });
+        if (typeFilter === 'Notes') q.set('type', 'Notes');
+        else if (typeFilter === 'PYQs') q.set('type', 'PYQ');
+        else q.set('type', 'All');
+
+        if (yearFilter !== 'All') q.set('year', yearFilter);
+        if (branchFilter !== 'All') q.set('branch', branchFilter);
+        if (semesterFilter !== 'All') q.set('semester', semesterFilter);
+        if (subjectFilter !== 'All') q.set('subject', subjectFilter);
+        if (searchQuery.trim()) q.set('search', searchQuery.trim());
+
+        const res = await fetch(`/api/documents?${q.toString()}`, { cache: 'no-store' });
+        const data = await res.json();
+        if (res.ok && data?.success && Array.isArray(data.documents)) {
+          const mapped: AdminMaterial[] = data.documents.map((d: any) => ({
+            id: d.id,
+            fileName: d.title?.endsWith('.pdf') ? d.title : `${d.title}.pdf`,
+            year: d.year,
+            branch: d.branch,
+            semester: d.semester,
+            subject: d.subject,
+            type: (d.type === 'PYQ' ? 'PYQs' : 'Notes') as 'Notes' | 'PYQs',
+            uploadedBy: d.owner || 'Department',
+            file_url: d.file_url,
+            file_path: d.file_path,
+          }));
+          setHasMoreRecent(Boolean(data.hasMore));
+          if (reset) {
+            setRecentMaterials(mapped);
+          } else {
+            setRecentMaterials((prev) => {
+              const seen = new Set(prev.map((p) => p.id));
+              return [...prev, ...mapped.filter((m) => !seen.has(m.id))];
+            });
+          }
+        }
+      } catch {
+        // Keep existing list on transient error
+      } finally {
+        setIsLoadingRecent(false);
+        setIsLoadingMoreRecent(false);
+      }
+    },
+    [
+      isLoggedIn,
+      recentMaterials.length,
+      typeFilter,
+      yearFilter,
+      branchFilter,
+      semesterFilter,
+      subjectFilter,
+      searchQuery,
+    ]
+  );
+
+  useEffect(() => {
+    if (!isLoggedIn || activeNav !== 'All Materials') return;
+    if (!canFetchMaterials) {
+      setRecentMaterials([]);
+      setHasMoreRecent(false);
+      setIsLoadingRecent(false);
+      return;
     }
+    const timer = setTimeout(() => {
+      fetchRecentMaterialsPage({ reset: true });
+    }, searchQuery.trim() ? 250 : 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    isLoggedIn,
+    activeNav,
+    canFetchMaterials,
+    typeFilter,
+    yearFilter,
+    branchFilter,
+    semesterFilter,
+    subjectFilter,
+    searchQuery,
+    showAllUnfiltered,
+  ]);
 
-    return materials.filter((m) => {
-      if (typeFilter !== 'All' && m.type !== typeFilter) return false;
-      
-      // Year filter (handles '3rd', '3rd Year')
-      if (yearFilter !== 'All') {
-        const yNorm = yearFilter.replace(' Year', '').trim();
-        const mNorm = m.year.replace(' Year', '').trim();
-        if (yNorm !== mNorm) return false;
-      }
-
-      // Branch filter
-      if (branchFilter !== 'All') {
-        const bNorm = branchFilter.toLowerCase();
-        const mBNorm = m.branch.toLowerCase();
-        if (bNorm !== mBNorm && !bNorm.includes(mBNorm) && !mBNorm.includes(bNorm)) {
-          return false;
-        }
-      }
-
-      // Semester filter
-      if (semesterFilter !== 'All') {
-        if (m.semester && m.semester !== semesterFilter) {
-          return false;
-        }
-      }
-
-      // Subject filter
-      if (subjectFilter !== 'All') {
-        const sNorm = subjectFilter.toLowerCase();
-        const mSubNorm = m.subject.toLowerCase();
-        if (!mSubNorm.includes(sNorm) && !sNorm.includes(mSubNorm)) {
-          return false;
-        }
-      }
-
-      // Search query
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchFile = m.fileName.toLowerCase().includes(q);
-        const matchSubject = m.subject.toLowerCase().includes(q);
-        const matchUploader = m.uploadedBy.toLowerCase().includes(q);
-        if (!matchFile && !matchSubject && !matchUploader) return false;
-      }
-
-      return true;
-    });
-  }, [materials, isFilterActive, typeFilter, yearFilter, branchFilter, semesterFilter, subjectFilter, searchQuery, showAllUnfiltered]);
+  // All Materials view displays files ONLY after all 4 filters (or Search / explicit recent) are active
+  const isFilterActive = canFetchMaterials;
+  const filteredMaterials = canFetchMaterials ? recentMaterials : [];
 
   // Edit Note Name Handlers
   const handleOpenEditMaterial = (m: AdminMaterial) => {
@@ -1074,6 +1219,7 @@ export default function AdminPage() {
       }
       return m;
     }));
+    setRecentMaterials(prev => prev.map(m => (m.id === targetId ? { ...m, fileName: newName } : m)));
 
     if (typeof window !== 'undefined') {
       try {
@@ -1373,6 +1519,7 @@ export default function AdminPage() {
         };
 
         setMaterials(prev => [newAdminMat, ...prev]);
+        loadedResourcesRef.current.summary = false;
         showToast(`Lecture "${cleanTitle}" published successfully!`, 'success');
 
         setUploadDisplayTitle('');
@@ -1485,6 +1632,8 @@ export default function AdminPage() {
       };
 
       setMaterials(prev => [newAdminMat, ...prev]);
+      setRecentMaterials(prev => [newAdminMat, ...prev]);
+      loadedResourcesRef.current.summary = false;
 
       showToast(`Material "${cleanTitle}" uploaded successfully for ${uploadYear}!`, 'success');
 
@@ -1548,9 +1697,13 @@ export default function AdminPage() {
       title: 'Delete Material',
       message: `Are you sure you want to delete "${fileName}" from database and Google Drive?`,
       onConfirm: async () => {
-        const target = materials.find(m => m.id === id);
+        const target =
+          recentMaterials.find(m => m.id === id) ||
+          materials.find(m => m.id === id);
         setMaterials(prev => prev.filter(m => m.id !== id));
+        setRecentMaterials(prev => prev.filter(m => m.id !== id));
         setSelectedMaterialIds(prev => prev.filter(item => item !== id));
+        loadedResourcesRef.current.summary = false;
 
         if (target?.type === 'Lectures') {
           if (typeof window !== 'undefined') {
@@ -1600,7 +1753,10 @@ export default function AdminPage() {
       showToast('Please select at least one file to download.', 'error');
       return;
     }
-    const targets = materials.filter(m => selectedMaterialIds.includes(m.id));
+    const mergedPool = Array.from(
+      new Map([...recentMaterials, ...materials].map((m) => [m.id, m])).values()
+    );
+    const targets = mergedPool.filter(m => selectedMaterialIds.includes(m.id));
     const downloadable = targets.filter(m => m.file_url || m.link);
     if (downloadable.length === 0) {
       showToast('None of the selected files have downloadable attachments.', 'error');
@@ -1626,10 +1782,15 @@ export default function AdminPage() {
       title: `Delete ${count} Files`,
       message: `Are you sure you want to delete ${count} selected files from the database?`,
       onConfirm: async () => {
-        const targets = materials.filter(m => selectedMaterialIds.includes(m.id));
+        const mergedPool = Array.from(
+          new Map([...recentMaterials, ...materials].map((m) => [m.id, m])).values()
+        );
+        const targets = mergedPool.filter(m => selectedMaterialIds.includes(m.id));
         const targetIds = new Set(targets.map(t => t.id));
         setMaterials(prev => prev.filter(m => !targetIds.has(m.id)));
+        setRecentMaterials(prev => prev.filter(m => !targetIds.has(m.id)));
         setSelectedMaterialIds([]);
+        loadedResourcesRef.current.summary = false;
 
         targets.forEach(t => {
           if (t.type !== 'Lectures') deleteCustomUploadedDocument(t.id);
@@ -1940,8 +2101,21 @@ export default function AdminPage() {
     } catch {}
     setIsLoggedIn(false);
     setMaterials([]);
+    setRecentMaterials([]);
+    setHasMoreRecent(false);
     setAdminIssues([]);
     setCoordinators([]);
+    setDriveList([]);
+    setDashboardSummary(null);
+    loadedResourcesRef.current = {
+      summary: false,
+      materials: false,
+      coordinators: false,
+      issues: false,
+      subjects: false,
+      drives: false,
+      status: false,
+    };
   };
 
   if (!authChecked) {
@@ -2233,13 +2407,13 @@ export default function AdminPage() {
                 <MessageSquareWarning className="w-4 h-4" />
                 <span>Coordinator Issues</span>
               </span>
-              {adminIssues.filter((i) => i.status === 'Open').length > 0 && (
+              {liveOpenIssuesCount > 0 && (
                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                   activeNav === 'Issues'
                     ? 'bg-white/20 text-white'
                     : 'bg-amber-100 text-amber-800'
                 }`}>
-                  {adminIssues.filter((i) => i.status === 'Open').length}
+                  {liveOpenIssuesCount}
                 </span>
               )}
             </button>
@@ -2482,7 +2656,7 @@ export default function AdminPage() {
                     <p className="text-xs text-slate-500 font-medium">Total Notes</p>
                     <div className="flex items-baseline space-x-2 mt-0.5">
                       <span className="text-2xl font-black text-slate-900">
-                        {materials.filter(m => m.type === 'Notes').length}
+                        {isLoadingSummary && !dashboardSummary ? '...' : liveCounts.notes}
                       </span>
                     </div>
                   </div>
@@ -2506,7 +2680,7 @@ export default function AdminPage() {
                     <p className="text-xs text-slate-500 font-medium">PYQs</p>
                     <div className="flex items-baseline space-x-2 mt-0.5">
                       <span className="text-2xl font-black text-slate-900">
-                        {materials.filter(m => m.type === 'PYQs').length}
+                        {isLoadingSummary && !dashboardSummary ? '...' : liveCounts.pyqs}
                       </span>
                     </div>
                   </div>
@@ -2525,7 +2699,9 @@ export default function AdminPage() {
                   </div>
                   <div>
                     <p className="text-xs text-slate-500 font-medium">Coordinators</p>
-                    <p className="text-2xl font-black text-slate-900 mt-0.5">{coordinators.length}</p>
+                    <p className="text-2xl font-black text-slate-900 mt-0.5">
+                      {isLoadingSummary && !dashboardSummary ? '...' : liveCoordinatorsCount}
+                    </p>
                   </div>
                 </div>
               </button>
@@ -2545,7 +2721,9 @@ export default function AdminPage() {
                   </div>
                   <div>
                     <p className="text-xs text-slate-500 font-medium">Total Files</p>
-                    <p className="text-2xl font-black text-slate-900 mt-0.5">{materials.length}</p>
+                    <p className="text-2xl font-black text-slate-900 mt-0.5">
+                      {isLoadingSummary && !dashboardSummary ? '...' : liveCounts.totalFiles}
+                    </p>
                   </div>
                 </div>
 
@@ -2595,14 +2773,32 @@ export default function AdminPage() {
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setActiveNav('All Materials')}
-                  className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-2xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs font-bold shadow-sm shadow-indigo-100 transition-all cursor-pointer"
-                >
-                  <span>Open All Materials</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    disabled={isLoadingSummary || isLoadingMaterials}
+                    onClick={() => {
+                      if (loadedResourcesRef.current.materials) {
+                        syncAllMaterials(true);
+                      } else {
+                        syncDashboardSummary(true, true);
+                      }
+                    }}
+                    className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all cursor-pointer disabled:opacity-60"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${(isLoadingSummary || isLoadingMaterials) ? 'animate-spin' : ''}`} />
+                    <span>Refresh</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveNav('All Materials')}
+                    className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-2xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs font-bold shadow-sm shadow-indigo-100 transition-all cursor-pointer"
+                  >
+                    <span>Open All Materials</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
 
               {/* Quick Stats Cards Grid (Separate cards for 1st Year, 2nd Year, 3rd Year, 4th Year) */}
@@ -2620,7 +2816,7 @@ export default function AdminPage() {
                     <span className="text-[10px] font-semibold text-purple-600 bg-purple-100/80 px-2 py-0.5 rounded-full">Groups</span>
                   </div>
                   <p className="text-2xl font-black text-slate-900 mt-2">
-                    {materials.filter(m => m.year?.includes('1st')).length} Files
+                    {liveCounts.years['1st Year'] ?? 0} Files
                   </p>
                   <p className="text-xs text-slate-500 mt-1">Foundation courses & group syllabus</p>
                 </div>
@@ -2638,7 +2834,7 @@ export default function AdminPage() {
                     <span className="text-[10px] font-semibold text-blue-600 bg-blue-100/80 px-2 py-0.5 rounded-full">Sem 3 & 4</span>
                   </div>
                   <p className="text-2xl font-black text-slate-900 mt-2">
-                    {materials.filter(m => m.year?.includes('2nd')).length} Files
+                    {liveCounts.years['2nd Year'] ?? 0} Files
                   </p>
                   <p className="text-xs text-slate-500 mt-1">Core departmental foundation & labs</p>
                 </div>
@@ -2656,7 +2852,7 @@ export default function AdminPage() {
                     <span className="text-[10px] font-semibold text-indigo-600 bg-indigo-100/80 px-2 py-0.5 rounded-full">Sem 5 & 6</span>
                   </div>
                   <p className="text-2xl font-black text-slate-900 mt-2">
-                    {materials.filter(m => m.year?.includes('3rd')).length} Files
+                    {liveCounts.years['3rd Year'] ?? 0} Files
                   </p>
                   <p className="text-xs text-slate-500 mt-1">Most actively accessed uploads</p>
                 </div>
@@ -2674,11 +2870,35 @@ export default function AdminPage() {
                     <span className="text-[10px] font-semibold text-emerald-600 bg-emerald-100/80 px-2 py-0.5 rounded-full">Sem 7 & 8</span>
                   </div>
                   <p className="text-2xl font-black text-slate-900 mt-2">
-                    {materials.filter(m => m.year?.includes('4th')).length} Files
+                    {liveCounts.years['4th Year'] ?? 0} Files
                   </p>
                   <p className="text-xs text-slate-500 mt-1">Advanced electives & semester projects</p>
                 </div>
               </div>
+
+              {/* One-time notice if material_counts counter column is not yet added in Supabase */}
+              {counterColumnMissing && (
+                <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-900">
+                  <div className="flex items-start space-x-2">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <span>
+                      Fast single-column counter (<code>material_counts</code>) abhi Supabase me add nahi hua hai — isse add karne ke baad Dashboard ko sabhi tables count nahi karne padenge.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sql = `alter table public.admin_credentials add column if not exists material_counts jsonb;`;
+                      navigator.clipboard?.writeText(sql);
+                      showToast('📋 Counter Column SQL copied! Run it in Supabase SQL Editor.', 'success');
+                    }}
+                    className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold shrink-0 cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy Counter SQL</span>
+                  </button>
+                </div>
+              )}
 
               {/* Cloud & Supabase Sync Status */}
               <div className="p-5 rounded-2xl bg-slate-50/80 border border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -2720,8 +2940,22 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              {/* Segmented Filter Pills */}
-              <div className="flex items-center space-x-1.5 text-xs font-bold">
+              {/* Segmented Filter Pills + Refresh */}
+              <div className="flex flex-wrap items-center gap-1.5 text-xs font-bold">
+                <button
+                  type="button"
+                  disabled={isLoadingRecent || !canFetchMaterials}
+                  onClick={() => {
+                    if (!canFetchMaterials) return;
+                    loadedResourcesRef.current.materials = false;
+                    fetchRecentMaterialsPage({ reset: true });
+                  }}
+                  className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer disabled:opacity-50 mr-1"
+                  title="Reload latest matching materials from database"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingRecent ? 'animate-spin' : ''}`} />
+                  <span>{isLoadingRecent ? 'Loading...' : 'Refresh'}</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setTypeFilter('All')}
@@ -2806,7 +3040,7 @@ export default function AdminPage() {
                       }}
                       className="w-full h-11 px-3.5 pr-9 bg-white border border-slate-200/90 rounded-xl text-xs font-semibold text-slate-700 shadow-sm appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-400"
                     >
-                      <option value="All">All Years</option>
+                      <option value="All">Select Year...</option>
                       <option value="1st Year">1st Year</option>
                       <option value="2nd Year">2nd Year</option>
                       <option value="3rd Year">3rd Year</option>
@@ -2837,7 +3071,7 @@ export default function AdminPage() {
                       }`}
                     >
                       <option value="All">
-                        {yearFilter === 'All' ? 'Select Year First' : 'All Branches'}
+                        {yearFilter === 'All' ? 'Select Year First' : 'Select Branch...'}
                       </option>
                       {availableBranches.map((br) => (
                         <option key={br} value={br}>{br}</option>
@@ -2867,7 +3101,7 @@ export default function AdminPage() {
                       }`}
                     >
                       <option value="All">
-                        {branchFilter === 'All' ? 'Select Branch First' : 'All Semesters'}
+                        {branchFilter === 'All' ? 'Select Branch First' : 'Select Semester...'}
                       </option>
                       {availableSemesters.map((sem) => (
                         <option key={sem} value={sem}>{sem}</option>
@@ -2894,7 +3128,7 @@ export default function AdminPage() {
                       }`}
                     >
                       <option value="All">
-                        {semesterFilter === 'All' ? 'Select Semester First' : 'All Subjects'}
+                        {semesterFilter === 'All' ? 'Select Semester First' : 'Select Subject...'}
                       </option>
                       {availableSubjects.map((sub) => (
                         <option key={sub} value={sub}>{sub}</option>
@@ -3037,31 +3271,36 @@ export default function AdminPage() {
                   {filteredMaterials.length === 0 && (
                     <tr>
                       <td colSpan={8} className="py-14 text-center">
-                        {!isFilterActive ? (
+                        {!canFetchMaterials ? (
                           <div className="max-w-md mx-auto space-y-3">
                             <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto shadow-sm">
                               <Search className="w-6 h-6" />
                             </div>
                             <h4 className="text-sm font-bold text-slate-800">
-                              Pehle Upar Se Filter Select Karein
+                              Charo Filters Select Karein ({[yearFilter, branchFilter, semesterFilter, subjectFilter].filter(v => v !== 'All').length}/4 Selected)
                             </h4>
                             <p className="text-xs text-slate-500 leading-relaxed">
-                              Upar <strong>Year → Branch → Semester → Subject</strong> select karein. Filter lagane ke baad hi unke matching notes & PYQs yahan dikhenge.
+                              Upar <strong>1. Year → 2. Branch → 3. Semester → 4. Subject</strong> charo select karne ke baad hi database se files fetch hongi (1 ya 2 filter par nahi).
                             </p>
-                            <div className="pt-1 flex items-center justify-center space-x-2">
+                            <div className="pt-1 flex items-center justify-center">
                               <button
                                 type="button"
                                 onClick={() => setShowAllUnfiltered(true)}
                                 className="text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline cursor-pointer"
                               >
-                                Ya sabhi {materials.length} uploaded files ek sath dekhein
+                                Ya latest 5 recently added files dekhein
                               </button>
                             </div>
+                          </div>
+                        ) : isLoadingRecent ? (
+                          <div className="flex items-center justify-center space-x-2 text-xs font-semibold text-slate-500">
+                            <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                            <span>Loading latest uploaded files...</span>
                           </div>
                         ) : (
                           <div className="space-y-2">
                             <p className="text-xs font-semibold text-slate-600">
-                              Chune gaye filters ke liye koi material nahi mila.
+                              Chune gaye filters ke liye koi uploaded material nahi mila.
                             </p>
                             <button
                               type="button"
@@ -3086,6 +3325,37 @@ export default function AdminPage() {
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination Footer: Initially 5 recently added files, click "Load 5 More Files" to load next 5 */}
+            {filteredMaterials.length > 0 && (
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 text-xs">
+                <span className="text-slate-500 font-medium">
+                  Showing <strong className="text-slate-800">{filteredMaterials.length}</strong> recently added file(s)
+                  {hasMoreRecent ? ' • Click button to load next 5' : ' • All matching files loaded'}
+                </span>
+
+                {hasMoreRecent && (
+                  <button
+                    type="button"
+                    disabled={isLoadingMoreRecent}
+                    onClick={() => fetchRecentMaterialsPage({ reset: false })}
+                    className="inline-flex items-center justify-center space-x-1.5 px-5 py-2.5 rounded-2xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold transition-all cursor-pointer disabled:opacity-60"
+                  >
+                    {isLoadingMoreRecent ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Loading 5 more...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Load 5 More Files</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Table Bottom Action Row */}
             {isFilterActive && filteredMaterials.length > 0 && (
@@ -3139,25 +3409,36 @@ export default function AdminPage() {
                   <p className="text-xs text-slate-400">Total {coordinators.length} registered coordinators across departments</p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingCoord(null);
-                  setCoordForm({ 
-                    name: '', 
-                    branch: 'CSE(AI&ML)', 
-                    year: '2nd Year',
-                    password: '',
-                    status: 'Active'
-                  });
-                  setCoordModalError(null);
-                  setIsAddCoordOpen(true);
-                }}
-                className="inline-flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-[#3b49df] hover:bg-indigo-700 active:scale-95 text-white text-xs font-bold shadow-sm transition-all cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Coordinator</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isLoadingCoordinators}
+                  onClick={() => syncCoordinators(true)}
+                  className="inline-flex items-center space-x-1.5 px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer disabled:opacity-60"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingCoordinators ? 'animate-spin' : ''}`} />
+                  <span>{isLoadingCoordinators ? 'Loading...' : 'Refresh'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingCoord(null);
+                    setCoordForm({ 
+                      name: '', 
+                      branch: 'CSE(AI&ML)', 
+                      year: '2nd Year',
+                      password: '',
+                      status: 'Active'
+                    });
+                    setCoordModalError(null);
+                    setIsAddCoordOpen(true);
+                  }}
+                  className="inline-flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-[#3b49df] hover:bg-indigo-700 active:scale-95 text-white text-xs font-bold shadow-sm transition-all cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Coordinator</span>
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -3552,8 +3833,9 @@ export default function AdminPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    syncAllMaterials();
-                    syncDriveRegistry();
+                    syncAllMaterials(true);
+                    syncDriveRegistry(true);
+                    syncCoordinators(true);
                     handleTestSupabaseConnection();
                   }}
                   className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-bold transition-all shadow-sm cursor-pointer"
@@ -4059,7 +4341,7 @@ export default function AdminPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={handleTestSupabaseConnection}
+                    onClick={() => handleTestSupabaseConnection()}
                     disabled={isSupabaseTesting}
                     className="px-3.5 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5"
                   >
@@ -4970,7 +5252,7 @@ grant all on public.coordinator_issues to anon, authenticated, service_role;`;
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={syncAdminIssues}
+                      onClick={() => syncAdminIssues(true)}
                       disabled={isLoadingIssues}
                       className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60"
                     >

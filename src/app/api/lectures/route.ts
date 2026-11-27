@@ -3,6 +3,7 @@ import { getSupabaseClient } from '@/lib/supabase';
 import { getAdminSession, getCoordinatorSession } from '@/lib/serverAuth';
 import { isBranchMatch } from '@/lib/coordinatorService';
 import { normalizeSafeExternalUrl } from '@/lib/urlSafety';
+import { adjustMaterialCounts } from '@/lib/serverCounters';
 
 export const dynamic = 'force-dynamic';
 
@@ -110,6 +111,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Supabase database is not configured.' }, { status: 503 });
     }
 
+    const { data: existingLec } = await client
+      .from('lectures')
+      .select('id')
+      .eq('id', id)
+      .limit(1)
+      .maybeSingle();
+
     const { error } = await client.from('lectures').upsert({
       id,
       title,
@@ -124,6 +132,10 @@ export async function POST(req: NextRequest) {
 
     if (error) {
       return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    }
+
+    if (!existingLec) {
+      await adjustMaterialCounts(client, { lectures: 1, year, yearDelta: 1 });
     }
 
     return NextResponse.json({ success: true, id });
@@ -230,19 +242,19 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Supabase database is not configured.' }, { status: 503 });
     }
 
-    if (!adminSession && coordSession) {
-      const { data: row } = await client
-        .from('lectures')
-        .select('year, branch')
-        .eq('id', id)
-        .limit(1)
-        .maybeSingle();
+    const { data: existingRow } = await client
+      .from('lectures')
+      .select('year, branch')
+      .eq('id', id)
+      .limit(1)
+      .maybeSingle();
 
+    if (!adminSession && coordSession) {
       if (
-        !row ||
-        row.year !== coordSession.year ||
+        !existingRow ||
+        existingRow.year !== coordSession.year ||
         !coordSession.branch ||
-        !isBranchMatch(row.branch, coordSession.branch)
+        !isBranchMatch(existingRow.branch, coordSession.branch)
       ) {
         return NextResponse.json(
           { success: false, error: 'Forbidden. Cannot delete lectures outside your assigned Year & Branch.' },
@@ -254,6 +266,14 @@ export async function DELETE(req: NextRequest) {
     const { error } = await client.from('lectures').delete().eq('id', id);
     if (error) {
       return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    }
+
+    if (existingRow) {
+      await adjustMaterialCounts(client, {
+        lectures: -1,
+        year: existingRow.year || null,
+        yearDelta: -1,
+      });
     }
 
     return NextResponse.json({ success: true, deletedId: id });

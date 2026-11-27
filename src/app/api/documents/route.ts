@@ -3,6 +3,7 @@ import { getSupabaseClient } from '@/lib/supabase';
 import { getAdminSession, getCoordinatorSession, getStaffSession } from '@/lib/serverAuth';
 import { isBranchMatch } from '@/lib/coordinatorService';
 import { deleteFileFromGoogleDriveServer } from '@/lib/serverDrive';
+import { adjustMaterialCounts } from '@/lib/serverCounters';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,6 +28,12 @@ export async function GET(req: NextRequest) {
     const semester = searchParams.get('semester');
     const subject = searchParams.get('subject');
     const type = searchParams.get('type'); // 'Notes' or 'PYQ' or 'All'
+    const search = searchParams.get('search')?.trim() || '';
+    const limitParam = searchParams.get('limit');
+    const offsetParam = searchParams.get('offset');
+
+    const limit = limitParam ? Math.min(50, Math.max(1, parseInt(limitParam, 10) || 5)) : null;
+    const offset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0;
 
     const client = resolveClient(req);
     if (!client) {
@@ -38,37 +45,85 @@ export async function GET(req: NextRequest) {
 
     const METADATA_COLUMNS = 'id, title, year, branch, semester, subject, code, pages, size, owner, file_url, file_path, created_at';
     const allDocs: any[] = [];
+    const perTableFetchEnd = limit !== null ? offset + limit : null;
 
-    // Query notes (only lightweight metadata from Supabase database)
-    if (type !== 'PYQ') {
-      let query = client.from('notes').select(METADATA_COLUMNS);
-      if (year && year !== 'All') query = query.eq('year', year);
-      if (branch && branch !== 'All') query = query.eq('branch', branch);
-      if (semester && semester !== 'All') query = query.eq('semester', semester);
-      if (subject && subject !== 'All') query = query.eq('subject', subject);
-      const { data, error } = await query.order('created_at', { ascending: false });
+    const applyFilters = (q: any) => {
+      if (year && year !== 'All') q = q.eq('year', year);
+      if (branch && branch !== 'All') q = q.eq('branch', branch);
+      if (semester && semester !== 'All') q = q.eq('semester', semester);
+      if (subject && subject !== 'All') q = q.eq('subject', subject);
+      if (search) {
+        const clean = search.replace(/[%_,]/g, ' ').trim();
+        if (clean) {
+          q = q.or(`title.ilike.%${clean}%,subject.ilike.%${clean}%,owner.ilike.%${clean}%`);
+        }
+      }
+      return q;
+    };
+
+    // Query notes (only lightweight metadata; paginated when limit is supplied)
+    if (type !== 'PYQ' && type !== 'PYQs') {
+      let query = applyFilters(
+        client.from('notes').select(METADATA_COLUMNS).order('created_at', { ascending: false })
+      );
+      if (perTableFetchEnd !== null) {
+        const rangeStart = type === 'Notes' ? offset : 0;
+        const rangeEnd = type === 'Notes' ? offset + limit! : perTableFetchEnd;
+        query = query.range(rangeStart, rangeEnd);
+      }
+      const { data, error } = await query;
       if (error) {
         return NextResponse.json({ success: false, error: error.message }, { status: 500 });
       }
       if (data) {
-        allDocs.push(...data.map((d) => ({ ...d, type: 'Notes' })));
+        allDocs.push(...data.map((d: any) => ({ ...d, type: 'Notes' })));
       }
     }
 
-    // Query pyqs (only lightweight metadata from Supabase database)
+    // Query pyqs (only lightweight metadata; paginated when limit is supplied)
     if (type !== 'Notes') {
-      let query = client.from('pyqs').select(METADATA_COLUMNS);
-      if (year && year !== 'All') query = query.eq('year', year);
-      if (branch && branch !== 'All') query = query.eq('branch', branch);
-      if (semester && semester !== 'All') query = query.eq('semester', semester);
-      if (subject && subject !== 'All') query = query.eq('subject', subject);
-      const { data, error } = await query.order('created_at', { ascending: false });
+      let query = applyFilters(
+        client.from('pyqs').select(METADATA_COLUMNS).order('created_at', { ascending: false })
+      );
+      if (perTableFetchEnd !== null) {
+        const isOnlyPyq = type === 'PYQ' || type === 'PYQs';
+        const rangeStart = isOnlyPyq ? offset : 0;
+        const rangeEnd = isOnlyPyq ? offset + limit! : perTableFetchEnd;
+        query = query.range(rangeStart, rangeEnd);
+      }
+      const { data, error } = await query;
       if (error) {
         return NextResponse.json({ success: false, error: error.message }, { status: 500 });
       }
       if (data) {
-        allDocs.push(...data.map((d) => ({ ...d, type: 'PYQ' })));
+        allDocs.push(...data.map((d: any) => ({ ...d, type: 'PYQ' })));
       }
+    }
+
+    // Sort globally newest-first
+    allDocs.sort((a, b) => {
+      const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return tb - ta;
+    });
+
+    if (limit !== null) {
+      const isSingleTable = type === 'Notes' || type === 'PYQ' || type === 'PYQs';
+      if (isSingleTable) {
+        const hasMore = allDocs.length > limit;
+        return NextResponse.json({
+          success: true,
+          documents: allDocs.slice(0, limit),
+          hasMore,
+        });
+      }
+      const sliced = allDocs.slice(offset, offset + limit);
+      const hasMore = allDocs.length > offset + limit;
+      return NextResponse.json({
+        success: true,
+        documents: sliced,
+        hasMore,
+      });
     }
 
     return NextResponse.json({
@@ -134,6 +189,14 @@ export async function POST(req: NextRequest) {
     const targetTable = type === 'PYQ' ? 'pyqs' : 'notes';
     const targetId = id || `doc-${Date.now()}`;
 
+    // Check if document ID already exists so counter column increments ONLY on genuine new inserts
+    const { data: existingDoc } = await client
+      .from(targetTable)
+      .select('id')
+      .eq('id', targetId)
+      .limit(1)
+      .maybeSingle();
+
     const payload = {
       id: targetId,
       title: title.trim(),
@@ -172,6 +235,15 @@ export async function POST(req: NextRequest) {
         { success: false, error: `Supabase database error: ${error.message} (table: ${targetTable})` },
         { status: 500 }
       );
+    }
+
+    if (!existingDoc) {
+      await adjustMaterialCounts(client, {
+        notes: targetTable === 'notes' ? 1 : 0,
+        pyqs: targetTable === 'pyqs' ? 1 : 0,
+        year: payload.year,
+        yearDelta: 1,
+      });
     }
 
     return NextResponse.json({
@@ -302,21 +374,22 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    // Look up existing DB row for authorization and Drive cleanup
-    let dbRow: { year?: string; branch?: string; file_url?: string | null; file_path?: string | null } | null = null;
+    // Look up existing DB row for authorization, Drive cleanup, and counter decrement
+    let dbRow: { year?: string; branch?: string; file_url?: string | null; file_path?: string | null; _table?: 'notes' | 'pyqs' } | null = null;
     try {
       if (type === 'PYQ' || type === 'PYQs') {
         const { data } = await client.from('pyqs').select('year, branch, file_url, file_path').eq('id', id).limit(1).maybeSingle();
-        dbRow = data;
+        if (data) dbRow = { ...data, _table: 'pyqs' };
       } else if (type === 'Notes') {
         const { data } = await client.from('notes').select('year, branch, file_url, file_path').eq('id', id).limit(1).maybeSingle();
-        dbRow = data;
+        if (data) dbRow = { ...data, _table: 'notes' };
       } else {
         const [nRes, pRes] = await Promise.all([
           client.from('notes').select('year, branch, file_url, file_path').eq('id', id).limit(1).maybeSingle(),
           client.from('pyqs').select('year, branch, file_url, file_path').eq('id', id).limit(1).maybeSingle(),
         ]);
-        dbRow = nRes.data || pRes.data || null;
+        if (nRes.data) dbRow = { ...nRes.data, _table: 'notes' };
+        else if (pRes.data) dbRow = { ...pRes.data, _table: 'pyqs' };
       }
     } catch {
       // Ignore lookup error for Admin fallback
@@ -357,6 +430,16 @@ export async function DELETE(req: NextRequest) {
         client.from('notes').delete().eq('id', id),
         client.from('pyqs').delete().eq('id', id),
       ]);
+    }
+
+    if (dbRow) {
+      const wasPyq = dbRow._table === 'pyqs' || type === 'PYQ' || type === 'PYQs';
+      await adjustMaterialCounts(client, {
+        notes: wasPyq ? 0 : -1,
+        pyqs: wasPyq ? -1 : 0,
+        year: dbRow.year || null,
+        yearDelta: -1,
+      });
     }
 
     return NextResponse.json({

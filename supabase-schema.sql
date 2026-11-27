@@ -154,6 +154,7 @@ alter table public.admin_credentials add column if not exists gdrive_webhook tex
 alter table public.admin_credentials add column if not exists gdrive_folder_id text;
 alter table public.admin_credentials add column if not exists active_drive_id text;
 alter table public.admin_credentials add column if not exists gdrive_drives jsonb default '[]'::jsonb;
+alter table public.admin_credentials add column if not exists material_counts jsonb;
 
 -- Seed initial admin if empty
 insert into public.admin_credentials (id, password)

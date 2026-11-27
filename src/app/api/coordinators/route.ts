@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
 import { getAdminSession, hashPassword } from '@/lib/serverAuth';
+import { adjustMaterialCounts } from '@/lib/serverCounters';
 
 export const dynamic = 'force-dynamic';
 
@@ -104,6 +105,13 @@ export async function POST(req: NextRequest) {
     const cleanInitials = initials || name.trim().split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2) || 'CO';
     const targetId = id || `coord-${Date.now()}`;
 
+    const { data: existingCoord } = await client
+      .from('coordinators')
+      .select('id')
+      .eq('id', targetId)
+      .limit(1)
+      .maybeSingle();
+
     const record = {
       id: targetId,
       name: name.trim(),
@@ -149,6 +157,10 @@ export async function POST(req: NextRequest) {
         },
         { status: 500 }
       );
+    }
+
+    if (!existingCoord) {
+      await adjustMaterialCounts(client, { coordinators: 1 });
     }
 
     return NextResponse.json({
@@ -266,6 +278,13 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
+    const { data: existingCoord } = await client
+      .from('coordinators')
+      .select('id')
+      .eq('id', id)
+      .limit(1)
+      .maybeSingle();
+
     const { error } = await client
       .from('coordinators')
       .delete()
@@ -277,6 +296,10 @@ export async function DELETE(req: NextRequest) {
         { success: false, error: error.message },
         { status: 500 }
       );
+    }
+
+    if (existingCoord) {
+      await adjustMaterialCounts(client, { coordinators: -1 });
     }
 
     return NextResponse.json({ success: true, deletedId: id });

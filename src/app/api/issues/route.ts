@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
 import { getAdminSession, getCoordinatorSession, getStaffSession } from '@/lib/serverAuth';
 import { isBranchMatch } from '@/lib/coordinatorService';
+import { adjustMaterialCounts, recomputeAndSaveMaterialCounts } from '@/lib/serverCounters';
 
 export const dynamic = 'force-dynamic';
 
@@ -192,6 +193,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: error.message }, { status: 500 });
     }
 
+    await adjustMaterialCounts(client, { openIssues: 1 });
+
     return NextResponse.json({
       success: true,
       issue: data || payload,
@@ -236,6 +239,10 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
+    const { data: existingIssue } = status
+      ? await client.from('coordinator_issues').select('status').eq('id', id).limit(1).maybeSingle()
+      : { data: null };
+
     const updatePayload: Record<string, any> = {
       updated_at: new Date().toISOString(),
     };
@@ -257,6 +264,12 @@ export async function PATCH(req: NextRequest) {
         );
       }
       return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    }
+
+    if (status && existingIssue && existingIssue.status !== status) {
+      await adjustMaterialCounts(client, {
+        openIssues: status === 'Resolved' ? -1 : 1,
+      });
     }
 
     return NextResponse.json({ success: true, issue: data });
@@ -320,6 +333,10 @@ export async function DELETE(req: NextRequest) {
         );
       }
       return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    }
+
+    if (mode === 'all' || id) {
+      await recomputeAndSaveMaterialCounts(client).catch(() => {});
     }
 
     return NextResponse.json({
