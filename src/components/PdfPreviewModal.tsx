@@ -4,6 +4,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Download, Loader2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { normalizeSafeEmbedUrl } from '../lib/urlSafety';
 import { detectPreviewFileCategory } from '../lib/fileValidation';
+import {
+  getOfflineFileBlob,
+  isAndroidStudentApp,
+  isDeviceOffline,
+  markDocAsCachedOffline,
+  saveOfflineFileBlob,
+} from '../lib/offlineCache';
 
 export interface PdfPreviewDoc {
   id: string;
@@ -77,6 +84,7 @@ export default function PdfPreviewModal({
   const [imageFallbackStep, setImageFallbackStep] = useState(0);
   const [htmlContent, setHtmlContent] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [offlineBlobUrl, setOfflineBlobUrl] = useState<string | null>(null);
 
   const fileCategory = useMemo(
     () => (doc ? detectPreviewFileCategory(doc.title, doc.file_url, doc.file_path) : 'pdf'),
@@ -186,15 +194,18 @@ export default function PdfPreviewModal({
         setPanPosition({ x: 0, y: 0 });
       }
     } else if (!isPinchingRef.current && e.touches.length === 1) {
+      const currentZoom = zoomLevelFloatRef.current;
+      if (currentZoom <= 100) {
+        return;
+      }
       const deltaX = e.touches[0].clientX - lastTouchPosRef.current.x;
       const deltaY = e.touches[0].clientY - lastTouchPosRef.current.y;
       lastTouchPosRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
 
-      const currentZoom = zoomLevelFloatRef.current;
       const maxPanX = Math.max(0, ((currentZoom - 100) / 100) * 220);
-      const maxPanY = Math.max(120, ((currentZoom - 100) / 100) * 320);
+      const maxPanY = Math.max(0, ((currentZoom - 100) / 100) * 320);
       setPanPosition((prev) => ({
-        x: currentZoom > 100 ? Math.max(-maxPanX, Math.min(maxPanX, prev.x + deltaX)) : 0,
+        x: Math.max(-maxPanX, Math.min(maxPanX, prev.x + deltaX)),
         y: Math.max(-maxPanY, Math.min(maxPanY, prev.y + deltaY)),
       }));
     }
@@ -235,57 +246,198 @@ export default function PdfPreviewModal({
     setHtmlContent(null);
     setPreviewError(null);
 
+    let cancelled = false;
+    let activeObjectUrl: string | null = null;
+    const bgController = new AbortController();
+    setOfflineBlobUrl(null);
+
     const bridge = getAndroidBridge();
+    const isApp = isAndroidStudentApp();
     const rawUrl = resolveRawPdfSourceUrl(doc);
+    const offlineNow = isDeviceOffline();
+
+    const cleanupEffect = () => {
+      cancelled = true;
+      bgController.abort();
+      if (activeObjectUrl) {
+        URL.revokeObjectURL(activeObjectUrl);
+        activeObjectUrl = null;
+      }
+    };
 
     if (fileCategory === 'image') {
       setUseWebPdfFallback(true);
       setIsIframeLoading(Boolean(rawUrl));
-      return;
+
+      if (!isApp) {
+        if (offlineNow) {
+          setIsIframeLoading(false);
+          setPreviewError('You are currently offline. Please reconnect to view this image.');
+        }
+        return cleanupEffect;
+      }
+
+      (async () => {
+        const cached = await getOfflineFileBlob(doc.id);
+        if (cancelled) return;
+        if (cached) {
+          activeObjectUrl = URL.createObjectURL(cached.blob);
+          setOfflineBlobUrl(activeObjectUrl);
+          setIsIframeLoading(false);
+          onWebLoaded?.(doc.id);
+          return;
+        }
+        if (offlineNow) {
+          setIsIframeLoading(false);
+          setPreviewError(
+            'This image is not saved in your offline app cache yet. Please connect to the internet once to open and cache it.'
+          );
+          return;
+        }
+        // Online inside Android App: silently cache image blob in app storage for future offline access
+        const cacheFetchUrl = driveFileId
+          ? `/api/preview-file?mode=image&url=${encodeURIComponent(rawUrl)}`
+          : rawUrl;
+        if (cacheFetchUrl) {
+          fetch(cacheFetchUrl, { signal: bgController.signal })
+            .then(async (r) => {
+              if (!r.ok) return;
+              const blob = await r.blob();
+              if (cancelled || blob.size <= 0) return;
+              const saved = await saveOfflineFileBlob(
+                doc.id,
+                blob,
+                blob.type || 'image/png',
+                doc.title
+              );
+              if (saved && !cancelled) {
+                markDocAsCachedOffline(doc.id);
+                onWebLoaded?.(doc.id);
+              }
+            })
+            .catch(() => {});
+        }
+      })();
+
+      return cleanupEffect;
     }
 
     if (fileCategory === 'html') {
       setUseWebPdfFallback(true);
-      if (!rawUrl) {
-        setIsIframeLoading(false);
-        return;
-      }
+      setIsIframeLoading(Boolean(rawUrl));
 
-      if (!driveFileId) {
-        setIsIframeLoading(true);
-        return;
-      }
+      (async () => {
+        if (isApp) {
+          const cached = await getOfflineFileBlob(doc.id);
+          if (cancelled) return;
+          if (cached) {
+            const text = await cached.blob.text().catch(() => '');
+            if (cancelled) return;
+            if (text) {
+              setHtmlContent(text);
+              setIsIframeLoading(false);
+              onWebLoaded?.(doc.id);
+              return;
+            }
+          }
+        }
+        if (!rawUrl) {
+          setIsIframeLoading(false);
+          return;
+        }
+        if (offlineNow) {
+          setIsIframeLoading(false);
+          setPreviewError(
+            isApp
+              ? 'This HTML file is not saved in your offline app cache yet. Please connect to the internet once to open and cache it.'
+              : 'You are currently offline. Please reconnect to view this HTML file.'
+          );
+          return;
+        }
+        if (!driveFileId) {
+          setIsIframeLoading(true);
+          return;
+        }
 
-      const controller = new AbortController();
-      setIsIframeLoading(true);
-      fetch(
-        `/api/preview-file?mode=html&url=${encodeURIComponent(rawUrl)}`,
-        { signal: controller.signal, cache: 'no-store' }
-      )
-        .then(async (res) => {
+        try {
+          const res = await fetch(
+            `/api/preview-file?mode=html&url=${encodeURIComponent(rawUrl)}`,
+            { signal: bgController.signal, cache: 'no-store' }
+          );
           const data = await res.json().catch(() => ({}));
           if (!res.ok || !data?.success || typeof data?.html !== 'string') {
             throw new Error(data?.error || 'Could not load HTML preview.');
           }
+          if (cancelled) return;
           setHtmlContent(data.html);
           setIsIframeLoading(false);
+          if (isApp) {
+            const htmlBlob = new Blob([data.html], { type: 'text/html' });
+            const saved = await saveOfflineFileBlob(doc.id, htmlBlob, 'text/html', doc.title);
+            if (saved && !cancelled) {
+              markDocAsCachedOffline(doc.id);
+            }
+          }
           onWebLoaded?.(doc.id);
-        })
-        .catch((err: any) => {
-          if (err?.name === 'AbortError') return;
+        } catch (err: any) {
+          if (cancelled || err?.name === 'AbortError') return;
           setPreviewError(err?.message || 'Could not load HTML preview.');
           setIsIframeLoading(false);
-        });
+        }
+      })();
 
-      return () => {
-        controller.abort();
-      };
+      return cleanupEffect;
     }
 
     if (!bridge || !bridge.openNativePdf || !rawUrl) {
       setUseWebPdfFallback(true);
-      setIsIframeLoading(!isCached);
-      return;
+      setIsIframeLoading(true);
+
+      if (!isApp) {
+        if (offlineNow && rawUrl) {
+          setIsIframeLoading(false);
+          setPreviewError('You are currently offline. Please reconnect to view this PDF.');
+        }
+        return cleanupEffect;
+      }
+
+      (async () => {
+        const cached = await getOfflineFileBlob(doc.id);
+        if (cancelled) return;
+        if (cached) {
+          activeObjectUrl = URL.createObjectURL(cached.blob);
+          setOfflineBlobUrl(activeObjectUrl);
+          setIsIframeLoading(false);
+          markDocAsCachedOffline(doc.id);
+          onWebLoaded?.(doc.id);
+          return;
+        }
+        if (offlineNow) {
+          setIsIframeLoading(false);
+          setPreviewError(
+            'This PDF is not saved in your offline app cache yet. Please connect to the internet once to open and store it offline.'
+          );
+          return;
+        }
+        if (driveFileId && rawUrl) {
+          fetch(`/api/preview-file?mode=pdf&url=${encodeURIComponent(rawUrl)}`, {
+            signal: bgController.signal,
+          })
+            .then(async (r) => {
+              if (!r.ok) return;
+              const blob = await r.blob();
+              if (cancelled || blob.size <= 0) return;
+              const saved = await saveOfflineFileBlob(doc.id, blob, 'application/pdf', doc.title);
+              if (saved && !cancelled) {
+                markDocAsCachedOffline(doc.id);
+                onWebLoaded?.(doc.id);
+              }
+            })
+            .catch(() => {});
+        }
+      })();
+
+      return cleanupEffect;
     }
 
     setUseWebPdfFallback(false);
@@ -370,11 +522,11 @@ export default function PdfPreviewModal({
   if (!doc) return null;
 
   const safeEmbedUrl = getPdfEmbedUrl(doc.file_url || doc.file_path);
-  const hasPdfSource = Boolean(safeEmbedUrl || rawSourceUrl);
+  const hasPdfSource = Boolean(safeEmbedUrl || rawSourceUrl || offlineBlobUrl || htmlContent !== null);
   const isPyq = doc.type === 'PYQ' || doc.type === 'PYQs';
-  const currentImageSrc = imageCandidates[imageFallbackStep] || '';
+  const currentImageSrc = offlineBlobUrl || imageCandidates[imageFallbackStep] || '';
   const usingDriveIframeFallbackForImage =
-    fileCategory === 'image' && imageFallbackStep >= imageCandidates.length && Boolean(driveFileId && safeEmbedUrl);
+    !offlineBlobUrl && fileCategory === 'image' && imageFallbackStep >= imageCandidates.length && Boolean(driveFileId && safeEmbedUrl);
 
   const adjustZoom = (delta: number) => {
     setZoomLevel((prev) => {
@@ -646,7 +798,7 @@ export default function PdfPreviewModal({
                     className="flex-1 w-full h-full flex flex-col"
                   >
                     <iframe
-                      src={safeEmbedUrl}
+                      src={offlineBlobUrl || safeEmbedUrl}
                       title={doc.title}
                       loading="eager"
                       onLoad={() => {

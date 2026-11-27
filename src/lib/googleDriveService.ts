@@ -165,11 +165,10 @@ export function getGoogleDriveConfig(): GoogleDriveConfig {
     return {
       webhookUrl:
         process.env.GOOGLE_DRIVE_WEBHOOK_URL ||
-        process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL ||
+        process.env.GDRIVE_WEBHOOK_URL ||
         '',
       folderId:
         process.env.GOOGLE_DRIVE_FOLDER_ID ||
-        process.env.NEXT_PUBLIC_GOOGLE_DRIVE_FOLDER_ID ||
         '',
       enabled: true,
     };
@@ -189,7 +188,6 @@ export function isGoogleDriveConfigured(): boolean {
   if (typeof window === 'undefined') {
     return Boolean(
       process.env.GOOGLE_DRIVE_WEBHOOK_URL ||
-      process.env.NEXT_PUBLIC_GOOGLE_DRIVE_WEBHOOK_URL ||
       process.env.GDRIVE_WEBHOOK_URL
     );
   }

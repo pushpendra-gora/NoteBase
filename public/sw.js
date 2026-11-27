@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'notebase-shell-v3';
+const CACHE_VERSION = 'notebase-shell-v4';
 const SHELL_URLS = ['/', '/results', '/logo.png?v=2'];
 
 self.addEventListener('install', (event) => {

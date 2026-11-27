@@ -82,6 +82,7 @@ import {
 } from '../../../lib/googleDriveService';
 import {
   ALLOWED_FILE_INPUT_ACCEPT,
+  detectPreviewFileCategory,
   getFileExtension,
   isPdfFile,
   resolveDocumentFilename,
@@ -706,14 +707,26 @@ function DashboardContent() {
   // Handle Upload
   const handleUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!uploadSemester) {
+      showToast('⚠️ Please select Semester.');
+      return;
+    }
+    if (!uploadSubject) {
+      showToast('⚠️ Please select Subject.');
+      return;
+    }
     const cleanTitle = uploadFileName.trim();
     if (!cleanTitle) {
       showToast(uploadType === 'Lectures' ? '⚠️ Please enter the Lecture Title.' : '⚠️ Please enter the Display Title for the document.');
       return;
     }
+    if (uploadType !== 'Lectures' && !selectedFileObj) {
+      showToast('⚠️ Please attach a valid PDF, Image, or HTML file before uploading.');
+      return;
+    }
 
-    const finalSem = (uploadSemester as SemesterOption) || coordinatorSemesters[0] || 'Semester 1';
-    const finalSubject = uploadSubject || availableSubjects[0] || 'Core Subject';
+    const finalSem = uploadSemester as SemesterOption;
+    const finalSubject = uploadSubject;
 
     // SPECIAL CASE: LECTURES
     if (uploadType === 'Lectures') {
@@ -885,6 +898,7 @@ function DashboardContent() {
           stageLabel: 'Upload complete!',
           startedAt: uploadStartedAt,
         });
+        await new Promise((resolve) => setTimeout(resolve, 450));
       }
 
       saveCustomUploadedDocument(noteDoc);
@@ -948,27 +962,15 @@ function DashboardContent() {
     });
   };
 
-  // Handle Edit Save (Persists to Supabase + localStorage + React state)
+  // Handle Edit Save (Persists to Supabase first, then updates local state & storage)
   const handleSaveEdit = async () => {
     if (!editingFile || !newEditName.trim()) return;
     const formatted = newEditName.trim();
     const targetId = editingFile.id;
     const targetType = editingFile.type;
-
-    setFiles((prev) =>
-      prev.map((f) => (f.id === targetId ? { ...f, name: formatted } : f))
-    );
-
-    if (typeof window !== 'undefined') {
-      try {
-        const raw = localStorage.getItem('notehub_custom_documents');
-        if (raw) {
-          const docs: NoteDocument[] = JSON.parse(raw);
-          const updated = docs.map((d) => (d.id === targetId ? { ...d, title: formatted } : d));
-          localStorage.setItem('notehub_custom_documents', JSON.stringify(updated));
-        }
-      } catch {}
-    }
+    const finalEditedName = isPdfFile(editingFile.name)
+      ? formatted
+      : resolveDocumentFilename(formatted, editingFile.name);
 
     try {
       const creds = getSupabaseCredentials();
@@ -977,14 +979,37 @@ function DashboardContent() {
         headers['x-supabase-url'] = creds.url;
         headers['x-supabase-key'] = creds.key;
       }
-      await fetch('/api/documents', {
+      const res = await fetch('/api/documents', {
         method: 'PATCH',
         headers,
-        body: JSON.stringify({ id: targetId, title: formatted, type: targetType }),
+        body: JSON.stringify({ id: targetId, title: finalEditedName, type: targetType }),
       });
-    } catch {}
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        showToast(`⚠️ ${data?.error || 'Failed to rename document on server.'}`);
+        return;
+      }
+    } catch {
+      showToast('⚠️ Network error while renaming document on server.');
+      return;
+    }
 
-    showToast(`✏️ Renamed to "${formatted}"`);
+    setFiles((prev) =>
+      prev.map((f) => (f.id === targetId ? { ...f, name: finalEditedName } : f))
+    );
+
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('notehub_custom_documents');
+        if (raw) {
+          const docs: NoteDocument[] = JSON.parse(raw);
+          const updated = docs.map((d) => (d.id === targetId ? { ...d, title: finalEditedName } : d));
+          localStorage.setItem('notehub_custom_documents', JSON.stringify(updated));
+        }
+      } catch {}
+    }
+
+    showToast(`✏️ Renamed to "${finalEditedName}"`);
     setEditingFile(null);
     setNewEditName('');
   };
@@ -1201,16 +1226,19 @@ function DashboardContent() {
       ]
     };
 
-    const added = addSubjectFor(yearParam, branchParam, activeSubjectSemester, newSubj);
-    if (!added) {
+    const existingSubjs = getSubjectsFor(yearParam, branchParam, activeSubjectSemester);
+    if (existingSubjs.some((s) => s.title.toLowerCase() === cleanTitle.toLowerCase())) {
       showToast(`⚠️ Subject "${cleanTitle}" already exists in ${activeSubjectSemester}!`);
       return;
     }
 
-    if (isSupabaseConfigured()) {
-      await insertSubjectToSupabase(yearParam, branchParam, activeSubjectSemester, newSubj);
+    const ok = await insertSubjectToSupabase(yearParam, branchParam, activeSubjectSemester, newSubj);
+    if (!ok) {
+      showToast(`⚠️ Could not add subject "${cleanTitle}" to server database.`);
+      return;
     }
 
+    addSubjectFor(yearParam, branchParam, activeSubjectSemester, newSubj);
     setNewSubjectTitle('');
     setNewSubjectCode('');
     setSubjectsVersion((v) => v + 1);
@@ -1223,10 +1251,12 @@ function DashboardContent() {
       title: 'Delete Subject',
       message: `Are you sure you want to delete subject "${subjTitle}" from ${activeSubjectSemester}?`,
       onConfirm: async () => {
-        deleteSubjectFor(yearParam, branchParam, activeSubjectSemester, subjTitle);
-        if (isSupabaseConfigured()) {
-          await deleteSubjectFromSupabase(yearParam, branchParam, activeSubjectSemester, subjTitle);
+        const ok = await deleteSubjectFromSupabase(yearParam, branchParam, activeSubjectSemester, subjTitle);
+        if (!ok) {
+          showToast(`⚠️ Could not delete subject "${subjTitle}" from server database.`);
+          return;
         }
+        deleteSubjectFor(yearParam, branchParam, activeSubjectSemester, subjTitle);
         setSubjectsVersion((v) => v + 1);
         showToast(`🗑️ Subject "${subjTitle}" deleted from ${activeSubjectSemester}!`);
       }
@@ -1241,14 +1271,16 @@ function DashboardContent() {
     const alphaPrefix = cleanTitle.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4) || 'SUB';
     const cleanCode = editSubjectCode.trim() || `${alphaPrefix}101`;
 
+    const ok = await updateSubjectInSupabase(yearParam, branchParam, activeSubjectSemester, oldTitle, cleanTitle, cleanCode);
+    if (!ok) {
+      showToast('⚠️ Failed to update subject on server database.');
+      return;
+    }
+
     updateSubjectFor(yearParam, branchParam, activeSubjectSemester, oldTitle, {
       title: cleanTitle,
       code: cleanCode
     });
-
-    if (isSupabaseConfigured()) {
-      await updateSubjectInSupabase(yearParam, branchParam, activeSubjectSemester, oldTitle, cleanTitle, cleanCode);
-    }
 
     // Update files & lectures in memory if subject was renamed
     if (oldTitle !== cleanTitle) {
@@ -1995,19 +2027,30 @@ function DashboardContent() {
               {/* Files List */}
               <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1 pb-10">
                 {filteredFiles.length > 0 ? (
-                  filteredFiles.map((file, idx) => (
+                  filteredFiles.map((file, idx) => {
+                    const fileCat = detectPreviewFileCategory(file.name, file.file_url, file.file_path);
+                    const fileBadgeClass =
+                      fileCat === 'image'
+                        ? 'bg-emerald-50 text-emerald-600 border-emerald-100 group-hover:bg-emerald-600 group-hover:text-white'
+                        : fileCat === 'html'
+                        ? 'bg-indigo-50 text-indigo-600 border-indigo-100 group-hover:bg-indigo-600 group-hover:text-white'
+                        : 'bg-red-50 text-red-600 border-red-100 group-hover:bg-red-600 group-hover:text-white';
+                    const fileBadgeText =
+                      fileCat === 'image' ? 'IMG' : fileCat === 'html' ? 'HTML' : 'PDF';
+
+                    return (
                     <div
                       key={file.id}
                       className="p-3.5 sm:p-4 rounded-2xl border border-slate-100 hover:border-indigo-200 bg-white hover:bg-slate-50/70 transition-all flex items-center justify-between gap-2.5 sm:gap-3 shadow-[0_1px_4px_rgba(0,0,0,0.02)] group relative"
                     >
-                      {/* Left: Red PDF Icon + Details (Clickable to preview) */}
+                      {/* Left: File Type Icon + Details (Clickable to preview) */}
                       <div 
                         onClick={() => setPreviewFile(file)}
                         className="flex items-center space-x-3 sm:space-x-3.5 min-w-0 flex-1 cursor-pointer"
                         title="Click to preview file"
                       >
-                        <div className="w-10 h-10 rounded-xl bg-red-50 text-red-600 flex items-center justify-center font-bold text-[10px] tracking-wider shrink-0 border border-red-100 group-hover:bg-red-600 group-hover:text-white transition-colors">
-                          PDF
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-[10px] tracking-wider shrink-0 border transition-colors ${fileBadgeClass}`}>
+                          {fileBadgeText}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="text-xs sm:text-sm font-bold text-slate-900 truncate group-hover:text-indigo-600 transition-colors" title={file.name}>
@@ -2138,7 +2181,8 @@ function DashboardContent() {
                       </div>
 
                     </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="p-8 text-center text-slate-400 text-xs bg-slate-50 rounded-2xl space-y-2">
                     <p>No {activeNav === 'Notes' ? 'Notes' : activeNav === 'PYQs' ? 'PYQ' : ''} files found matching your search.</p>

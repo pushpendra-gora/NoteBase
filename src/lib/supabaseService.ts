@@ -234,7 +234,7 @@ export async function fetchSubjectsFromSupabase(
   year: YearOption,
   branch: BranchOption,
   semester: SemesterOption
-): Promise<SubjectMeta[]> {
+): Promise<SubjectMeta[] | null> {
   try {
     if (typeof window !== 'undefined') {
       const q = new URLSearchParams({ year, branch, semester });
@@ -242,9 +242,9 @@ export async function fetchSubjectsFromSupabase(
         cache: 'no-store',
         headers: getClientApiHeaders(),
       });
-      if (!res.ok) return [];
+      if (!res.ok) return null;
       const json = await res.json();
-      if (!json?.success || !Array.isArray(json.subjects)) return [];
+      if (!json?.success || !Array.isArray(json.subjects)) return null;
       return json.subjects.map((row: any) => ({
         title: row.title,
         code: row.code,
@@ -261,7 +261,7 @@ export async function fetchSubjectsFromSupabase(
     }
 
     const client = getSupabaseClient();
-    if (!client) return [];
+    if (!client) return null;
     const { data, error } = await client
       .from('subjects')
       .select('*')
@@ -269,7 +269,7 @@ export async function fetchSubjectsFromSupabase(
       .eq('branch', branch)
       .eq('semester', semester)
       .order('created_at', { ascending: true });
-    if (error) return [];
+    if (error) return null;
     return ((data || []) as any[]).map((row) => ({
       title: row.title,
       code: row.code,
@@ -277,23 +277,23 @@ export async function fetchSubjectsFromSupabase(
       pyqSnippets: row.pyq_snippets || [],
     }));
   } catch {
-    return [];
+    return null;
   }
 }
 
 /**
  * Fetches all custom subjects via server /api/subjects route across all years and branches.
  */
-export async function fetchAllSubjectsFromSupabase(): Promise<{ year: YearOption; branch: BranchOption; semester: SemesterOption; subject: SubjectMeta }[]> {
+export async function fetchAllSubjectsFromSupabase(): Promise<{ year: YearOption; branch: BranchOption; semester: SemesterOption; subject: SubjectMeta }[] | null> {
   try {
     if (typeof window !== 'undefined') {
       const res = await fetch('/api/subjects', {
         cache: 'no-store',
         headers: getClientApiHeaders(),
       });
-      if (!res.ok) return [];
+      if (!res.ok) return null;
       const json = await res.json();
-      if (!json?.success || !Array.isArray(json.subjects)) return [];
+      if (!json?.success || !Array.isArray(json.subjects)) return null;
       return json.subjects.map((row: any) => ({
         year: row.year as YearOption,
         branch: row.branch as BranchOption,
@@ -308,12 +308,12 @@ export async function fetchAllSubjectsFromSupabase(): Promise<{ year: YearOption
     }
 
     const client = getSupabaseClient();
-    if (!client) return [];
+    if (!client) return null;
     const { data, error } = await client
       .from('subjects')
       .select('*')
       .order('created_at', { ascending: true });
-    if (error || !data) return [];
+    if (error || !data) return null;
     return data.map((row) => ({
       year: row.year as YearOption,
       branch: row.branch as BranchOption,
@@ -326,7 +326,7 @@ export async function fetchAllSubjectsFromSupabase(): Promise<{ year: YearOption
       },
     }));
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -413,7 +413,7 @@ export async function deleteSubjectFromSupabase(
 export async function fetchLecturesFromSupabase(
   year?: YearOption | string,
   branch?: BranchOption | string
-): Promise<LectureRecord[]> {
+): Promise<LectureRecord[] | null> {
   try {
     if (typeof window !== 'undefined') {
       const q = new URLSearchParams();
@@ -423,29 +423,29 @@ export async function fetchLecturesFromSupabase(
         cache: 'no-store',
         headers: getClientApiHeaders(),
       });
-      if (!res.ok) return [];
+      if (!res.ok) return null;
       const json = await res.json();
-      if (!json?.success || !Array.isArray(json.lectures)) return [];
+      if (!json?.success || !Array.isArray(json.lectures)) return null;
       return json.lectures as LectureRecord[];
     }
 
     const client = getSupabaseClient();
-    if (!client) return [];
+    if (!client) return null;
     let query = client.from('lectures').select('*');
     if (year && year !== 'All') query = query.eq('year', year);
     if (branch && branch !== 'All') query = query.eq('branch', branch);
     const { data, error } = await query.order('date', { ascending: false });
-    if (error || !data) return [];
+    if (error || !data) return null;
     return data as LectureRecord[];
   } catch {
-    return [];
+    return null;
   }
 }
 
 /**
  * Fetches all lectures across all years and branches.
  */
-export async function fetchAllLecturesFromSupabase(): Promise<LectureRecord[]> {
+export async function fetchAllLecturesFromSupabase(): Promise<LectureRecord[] | null> {
   return fetchLecturesFromSupabase();
 }
 

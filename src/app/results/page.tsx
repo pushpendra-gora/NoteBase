@@ -32,7 +32,15 @@ import { getDocumentsFor, getSubjectsFor, saveSubjectsFor, deleteCustomUploadedD
 import { BranchOption, NoteDocument, SemesterOption, YearOption, LectureItem } from '../../types';
 import { isSupabaseConfigured } from '../../lib/supabase';
 import { fetchDocumentsFromSupabase, fetchLecturesFromSupabase, fetchSubjectsFromSupabase } from '../../lib/supabaseService';
-import { resolveDocumentFilename } from '../../lib/fileValidation';
+import { detectPreviewFileCategory, resolveDocumentFilename } from '../../lib/fileValidation';
+import {
+  getAllOfflineBlobIds,
+  getOfflineFileBlob,
+  getSavedOfflineDocsMap,
+  isAndroidStudentApp,
+  isDeviceOffline,
+  removeOfflineFileBlob,
+} from '../../lib/offlineCache';
 import { formatFileSize } from '../../lib/pdfMetadata';
 import { normalizeSafeEmbedUrl, normalizeSafeExternalUrl, openSafeExternalUrl } from '../../lib/urlSafety';
 import PdfPreviewModal from '../../components/PdfPreviewModal';
@@ -75,8 +83,8 @@ function ResultsContent() {
     if (typeof window !== 'undefined') {
       window.history.pushState({ modal: 'pdf' }, '');
 
-      // Save document metadata only when an actual PDF source is attached
-      if (doc.file_url || doc.file_path) {
+      // Save previously opened file metadata strictly inside the Android Student App (never in normal browsers)
+      if (isAndroidStudentApp() && (doc.file_url || doc.file_path)) {
         try {
           const raw = localStorage.getItem('notebase_cached_pdf_docs');
           const map = raw ? JSON.parse(raw) : {};
@@ -212,9 +220,11 @@ function ResultsContent() {
     }
   };
 
-  // Local device storage cache for already-opened PDFs (instant offline reopening)
+  const [isAndroidApp, setIsAndroidApp] = useState(false);
+
+  // Local device storage cache for already-opened files (ONLY inside Android Student App)
   const [cachedPdfIds, setCachedPdfIds] = useState<Set<string>>(() => {
-    if (typeof window !== 'undefined') {
+    if (isAndroidStudentApp()) {
       try {
         const saved = localStorage.getItem('notebase_cached_pdf_ids');
         if (saved) return new Set(JSON.parse(saved));
@@ -222,6 +232,54 @@ function ResultsContent() {
     }
     return new Set<string>();
   });
+
+  useEffect(() => {
+    const appMode = isAndroidStudentApp();
+    setIsAndroidApp(appMode);
+    if (!appMode) return;
+
+    let active = true;
+    getAllOfflineBlobIds()
+      .then((idbIds) => {
+        if (!active || idbIds.length === 0) return;
+        setCachedPdfIds((prev) => {
+          const next = new Set(prev);
+          let changed = false;
+          for (const id of idbIds) {
+            if (!next.has(id)) {
+              next.add(id);
+              changed = true;
+            }
+          }
+          if (changed) {
+            try {
+              localStorage.setItem('notebase_cached_pdf_ids', JSON.stringify(Array.from(next)));
+            } catch {}
+            return next;
+          }
+          return prev;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [activeDoc]);
+
+  // Locally saved & previously opened document metadata (ONLY inside Android Student App)
+  const allSavedOfflineDocs = useMemo<NoteDocument[]>(() => {
+    if (!isAndroidApp) return [];
+    const map = getSavedOfflineDocsMap();
+    const bridge = getAndroidBridge();
+    return Object.values(map).filter((doc) => {
+      if (!doc || !doc.id) return false;
+      const hasFile = Boolean(doc.file_url || doc.file_path);
+      if (!hasFile) return false;
+      const inCachedSet = cachedPdfIds.has(doc.id);
+      const onAndroidDisk = Boolean(bridge?.isPdfCachedOnDisk?.(doc.id));
+      return inCachedSet || onAndroidDisk;
+    });
+  }, [isAndroidApp, cachedPdfIds, activeDoc]);
 
   // Real PDF metadata (exact page count & size measured from actual PDF files)
   const [realPdfMeta, setRealPdfMeta] = useState<Record<string, { pages: number; size: string }>>(() => {
@@ -297,38 +355,59 @@ function ResultsContent() {
       setIsLoadingSubjects(true);
     }
 
-    if (isSupabaseConfigured()) {
-      fetchSubjectsFromSupabase(year, branch, semester).then((cloudSubjs) => {
-        if (isMounted) {
-          if (Array.isArray(cloudSubjs)) {
-            setCloudSubjects(cloudSubjs);
-            try {
-              localStorage.setItem(`notebase_cloud_subjs_${year}_${branch}_${semester}`, JSON.stringify(cloudSubjs));
-            } catch {}
-            saveSubjectsFor(year, branch, semester, cloudSubjs);
-            setSubjectsVersion((v) => v + 1);
-          }
-          setIsLoadingSubjects(false);
+    fetchSubjectsFromSupabase(year, branch, semester).then((cloudSubjs) => {
+      if (isMounted) {
+        if (Array.isArray(cloudSubjs)) {
+          setCloudSubjects(cloudSubjs);
+          try {
+            localStorage.setItem(`notebase_cloud_subjs_${year}_${branch}_${semester}`, JSON.stringify(cloudSubjs));
+          } catch {}
+          saveSubjectsFor(year, branch, semester, cloudSubjs);
+          setSubjectsVersion((v) => v + 1);
         }
-      }).catch(() => {
-        if (isMounted) setIsLoadingSubjects(false);
-      });
-    } else {
-      setIsLoadingSubjects(false);
-    }
+        setIsLoadingSubjects(false);
+      }
+    }).catch(() => {
+      if (isMounted) setIsLoadingSubjects(false);
+    });
     return () => {
       isMounted = false;
     };
   }, [year, branch, semester]);
 
-  // Retrieve subjects belonging to this Year, Branch, and Semester (only coordinator-added)
+  // Retrieve subjects belonging to this Year, Branch, and Semester (plus offline previously-opened subjects)
   const subjectsList = useMemo(() => {
     if (!year || !branch || !semester) return [];
     const local = getSubjectsFor(year, branch, semester);
     const localTitles = new Set(local.map((s) => s.title.toLowerCase()));
     const extra = cloudSubjects.filter((s) => !localTitles.has(s.title.toLowerCase()));
-    return [...local, ...extra];
-  }, [year, branch, semester, subjectsVersion, cloudSubjects]);
+    const merged = [...local, ...extra];
+
+    if (isOffline && isAndroidApp && type !== 'Lectures') {
+      const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+      const seenTitles = new Set(merged.map((s) => s.title.toLowerCase()));
+      for (const doc of allSavedOfflineDocs) {
+        if (
+          doc.year === year &&
+          doc.branch === branch &&
+          doc.semester === semester &&
+          doc.type === targetType &&
+          doc.subject &&
+          !seenTitles.has(doc.subject.toLowerCase())
+        ) {
+          seenTitles.add(doc.subject.toLowerCase());
+          merged.push({
+            title: doc.subject,
+            code: doc.code || 'OFF',
+            unitSnippets: [],
+            pyqSnippets: [],
+          });
+        }
+      }
+    }
+
+    return merged;
+  }, [year, branch, semester, type, isOffline, subjectsVersion, cloudSubjects, allSavedOfflineDocs]);
 
   // Selected subject filter: defaults to the 1st subject, with localStorage persistence across back navigation
   const [selectedSubject, setSelectedSubject] = useState<string>(() => {
@@ -416,8 +495,8 @@ function ResultsContent() {
     loadLocalLectures();
     window.addEventListener('storage', loadLocalLectures);
 
-    // 2. Supabase Cloud
-    if (year && branch && isSupabaseConfigured()) {
+    // 2. Supabase Cloud (via /api/lectures server route)
+    if (year && branch) {
       setIsLoadingLectures(true);
       fetchLecturesFromSupabase(year, branch).then((cloudData) => {
         if (isMounted) {
@@ -551,6 +630,7 @@ function ResultsContent() {
       if (deletedIds.size > 0) {
         for (const deletedId of Array.from(deletedIds)) {
           deleteCustomUploadedDocument(deletedId);
+          removeOfflineFileBlob(deletedId).catch(() => {});
           if (bridge?.removeCachedPdf) {
             try {
               bridge.removeCachedPdf(deletedId);
@@ -753,11 +833,40 @@ function ResultsContent() {
     });
   }, [localLectures, cloudLectures, activeSubject, semester]);
 
-  // Displayed documents strictly for the currently viewed subject
+  // Displayed documents strictly for the currently viewed subject (app-only offline shows locally cached files)
   const displayedDocuments = useMemo(() => {
     if (!activeSubject) return [];
-    return subjectDocsCache[activeSubject] || [];
-  }, [subjectDocsCache, activeSubject]);
+    const subjectDocs = subjectDocsCache[activeSubject] || [];
+    if (!isOffline || !isAndroidApp) return subjectDocs;
+
+    const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+    const matchingSaved = allSavedOfflineDocs.filter(
+      (d) =>
+        d.year === year &&
+        d.branch === branch &&
+        d.semester === semester &&
+        d.type === targetType &&
+        d.subject === activeSubject
+    );
+
+    const byId = new Map<string, NoteDocument>();
+    for (const d of [...matchingSaved, ...subjectDocs]) {
+      if (d && d.id && cachedPdfIds.has(d.id)) {
+        byId.set(d.id, d);
+      }
+    }
+    return Array.from(byId.values());
+  }, [
+    subjectDocsCache,
+    activeSubject,
+    isOffline,
+    allSavedOfflineDocs,
+    year,
+    branch,
+    semester,
+    type,
+    cachedPdfIds,
+  ]);
 
   // Check if documents for active subject are loading - never blocks if files are already showing or already fetched!
   const isDocLoadingForActive = useMemo(() => {
@@ -819,16 +928,38 @@ function ResultsContent() {
     }
   };
 
-  const handleDownload = (doc: NoteDocument) => {
+  const handleDownload = async (doc: NoteDocument) => {
+    const safeTitle = (doc.title || 'document').replace(/[/\\?%*:|"<>]/g, '_');
+    const filename = resolveDocumentFilename(safeTitle);
+
+    if (isDeviceOffline() && isAndroidStudentApp()) {
+      const localCached = await getOfflineFileBlob(doc.id);
+      if (localCached) {
+        const blobUrl = URL.createObjectURL(localCached.blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.setAttribute('download', filename);
+        document.body.appendChild(link);
+        link.click();
+        setTimeout(() => {
+          try {
+            document.body.removeChild(link);
+          } catch {}
+          URL.revokeObjectURL(blobUrl);
+        }, 500);
+        setDownloadSuccess(true);
+        setTimeout(() => setDownloadSuccess(false), 2500);
+        return;
+      }
+    }
+
     let targetUrl = normalizeSafeExternalUrl(doc.file_url);
     if (!targetUrl && doc.file_path) {
       targetUrl = normalizeSafeExternalUrl(doc.file_path);
     }
 
-    // If real PDF URL exists or document is cached locally on Android, initiate direct download
+    // If real file URL exists or document is cached locally on Android, initiate direct download
     if (targetUrl || getAndroidBridge()?.isPdfCachedOnDisk?.(doc.id)) {
-      const safeTitle = (doc.title || 'document').replace(/[/\\?%*:|"<>]/g, '_');
-      const filename = resolveDocumentFilename(safeTitle);
 
       let downloadUrl = targetUrl || '';
       const fileIdMatch = downloadUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
@@ -942,11 +1073,17 @@ function ResultsContent() {
             </span>
           </div>
 
-          {/* Offline Mode Indicator Banner */}
+          {/* Offline Mode Indicator Banner (Android App shows saved count; browser shows simple notice) */}
           {isOffline && (
-            <div className="bg-amber-500/15 border border-amber-500/30 rounded-2xl py-2 px-3.5 flex items-center space-x-2 text-amber-800 text-xs font-bold animate-in fade-in duration-150">
-              <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
-              <span>Offline Mode Active • Saved PDFs & curriculum available without network</span>
+            <div className="bg-amber-500/15 border border-amber-500/30 rounded-2xl py-2.5 px-3.5 flex items-center justify-between gap-2 text-amber-900 text-xs font-bold animate-in fade-in duration-150">
+              <div className="flex items-center space-x-2 min-w-0">
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                <span className="truncate">
+                  {isAndroidApp
+                    ? `Offline Mode Active • Showing locally stored files previously opened in app (${allSavedOfflineDocs.length})`
+                    : 'You appear to be offline • Connect to the internet to load notes'}
+                </span>
+              </div>
             </div>
           )}
         </div>
@@ -1193,17 +1330,28 @@ function ResultsContent() {
                   </p>
                 </div>
               ) : displayedDocuments.length > 0 ? (
-                displayedDocuments.map((doc) => (
+                displayedDocuments.map((doc) => {
+                  const docCategory = detectPreviewFileCategory(doc.title, doc.file_url, doc.file_path);
+                  const badgeStyle =
+                    docCategory === 'image'
+                      ? 'bg-emerald-50 text-emerald-600 border-emerald-100 group-hover:bg-emerald-600 group-hover:text-white'
+                      : docCategory === 'html'
+                      ? 'bg-indigo-50 text-indigo-600 border-indigo-100 group-hover:bg-indigo-600 group-hover:text-white'
+                      : 'bg-red-50 text-red-600 border-red-100 group-hover:bg-red-600 group-hover:text-white';
+                  const badgeLabel =
+                    docCategory === 'image' ? 'IMG' : docCategory === 'html' ? 'HTML' : 'PDF';
+
+                  return (
                   <div
                     key={doc.id}
                     onClick={() => openDocModal(doc)}
                     className="bg-white rounded-3xl border border-slate-100/90 p-4 sm:p-6 shadow-[0_2px_14px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_24px_rgba(79,70,229,0.08)] hover:border-indigo-200 transition-all cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 sm:gap-4 group"
                   >
-                    {/* Left: Red PDF Icon & Document Info */}
+                    {/* Left: File Type Icon & Document Info */}
                     <div className="flex items-start sm:items-center space-x-3.5 sm:space-x-4 min-w-0 flex-1">
-                      <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-red-50 text-red-600 flex flex-col items-center justify-center font-bold text-xs tracking-wider shrink-0 border border-red-100 group-hover:bg-red-600 group-hover:text-white transition-colors shadow-sm">
+                      <div className={`w-11 h-11 sm:w-12 sm:h-12 rounded-2xl flex flex-col items-center justify-center font-bold text-xs tracking-wider shrink-0 border transition-colors shadow-sm ${badgeStyle}`}>
                         <FileText className="w-4 h-4 sm:w-5 sm:h-5 mb-0.5" />
-                        <span className="text-[8px] sm:text-[9px] leading-none">PDF</span>
+                        <span className="text-[8px] sm:text-[9px] leading-none">{badgeLabel}</span>
                       </div>
 
                       <div className="space-y-1 min-w-0 flex-1">
@@ -1242,13 +1390,13 @@ function ResultsContent() {
                           e.stopPropagation();
                           handleDownload(doc);
                         }}
-                        title="Download PDF file"
+                        title="Download file"
                         className="w-10 h-10 rounded-2xl bg-slate-50 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600 border border-slate-200/80 flex items-center justify-center transition-colors cursor-pointer shrink-0"
                       >
                         <Download className="w-4 h-4" />
                       </button>
 
-                      {/* Open & View PDF */}
+                      {/* Open & View File */}
                       <button
                         type="button"
                         onClick={(e) => {
@@ -1258,23 +1406,80 @@ function ResultsContent() {
                         className="flex-1 sm:flex-none inline-flex items-center justify-center space-x-2 px-4 sm:px-5 py-2.5 rounded-2xl bg-[#3b49df] hover:bg-[#323fc0] text-white text-xs sm:text-sm font-semibold shadow-sm hover:shadow transition-all cursor-pointer"
                       >
                         <Eye className="w-4 h-4" />
-                        <span>{cachedPdfIds.has(doc.id) ? 'Open Saved PDF' : 'Open PDF'}</span>
+                        <span>
+                          {docCategory === 'image'
+                            ? 'View Image'
+                            : docCategory === 'html'
+                            ? 'Open HTML'
+                            : cachedPdfIds.has(doc.id)
+                            ? 'Open Saved PDF'
+                            : 'Open PDF'}
+                        </span>
                       </button>
 
                     </div>
                   </div>
-                ))
+                  );
+                })
               ) : (
                 <div className="bg-white rounded-3xl border border-slate-100 p-8 sm:p-12 text-center shadow-sm space-y-3">
                   <p className="text-base font-bold text-slate-800">
-                    No documents found for this subject
+                    {isOffline && isAndroidApp
+                      ? `No locally saved offline files in ${activeSubject}`
+                      : 'No documents found for this subject'}
                   </p>
                   <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                    Please select another subject from above.
+                    {isOffline && isAndroidApp
+                      ? 'Only files that were opened earlier in the app while online are available without internet.'
+                      : 'Please select another subject from above.'}
                   </p>
                 </div>
               )}
             </div>
+
+            {/* Extra section ONLY inside Android Student App when Offline: quick access to all locally cached opened files */}
+            {isAndroidApp && isOffline && allSavedOfflineDocs.length > 0 && (
+              <div className="bg-white rounded-3xl border border-emerald-200/80 p-4 sm:p-6 shadow-sm space-y-3">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900">
+                      All Previously Opened Offline Files ({allSavedOfflineDocs.length})
+                    </h4>
+                    <p className="text-[11px] text-slate-500">
+                      Stored locally on this device — tap any file to view without network
+                    </p>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {allSavedOfflineDocs.map((savedDoc) => {
+                    const cat = detectPreviewFileCategory(savedDoc.title, savedDoc.file_url, savedDoc.file_path);
+                    const tag = cat === 'image' ? 'IMG' : cat === 'html' ? 'HTML' : 'PDF';
+                    return (
+                      <div
+                        key={`offline-${savedDoc.id}`}
+                        onClick={() => openDocModal(savedDoc)}
+                        className="p-3 rounded-2xl border border-slate-100 hover:border-emerald-300 bg-slate-50/70 hover:bg-white transition-all flex items-center justify-between gap-3 cursor-pointer"
+                      >
+                        <div className="flex items-center space-x-3 min-w-0">
+                          <span className="px-2 py-1 rounded-lg bg-emerald-100 text-emerald-700 text-[10px] font-extrabold shrink-0">
+                            {tag}
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-xs sm:text-sm font-bold text-slate-900 truncate">
+                              {savedDoc.title}
+                            </p>
+                            <p className="text-[11px] text-slate-500 truncate">
+                              {savedDoc.subject} • {savedDoc.semester} ({savedDoc.year})
+                            </p>
+                          </div>
+                        </div>
+                        <span className="text-xs font-bold text-emerald-700 shrink-0">Open Offline</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
           </div>
         )}
@@ -1323,11 +1528,10 @@ function ResultsContent() {
         }}
         onWebLoaded={(docId) => {
           if (
-            typeof window !== 'undefined' &&
-            !getAndroidBridge() &&
+            isAndroidStudentApp() &&
             activeDoc &&
             activeDoc.id === docId &&
-            (activeDoc.file_url || (activeDoc.file_path && activeDoc.file_path.startsWith('gdrive://')))
+            (activeDoc.file_url || activeDoc.file_path)
           ) {
             setCachedPdfIds((prev) => {
               if (prev.has(docId)) return prev;

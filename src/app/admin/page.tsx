@@ -67,6 +67,7 @@ import {
   insertDocumentToSupabase, 
   deleteDocumentFromSupabase,
   insertLectureToSupabase,
+  updateLectureInSupabase,
   deleteLectureFromSupabase,
   CoordinatorRecord,
   fetchAllDocumentsFromSupabase,
@@ -92,6 +93,7 @@ import {
 } from '../../lib/googleDriveService';
 import {
   ALLOWED_FILE_INPUT_ACCEPT,
+  detectPreviewFileCategory,
   getFileExtension,
   isPdfFile,
   resolveDocumentFilename,
@@ -306,12 +308,10 @@ export default function AdminPage() {
         }
       }
 
-      if (isSupabaseConfigured()) {
-        try {
-          cloudLecs = await fetchAllLecturesFromSupabase();
-        } catch (err) {
-          console.warn('Could not load lectures from Supabase:', err);
-        }
+      try {
+        cloudLecs = await fetchAllLecturesFromSupabase();
+      } catch (err) {
+        console.warn('Could not load lectures from Supabase:', err);
       }
 
       if (cloudDocs === null && cloudLecs === null) return;
@@ -420,7 +420,7 @@ export default function AdminPage() {
 
   // 4. Sync All Subjects ONLY when Manage by Year / Manage by Branch is clicked
   const syncAllSubjects = useCallback(async (force = false) => {
-    if (!isLoggedIn || !isSupabaseConfigured()) return;
+    if (!isLoggedIn) return;
     if (!force && loadedResourcesRef.current.subjects) return;
     try {
       const allSubjs = await fetchAllSubjectsFromSupabase();
@@ -1194,10 +1194,24 @@ export default function AdminPage() {
         if (subjectFilter !== 'All') q.set('subject', subjectFilter);
         if (searchQuery.trim()) q.set('search', searchQuery.trim());
 
-        const res = await fetch(`/api/documents?${q.toString()}`, { cache: 'no-store' });
+        const lq = new URLSearchParams();
+        if (yearFilter !== 'All') lq.set('year', yearFilter);
+        if (branchFilter !== 'All') lq.set('branch', branchFilter);
+        if (semesterFilter !== 'All') lq.set('semester', semesterFilter);
+        if (subjectFilter !== 'All') lq.set('subject', subjectFilter);
+
+        const [res, lecRes] = await Promise.all([
+          fetch(`/api/documents?${q.toString()}`, { cache: 'no-store' }),
+          typeFilter === 'All' && reset
+            ? fetch(`/api/lectures${lq.toString() ? `?${lq.toString()}` : ''}`, { cache: 'no-store' }).catch(() => null)
+            : Promise.resolve(null),
+        ]);
+
         const data = await res.json();
+        const lecData = lecRes ? await lecRes.json().catch(() => null) : null;
+
         if (res.ok && data?.success && Array.isArray(data.documents)) {
-          const mapped: AdminMaterial[] = data.documents.map((d: any) => ({
+          const mappedDocs: AdminMaterial[] = data.documents.map((d: any) => ({
             id: d.id,
             fileName: resolveDocumentFilename(d.title || 'document'),
             year: d.year,
@@ -1209,14 +1223,40 @@ export default function AdminPage() {
             file_url: d.file_url,
             file_path: d.file_path,
           }));
-          recentServerOffsetRef.current = offset + mapped.length;
+
+          let mappedLectures: AdminMaterial[] = [];
+          if (typeFilter === 'All' && reset && lecRes?.ok && lecData?.success && Array.isArray(lecData.lectures)) {
+            const qStr = searchQuery.trim().toLowerCase();
+            mappedLectures = lecData.lectures
+              .filter((l: any) => {
+                if (!qStr) return true;
+                return (
+                  String(l.title || '').toLowerCase().includes(qStr) ||
+                  String(l.subject || '').toLowerCase().includes(qStr) ||
+                  String(l.faculty || '').toLowerCase().includes(qStr)
+                );
+              })
+              .map((l: any) => ({
+                id: l.id,
+                fileName: l.title,
+                year: l.year || '2nd Year',
+                branch: l.branch || 'CSE(AI&ML)',
+                semester: l.semester,
+                subject: l.subject,
+                type: 'Lectures' as const,
+                uploadedBy: l.faculty || 'Coordinator',
+                link: l.link,
+              }));
+          }
+
+          recentServerOffsetRef.current = offset + mappedDocs.length;
           setHasMoreRecent(Boolean(data.hasMore));
           if (reset) {
-            setRecentMaterials(mapped);
+            setRecentMaterials([...mappedDocs, ...mappedLectures]);
           } else {
             setRecentMaterials((prev) => {
               const seen = new Set(prev.map((p) => p.id));
-              return [...prev, ...mapped.filter((m) => !seen.has(m.id))];
+              return [...prev, ...mappedDocs.filter((m) => !seen.has(m.id))];
             });
           }
         }
@@ -1281,32 +1321,40 @@ export default function AdminPage() {
       showToast('Note name cannot be empty', 'error');
       return;
     }
-    const newName = editMaterialName.trim();
+    const rawNewName = editMaterialName.trim();
     const targetId = editingMaterial.id;
     const targetType = editingMaterial.type;
 
-    setMaterials(prev => prev.map(m => {
-      if (m.id === targetId) {
-        return {
-          ...m,
-          fileName: newName
-        };
+    if (targetType === 'Lectures') {
+      const ok = await updateLectureInSupabase(targetId, rawNewName, editingMaterial.link);
+      if (!ok) {
+        showToast('Failed to update lecture name on server.', 'error');
+        return;
       }
-      return m;
-    }));
-    setRecentMaterials(prev => prev.map(m => (m.id === targetId ? { ...m, fileName: newName } : m)));
-
-    if (typeof window !== 'undefined') {
-      try {
-        const raw = localStorage.getItem('notehub_custom_documents');
-        if (raw) {
-          const docs: NoteDocument[] = JSON.parse(raw);
-          const cleanTitle = newName.replace(/\.pdf$/i, '');
-          const updated = docs.map(d => d.id === targetId ? { ...d, title: cleanTitle } : d);
-          localStorage.setItem('notehub_custom_documents', JSON.stringify(updated));
-        }
-      } catch {}
+      setMaterials((prev) => prev.map((m) => (m.id === targetId ? { ...m, fileName: rawNewName } : m)));
+      setRecentMaterials((prev) => prev.map((m) => (m.id === targetId ? { ...m, fileName: rawNewName } : m)));
+      if (typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem('notehub_custom_lectures');
+          if (raw) {
+            const lecs = JSON.parse(raw);
+            localStorage.setItem(
+              'notehub_custom_lectures',
+              JSON.stringify(lecs.map((l: any) => (l.id === targetId ? { ...l, title: rawNewName } : l)))
+            );
+          }
+        } catch {}
+      }
+      showToast(`Lecture renamed to "${rawNewName}"`, 'success');
+      setEditingMaterial(null);
+      return;
     }
+
+    const isPdfDoc = isPdfFile(editingMaterial.fileName);
+    const dbTitle = isPdfDoc
+      ? rawNewName.replace(/\.pdf$/i, '')
+      : resolveDocumentFilename(rawNewName, editingMaterial.fileName);
+    const displayFileName = resolveDocumentFilename(dbTitle, editingMaterial.fileName);
 
     try {
       const creds = getSupabaseCredentials();
@@ -1315,18 +1363,40 @@ export default function AdminPage() {
         headers['x-supabase-url'] = creds.url;
         headers['x-supabase-key'] = creds.key;
       }
-      await fetch('/api/documents', {
+      const res = await fetch('/api/documents', {
         method: 'PATCH',
         headers,
         body: JSON.stringify({
           id: targetId,
-          title: newName.replace(/\.pdf$/i, ''),
+          title: dbTitle,
           type: targetType === 'PYQs' ? 'PYQ' : 'Notes',
         }),
       });
-    } catch {}
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        showToast(data?.error || 'Failed to rename document on server.', 'error');
+        return;
+      }
+    } catch {
+      showToast('Network error while renaming document on server.', 'error');
+      return;
+    }
 
-    showToast(`Note name updated to "${newName}"`, 'success');
+    setMaterials((prev) => prev.map((m) => (m.id === targetId ? { ...m, fileName: displayFileName } : m)));
+    setRecentMaterials((prev) => prev.map((m) => (m.id === targetId ? { ...m, fileName: displayFileName } : m)));
+
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('notehub_custom_documents');
+        if (raw) {
+          const docs: NoteDocument[] = JSON.parse(raw);
+          const updated = docs.map((d) => (d.id === targetId ? { ...d, title: dbTitle } : d));
+          localStorage.setItem('notehub_custom_documents', JSON.stringify(updated));
+        }
+      } catch {}
+    }
+
+    showToast(`Material renamed to "${displayFileName}"`, 'success');
     setEditingMaterial(null);
   };
 
@@ -1381,16 +1451,19 @@ export default function AdminPage() {
       ]
     };
 
-    const added = addSubjectFor(subjYear, subjBranch, subjSemester, newSubj);
-    if (!added) {
+    const existingSubjs = getSubjectsFor(subjYear, subjBranch, subjSemester);
+    if (existingSubjs.some((s) => s.title.toLowerCase() === cleanTitle.toLowerCase())) {
       showToast(`Subject "${cleanTitle}" already exists in ${subjBranch} (${subjSemester}).`, 'error');
       return;
     }
 
-    if (isSupabaseConfigured()) {
-      await insertSubjectToSupabase(subjYear, subjBranch, subjSemester, newSubj);
+    const ok = await insertSubjectToSupabase(subjYear, subjBranch, subjSemester, newSubj);
+    if (!ok) {
+      showToast(`Failed to save subject "${cleanTitle}" to server database.`, 'error');
+      return;
     }
 
+    addSubjectFor(subjYear, subjBranch, subjSemester, newSubj);
     setNewAdminSubjectTitle('');
     setNewAdminSubjectCode('');
     setAdminSubjectsVersion((v) => v + 1);
@@ -1408,14 +1481,16 @@ export default function AdminPage() {
     }
 
     const oldTitle = editingAdminSubject.title;
+    const ok = await updateSubjectInSupabase(subjYear, subjBranch, subjSemester, oldTitle, newTitle, newCode);
+    if (!ok) {
+      showToast('Failed to update subject on server database.', 'error');
+      return;
+    }
+
     updateSubjectFor(subjYear, subjBranch, subjSemester, oldTitle, {
       title: newTitle,
       code: newCode
     });
-
-    if (isSupabaseConfigured()) {
-      await updateSubjectInSupabase(subjYear, subjBranch, subjSemester, oldTitle, newTitle, newCode);
-    }
 
     // Update materials list state in memory if subject was renamed
     if (oldTitle !== newTitle) {
@@ -1438,10 +1513,12 @@ export default function AdminPage() {
       title: 'Delete Subject',
       message: `Are you sure you want to delete "${title}" from ${subjBranch} (${subjSemester})?`,
       onConfirm: async () => {
-        deleteSubjectFor(subjYear, subjBranch, subjSemester, title);
-        if (isSupabaseConfigured()) {
-          await deleteSubjectFromSupabase(subjYear, subjBranch, subjSemester, title);
+        const ok = await deleteSubjectFromSupabase(subjYear, subjBranch, subjSemester, title);
+        if (!ok) {
+          showToast(`Failed to delete subject "${title}" from server database.`, 'error');
+          return;
         }
+        deleteSubjectFor(subjYear, subjBranch, subjSemester, title);
         setAdminSubjectsVersion((v) => v + 1);
         showToast(`Subject "${title}" deleted.`, 'success');
       }
@@ -1629,6 +1706,11 @@ export default function AdminPage() {
     }
 
     // REGULAR CASE: NOTES OR PYQS
+    if (!selectedUploadFile) {
+      showToast('Please attach a valid PDF, Image, or HTML file before uploading.', 'error');
+      return;
+    }
+
     const finalOwner = uploadOwnerName.trim() || 'Department Faculty';
     const selectedExt = selectedUploadFile ? getFileExtension(selectedUploadFile.name) : '';
     const isNonPdfUpload = Boolean(selectedExt && selectedExt !== 'pdf');
@@ -1736,6 +1818,7 @@ export default function AdminPage() {
           stageLabel: 'Upload complete!',
           startedAt: uploadStartedAt,
         });
+        await new Promise((resolve) => setTimeout(resolve, 450));
       }
 
       saveCustomUploadedDocument(noteDoc);
@@ -2023,7 +2106,6 @@ export default function AdminPage() {
           name: cleanName,
           branch: coordForm.branch,
           year: coordForm.year,
-          ...(cleanPassword ? { password: cleanPassword } : {}),
           status: coordForm.status,
           initials
         };
@@ -2110,7 +2192,8 @@ export default function AdminPage() {
           return;
         }
 
-        const updatedList = [newCoord, ...coordinators];
+        const { password: _omitNewCoordPass, ...safeNewCoord } = newCoord;
+        const updatedList = [safeNewCoord as CoordinatorItem, ...coordinators];
         setCoordinators(updatedList);
         saveStoredCoordinators(updatedList);
 
@@ -3333,6 +3416,17 @@ export default function AdminPage() {
                   {/* Dynamic Materials */}
                   {filteredMaterials.map((m) => {
                     const isSelected = selectedMaterialIds.includes(m.id);
+                    const fileCat = m.type === 'Lectures' ? 'lecture' : detectPreviewFileCategory(m.fileName, m.file_url, m.file_path);
+                    const badgeClasses =
+                      fileCat === 'lecture'
+                        ? 'bg-purple-50 text-purple-600 border-purple-100'
+                        : fileCat === 'image'
+                        ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                        : fileCat === 'html'
+                        ? 'bg-indigo-50 text-indigo-600 border-indigo-100'
+                        : 'bg-red-50 text-red-600 border-red-100';
+                    const badgeLabel =
+                      fileCat === 'lecture' ? 'VID' : fileCat === 'image' ? 'IMG' : fileCat === 'html' ? 'HTML' : 'PDF';
                     return (
                       <tr 
                         key={m.id} 
@@ -3347,12 +3441,8 @@ export default function AdminPage() {
                           />
                         </td>
                         <td className="py-3.5 px-3 font-semibold text-slate-800 flex items-center space-x-2.5">
-                          <div className={`w-7 h-7 rounded-lg font-bold text-[9px] flex items-center justify-center shrink-0 border ${
-                            m.type === 'Lectures'
-                              ? 'bg-purple-50 text-purple-600 border-purple-100'
-                              : 'bg-red-50 text-red-600 border-red-100'
-                          }`}>
-                            {m.type === 'Lectures' ? 'VID' : 'PDF'}
+                          <div className={`w-7 h-7 rounded-lg font-bold text-[9px] flex items-center justify-center shrink-0 border ${badgeClasses}`}>
+                            {badgeLabel}
                           </div>
                           <span className="truncate max-w-[200px]" title={m.fileName}>
                             {m.fileName}
@@ -4931,7 +5021,9 @@ export default function AdminPage() {
                       setBranchFilter('All');
                       setSemesterFilter('All');
                       setSubjectFilter('All');
+                      setShowAllUnfiltered(false);
                       selectAdminNav('All Materials');
+                      showToast(`"${selectedManageYear}" selected — choose Branch, Semester & Subject to view files.`, 'info');
                     }}
                     className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold transition-colors cursor-pointer"
                   >

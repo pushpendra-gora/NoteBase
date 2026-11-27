@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
 
 const MAX_PREVIEW_BYTES = 10 * 1024 * 1024; // 10 MB safe cap for HTML/Image preview proxy
+const MAX_PDF_STREAM_BYTES = 25 * 1024 * 1024; // 25 MB streaming cap for browser offline PDF caching
 
 function detectImageMimeFromBytes(bytes: Uint8Array): string | null {
   if (bytes.length >= 8 &&
@@ -74,7 +75,7 @@ export async function GET(req: NextRequest) {
     const mode = req.nextUrl.searchParams.get('mode');
     const rawUrl = req.nextUrl.searchParams.get('url') || '';
 
-    if (mode !== 'html' && mode !== 'image') {
+    if (mode !== 'html' && mode !== 'image' && mode !== 'pdf') {
       return NextResponse.json(
         { success: false, error: 'Invalid preview mode.' },
         { status: 400 }
@@ -112,6 +113,73 @@ export async function GET(req: NextRequest) {
         { success: false, error: `Failed to fetch preview file from Google Drive (HTTP ${upstream.status}).` },
         { status: upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502 }
       );
+    }
+
+    if (mode === 'pdf') {
+      const declaredLen = Number(upstream.headers.get('content-length') || '0');
+      if (Number.isFinite(declaredLen) && declaredLen > MAX_PDF_STREAM_BYTES) {
+        return NextResponse.json(
+          { success: false, error: 'PDF exceeds offline browser cache cap (25 MB).' },
+          { status: 413 }
+        );
+      }
+
+      if (!upstream.body) {
+        return NextResponse.json({ success: false, error: 'Empty PDF stream.' }, { status: 502 });
+      }
+
+      const reader = upstream.body.getReader();
+      const firstRead = await reader.read();
+      if (firstRead.done || !firstRead.value || firstRead.value.byteLength === 0) {
+        return NextResponse.json({ success: false, error: 'PDF file returned empty content.' }, { status: 502 });
+      }
+
+      const firstChunk = firstRead.value;
+      const headAscii = Buffer.from(firstChunk.subarray(0, 64)).toString('ascii');
+      if (!headAscii.includes('%PDF-')) {
+        await reader.cancel().catch(() => {});
+        return NextResponse.json(
+          { success: false, error: 'Upstream Google Drive response is not a direct PDF binary.' },
+          { status: 415 }
+        );
+      }
+
+      let streamedBytes = firstChunk.byteLength;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(firstChunk);
+        },
+        async pull(controller) {
+          const { done, value } = await reader.read();
+          if (done) {
+            controller.close();
+            return;
+          }
+          if (value) {
+            streamedBytes += value.byteLength;
+            if (streamedBytes > MAX_PDF_STREAM_BYTES) {
+              await reader.cancel().catch(() => {});
+              controller.error(new Error('PDF_STREAM_LIMIT_EXCEEDED'));
+              return;
+            }
+            controller.enqueue(value);
+          }
+        },
+        cancel() {
+          return reader.cancel();
+        },
+      });
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/pdf',
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'public, max-age=300',
+      };
+      if (Number.isFinite(declaredLen) && declaredLen > 0) {
+        headers['Content-Length'] = String(declaredLen);
+      }
+
+      return new NextResponse(stream, { status: 200, headers });
     }
 
     let bytes: Uint8Array;
