@@ -16,15 +16,40 @@ import {
 export const dynamic = 'force-dynamic';
 
 /**
- * Helper to fetch credentials securely on the server
+ * Helper to fetch credentials securely on the server.
+ * Automatically upgrades any legacy plaintext password in `admin_credentials` to a salted `scrypt$` hash.
  */
+async function ensureRowHashed(
+  client: NonNullable<ReturnType<typeof getSupabaseClient>>,
+  rowId: string,
+  rawPassword: string
+): Promise<string> {
+  const clean = (rawPassword || '').trim();
+  if (!clean) return clean;
+  if (clean.startsWith('scrypt$')) return clean;
+
+  const hashed = hashPassword(clean);
+  try {
+    await client
+      .from('admin_credentials')
+      .update({
+        password: hashed,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', rowId);
+    return hashed;
+  } catch {
+    return clean;
+  }
+}
+
 async function getAdminServerCredentials(targetId?: string): Promise<{ id: string; password: string }> {
   const client = getSupabaseClient();
   const defaultId = process.env.ADMIN_DEFAULT_ID || 'admin';
   const defaultPassword = process.env.ADMIN_DEFAULT_PASSWORD || 'admin123';
 
   if (!client) {
-    return { id: defaultId, password: defaultPassword };
+    return { id: defaultId, password: hashPassword(defaultPassword) };
   }
 
   try {
@@ -36,10 +61,12 @@ async function getAdminServerCredentials(targetId?: string): Promise<{ id: strin
         .limit(1);
 
       if (!exactErr && exactData && exactData.length > 0) {
-        return {
-          id: exactData[0].id || defaultId,
-          password: exactData[0].password || defaultPassword,
-        };
+        const rowId = exactData[0].id || defaultId;
+        const storedPass = exactData[0].password || '';
+        const finalPass = storedPass
+          ? await ensureRowHashed(client, rowId, storedPass)
+          : hashPassword(defaultPassword);
+        return { id: rowId, password: finalPass };
       }
     }
 
@@ -56,12 +83,18 @@ async function getAdminServerCredentials(targetId?: string): Promise<{ id: strin
       return { id: defaultId, password: hashedDefault };
     }
 
+    const rowId = data[0].id || defaultId;
+    const storedPass = data[0].password || '';
+    const finalPass = storedPass
+      ? await ensureRowHashed(client, rowId, storedPass)
+      : hashPassword(defaultPassword);
+
     return {
-      id: data[0].id || defaultId,
-      password: data[0].password || defaultPassword,
+      id: rowId,
+      password: finalPass,
     };
   } catch {
-    return { id: defaultId, password: defaultPassword };
+    return { id: defaultId, password: hashPassword(defaultPassword) };
   }
 }
 
@@ -158,13 +191,19 @@ export async function POST(req: NextRequest) {
       const hashedNewPassword = hashPassword(newPassword.trim());
       const client = getSupabaseClient();
       if (client) {
-        await client
+        const { error: updateErr } = await client
           .from('admin_credentials')
-          .upsert({
-            id: creds.id,
+          .update({
             password: hashedNewPassword,
             updated_at: new Date().toISOString(),
-          });
+          })
+          .eq('id', creds.id);
+        if (updateErr) {
+          return NextResponse.json(
+            { success: false, error: updateErr.message },
+            { status: 500 }
+          );
+        }
       }
 
       return NextResponse.json({
@@ -191,11 +230,12 @@ export async function POST(req: NextRequest) {
 }
 
 /**
- * GET handler to check session status
+ * GET handler to check session status (also ensures any legacy plaintext admin password in DB is upgraded to scrypt$)
  */
 export async function GET(req: NextRequest) {
   const session = getAdminSession(req);
   if (session) {
+    await getAdminServerCredentials(session.id).catch(() => {});
     return NextResponse.json({ authenticated: true, adminId: session.id });
   }
   return NextResponse.json({ authenticated: false });

@@ -161,9 +161,9 @@ alter table public.admin_credentials add column if not exists active_drive_id te
 alter table public.admin_credentials add column if not exists gdrive_drives jsonb default '[]'::jsonb;
 alter table public.admin_credentials add column if not exists material_counts jsonb;
 
--- Seed initial admin if empty
+-- Seed initial admin with scrypt-hashed default password if table is empty (change immediately after first login)
 insert into public.admin_credentials (id, password)
-values ('admin', 'admin123')
+values ('admin', 'scrypt$84897ee60b7f01cb63f5bfdf160b43b9$9592012ab59ee873fb8bcf5322fb2851984628427976884334dd519b6fd8ddc28496267ee669aa5d88a22008e53f6b2c4e47ecd54fab456ff6d9f948fbe1cda5')
 on conflict (id) do nothing;
 
 

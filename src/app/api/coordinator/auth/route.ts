@@ -121,6 +121,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Automatically upgrade any legacy plaintext coordinator password in DB to scrypt$ hash
+    if (!correctPassword.startsWith('scrypt$')) {
+      await client
+        .from('coordinators')
+        .update({ password: hashPassword(inputPassword) })
+        .eq('id', matchingCoord.id)
+        .then(() => {}, () => {});
+    }
+
     resetLoginRateLimit(ipKey);
 
     // Success: Set signed coordinator session cookie & return info WITHOUT password
