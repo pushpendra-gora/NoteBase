@@ -1,10 +1,13 @@
 /**
  * Google Drive Cloud Storage Service
- * Handles direct browser-to-Google-Drive resumable PDF uploads (up to 500 MB) without routing file binaries through Vercel.
- * NOTE: PDFs are stored ONLY in Google Drive; Supabase stores only table metadata & public URLs.
+ * Handles direct browser-to-Google-Drive resumable uploads (up to 500 MB) without routing file binaries through Vercel.
+ * Only validated PDF, Image, and HTML files are permitted.
+ * NOTE: Files are stored ONLY in Google Drive; Supabase stores only table metadata & public URLs.
  */
 
-export const MAX_PDF_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
+import { MAX_UPLOAD_BYTES, validateUploadFileClient } from './fileValidation';
+
+export const MAX_PDF_UPLOAD_BYTES = MAX_UPLOAD_BYTES; // 500 MB
 const LEGACY_SERVER_BASE64_LIMIT_BYTES = 3 * 1024 * 1024; // 3 MB safe fallback for un-updated scripts
 const RESUMABLE_CHUNK_BYTES = 8 * 1024 * 1024; // 8 MB (32 * 256 KB, required multiple of 256 KB)
 
@@ -12,6 +15,21 @@ export interface GoogleDriveConfig {
   webhookUrl: string;
   folderId: string;
   enabled: boolean;
+}
+
+export type UploadProgressStage =
+  | 'validating'
+  | 'initializing'
+  | 'uploading'
+  | 'finalizing'
+  | 'complete';
+
+export interface UploadProgressDetail {
+  percent: number;
+  loadedBytes: number;
+  totalBytes: number;
+  stage: UploadProgressStage;
+  stageLabel: string;
 }
 
 // Updated Google Apps Script template supporting direct 500 MB browser-to-Drive resumable uploads + delete + legacy fallback
@@ -195,16 +213,7 @@ export function fileToBase64(file: File): Promise<string> {
   });
 }
 
-async function verifyPdfMagicBytes(file: File): Promise<boolean> {
-  try {
-    const slice = file.slice(0, 5);
-    const buf = await slice.arrayBuffer();
-    const header = new TextDecoder('ascii').decode(new Uint8Array(buf));
-    return header === '%PDF-';
-  } catch {
-    return false;
-  }
-}
+async function fileHeaderPlaceholderNote() { /* validation handled by validateUploadFileClient */ }
 
 function uploadChunkWithProgress(
   uploadUrl: string,
@@ -223,7 +232,7 @@ function uploadChunkWithProgress(
 
     xhr.upload.onprogress = (evt) => {
       if (evt.lengthComputable) {
-        onChunkProgress(evt.loaded);
+        onChunkProgress(Math.min(chunk.size, evt.loaded));
       }
     };
 
@@ -236,6 +245,42 @@ function uploadChunkWithProgress(
     };
 
     xhr.send(chunk);
+  });
+}
+
+function postJsonWithUploadProgress(
+  url: string,
+  payload: unknown,
+  onUploadFraction: (fraction: number) => void
+): Promise<{ ok: boolean; status: number; data: any }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+
+    xhr.upload.onprogress = (evt) => {
+      if (evt.lengthComputable && evt.total > 0) {
+        onUploadFraction(Math.min(1, evt.loaded / evt.total));
+      }
+    };
+
+    xhr.onload = () => {
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(xhr.responseText || '{}');
+      } catch {}
+      resolve({
+        ok: xhr.status >= 200 && xhr.status < 300,
+        status: xhr.status,
+        data: parsed,
+      });
+    };
+
+    xhr.onerror = () => {
+      reject(new Error('Network error during file upload.'));
+    };
+
+    xhr.send(JSON.stringify(payload));
   });
 }
 
@@ -252,7 +297,8 @@ export async function uploadPdfToGoogleDrive(
   file: File,
   folderId?: string,
   driveId?: string,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  onProgressDetail?: (detail: UploadProgressDetail) => void
 ): Promise<{
   success: boolean;
   fileUrl: string;
@@ -263,33 +309,45 @@ export async function uploadPdfToGoogleDrive(
   error?: string;
 }> {
   lastGoogleDriveError = '';
+  const totalBytes = file?.size || 0;
+  const emitProgress = (
+    percent: number,
+    loadedBytes: number,
+    stage: UploadProgressStage,
+    stageLabel: string
+  ) => {
+    const clampedPct = Math.max(0, Math.min(100, Math.round(percent)));
+    onProgress?.(clampedPct);
+    onProgressDetail?.({
+      percent: clampedPct,
+      loadedBytes: Math.min(totalBytes, Math.max(0, loadedBytes)),
+      totalBytes,
+      stage,
+      stageLabel,
+    });
+  };
 
   try {
-    if (!file || file.size <= 0) {
-      throw new Error('Selected PDF file is empty.');
-    }
-    if (file.size > MAX_PDF_UPLOAD_BYTES) {
-      throw new Error('File exceeds the 500 MB Google Drive upload limit.');
-    }
-    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
-      throw new Error('Only valid PDF (.pdf) files are allowed.');
-    }
-    const isPdfHeader = await verifyPdfMagicBytes(file);
-    if (!isPdfHeader) {
-      throw new Error('Invalid PDF file: file header does not start with %PDF-.');
+    emitProgress(1, 0, 'validating', 'Verifying file format & security signature...');
+    const validation = await validateUploadFileClient(file);
+    if (!validation.valid) {
+      throw new Error(validation.error || 'Invalid file. Only PDF, Image, and HTML files are allowed.');
     }
 
-    onProgress?.(2);
+    const resolvedMime = validation.canonicalMime || file.type || 'application/pdf';
 
-    // Step 1: Initialize Resumable Upload Session on server (tiny JSON, 0 file bytes to Vercel)
+    emitProgress(3, 0, 'initializing', 'Connecting directly to Google Drive...');
+
+    // Step 1: Initialize Resumable Upload Session on server (tiny JSON + 4 KB header check, 0 file bytes to Vercel)
     const initRes = await fetch('/api/upload-drive', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action: 'init',
         fileName: file.name,
-        mimeType: file.type || 'application/pdf',
+        mimeType: resolvedMime,
         fileSize: file.size,
+        headBase64: validation.headBase64 || '',
         folderId: folderId || undefined,
         driveId: driveId || undefined,
         origin: typeof window !== 'undefined' ? window.location.origin : undefined,
@@ -300,7 +358,7 @@ export async function uploadPdfToGoogleDrive(
 
     if (initRes.ok && initData?.success && initData?.uploadUrl) {
       const uploadUrl = String(initData.uploadUrl);
-      const mimeType = file.type || 'application/pdf';
+      const mimeType = resolvedMime;
       const totalSize = file.size;
 
       // Step 2: Upload binary chunks directly to Google Drive (bypasses Vercel completely!)
@@ -320,15 +378,16 @@ export async function uploadPdfToGoogleDrive(
           totalSize,
           mimeType,
           (loadedInChunk) => {
-            const pct = Math.min(95, Math.max(3, Math.round(((chunkBaseOffset + loadedInChunk) / totalSize) * 93) + 2));
-            onProgress?.(pct);
+            const loaded = Math.min(totalSize, chunkBaseOffset + loadedInChunk);
+            const pct = Math.min(96, Math.max(4, Math.round((loaded / totalSize) * 92) + 4));
+            emitProgress(pct, loaded, 'uploading', 'Uploading directly to Google Drive...');
           }
         );
 
         if (status === 308) {
           offset = end + 1;
-          const pct = Math.min(95, Math.round((offset / totalSize) * 93) + 2);
-          onProgress?.(pct);
+          const pct = Math.min(96, Math.round((offset / totalSize) * 92) + 4);
+          emitProgress(pct, offset, 'uploading', 'Uploading directly to Google Drive...');
           continue;
         }
 
@@ -353,7 +412,7 @@ export async function uploadPdfToGoogleDrive(
         throw new Error('Google Drive did not return a valid File ID after upload.');
       }
 
-      onProgress?.(97);
+      emitProgress(98, totalSize, 'finalizing', 'Finalizing Google Drive permissions...');
 
       // Step 3: Finalize file permissions (Anyone with link -> View) via Apps Script
       const finRes = await fetch('/api/upload-drive', {
@@ -366,7 +425,7 @@ export async function uploadPdfToGoogleDrive(
         }),
       });
       const finData = await finRes.json().catch(() => ({}));
-      onProgress?.(100);
+      emitProgress(100, totalSize, 'complete', 'Google Drive upload complete!');
 
       if (finRes.ok && finData?.success && finData?.fileUrl) {
         return {
@@ -392,21 +451,26 @@ export async function uploadPdfToGoogleDrive(
 
     // Backwards-compatibility fallback ONLY for small files (<= 3 MB) if Apps Script wasn't redeployed yet
     if (initData?.needsScriptUpdate && file.size <= LEGACY_SERVER_BASE64_LIMIT_BYTES) {
+      emitProgress(5, 0, 'uploading', 'Preparing file for Google Drive upload...');
       const base64Data = await fileToBase64(file);
-      const legacyRes = await fetch('/api/upload-drive', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const legacyRes = await postJsonWithUploadProgress(
+        '/api/upload-drive',
+        {
           driveId: driveId || undefined,
           fileName: file.name,
-          mimeType: file.type || 'application/pdf',
+          mimeType: resolvedMime,
           base64: base64Data,
           folderId: folderId || undefined,
-        }),
-      });
-      const legacyData = await legacyRes.json().catch(() => ({}));
+        },
+        (fraction) => {
+          const loaded = Math.round(file.size * fraction);
+          const pct = Math.min(95, Math.max(8, Math.round(8 + fraction * 87)));
+          emitProgress(pct, loaded, 'uploading', 'Uploading to Google Drive...');
+        }
+      );
+      const legacyData = legacyRes.data || {};
       if (legacyRes.ok && legacyData?.success && legacyData?.fileUrl) {
-        onProgress?.(100);
+        emitProgress(100, file.size, 'complete', 'Google Drive upload complete!');
         return {
           success: true,
           fileUrl: legacyData.fileUrl,
@@ -452,6 +516,7 @@ export async function uploadUnifiedPdf(
     branch?: string;
     semester?: string;
     onProgress?: (percent: number) => void;
+    onProgressDetail?: (detail: UploadProgressDetail) => void;
   }
 ): Promise<{
   publicUrl: string;
@@ -464,7 +529,8 @@ export async function uploadUnifiedPdf(
       file,
       undefined,
       undefined,
-      metadata?.onProgress
+      metadata?.onProgress,
+      metadata?.onProgressDetail
     );
     if (gdriveResult.success && gdriveResult.fileUrl) {
       return {

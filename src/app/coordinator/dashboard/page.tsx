@@ -78,12 +78,19 @@ import {
   uploadUnifiedPdf, 
   isGoogleDriveConfigured, 
   lastGoogleDriveError,
-  deleteDocumentEverywhere,
-  MAX_PDF_UPLOAD_BYTES
+  deleteDocumentEverywhere
 } from '../../../lib/googleDriveService';
+import {
+  ALLOWED_FILE_INPUT_ACCEPT,
+  getFileExtension,
+  isPdfFile,
+  resolveDocumentFilename,
+  validateUploadFileClient,
+} from '../../../lib/fileValidation';
 import { extractPdfPageCount, formatFileSize } from '../../../lib/pdfMetadata';
 import { normalizeSafeExternalUrl } from '../../../lib/urlSafety';
 import PdfPreviewModal from '../../../components/PdfPreviewModal';
+import UploadProgressBar, { UploadProgressInfo } from '../../../components/UploadProgressBar';
 
 interface CoordinatorFile {
   id: string;
@@ -343,7 +350,7 @@ function DashboardContent() {
   const [uploadOwner, setUploadOwner] = useState('');
   const [selectedFileObj, setSelectedFileObj] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgressInfo | null>(null);
 
   // Manage Material State
   const [manageTab, setManageTab] = useState<'Notes' | 'PYQs'>('Notes');
@@ -681,17 +688,14 @@ function DashboardContent() {
   }, [lecturesList, lectureSearchQuery]);
 
   // Handle system file browse picker (validates .pdf and 500 MB Google Drive limit)
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
-      showToast('⚠️ Only valid .pdf files are allowed.');
+    const validation = await validateUploadFileClient(file);
+    if (!validation.valid) {
+      showToast(`⚠️ ${validation.error || 'Only valid PDF, Image, or HTML files (up to 500 MB) are allowed.'}`);
       e.target.value = '';
-      return;
-    }
-    if (file.size > MAX_PDF_UPLOAD_BYTES) {
-      showToast('⚠️ File exceeds the 500 MB Google Drive limit.');
-      e.target.value = '';
+      setSelectedFileObj(null);
       return;
     }
     setSelectedFileObj(file);
@@ -760,25 +764,51 @@ function DashboardContent() {
 
     // REGULAR CASE: NOTES OR PYQS
     const finalType: 'Notes' | 'PYQ' = uploadType === 'PYQ' ? 'PYQ' : 'Notes';
-    const finalDisplayName = cleanTitle;
+    const selectedExt = selectedFileObj ? getFileExtension(selectedFileObj.name) : '';
+    const isNonPdfUpload = Boolean(selectedExt && selectedExt !== 'pdf');
+    const finalDisplayName =
+      isNonPdfUpload && selectedFileObj
+        ? resolveDocumentFilename(cleanTitle, selectedFileObj.name)
+        : cleanTitle;
     const finalOwner = uploadOwner.trim() || 'Department Faculty';
 
+    const uploadStartedAt = Date.now();
     setIsUploading(true);
-    setUploadProgress(selectedFileObj ? 1 : null);
+    setUploadProgress(
+      selectedFileObj
+        ? {
+            percent: 1,
+            loadedBytes: 0,
+            totalBytes: selectedFileObj.size,
+            stageLabel: 'Starting upload...',
+            startedAt: uploadStartedAt,
+          }
+        : null
+    );
 
     try {
       let uploadedFileUrl: string | undefined = undefined;
       let uploadedFilePath: string | undefined = undefined;
 
-      // 1. Upload actual PDF file directly from browser to Google Drive (up to 500 MB, 0 bytes through Vercel)
+      // 1. Upload validated file directly from browser to Google Drive (up to 500 MB, 0 bytes through Vercel)
       if (selectedFileObj) {
-        showToast('☁️ Uploading PDF directly to Google Drive...');
+        showToast('☁️ Uploading file directly to Google Drive...');
         const uploadResult = await uploadUnifiedPdf(selectedFileObj, undefined, {
           title: finalDisplayName,
           year: yearParam,
           branch: branchParam,
           semester: finalSem,
-          onProgress: (pct) => setUploadProgress(pct),
+          onProgressDetail: (detail) =>
+            setUploadProgress({
+              percent: detail.percent >= 100 ? 99 : detail.percent,
+              loadedBytes: detail.loadedBytes,
+              totalBytes: detail.totalBytes,
+              stageLabel:
+                detail.percent >= 100
+                  ? 'Saving document record to database...'
+                  : detail.stageLabel,
+              startedAt: uploadStartedAt,
+            }),
         });
         if (uploadResult && uploadResult.publicUrl) {
           uploadedFileUrl = uploadResult.publicUrl;
@@ -795,7 +825,10 @@ function DashboardContent() {
       }
 
       const calculatedSize = selectedFileObj ? formatFileSize(selectedFileObj.size) : '';
-      const realPageCount = selectedFileObj ? await extractPdfPageCount(selectedFileObj) : 0;
+      const realPageCount =
+        selectedFileObj && isPdfFile(selectedFileObj.name, selectedFileObj.type)
+          ? await extractPdfPageCount(selectedFileObj)
+          : 0;
 
       const newId = `doc-${Date.now()}`;
 
@@ -842,6 +875,16 @@ function DashboardContent() {
       const docData = await docRes.json();
       if (!docRes.ok || !docData.success) {
         throw new Error(docData?.error || 'Failed to save document metadata on server.');
+      }
+
+      if (selectedFileObj) {
+        setUploadProgress({
+          percent: 100,
+          loadedBytes: selectedFileObj.size,
+          totalBytes: selectedFileObj.size,
+          stageLabel: 'Upload complete!',
+          startedAt: uploadStartedAt,
+        });
       }
 
       saveCustomUploadedDocument(noteDoc);
@@ -996,7 +1039,7 @@ function DashboardContent() {
       let downloadUrl = safeSource;
       const fileIdMatch = safeSource.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
       const safeTitle = (file.name || 'document').replace(/[/\\?%*:|"<>]/g, '_');
-      const filename = safeTitle.toLowerCase().endsWith('.pdf') ? safeTitle : `${safeTitle}.pdf`;
+      const filename = resolveDocumentFilename(safeTitle);
 
       if (fileIdMatch && fileIdMatch[1]) {
         downloadUrl = `https://drive.google.com/uc?export=download&id=${fileIdMatch[1]}&filename=${encodeURIComponent(filename)}&title=${encodeURIComponent(filename)}`;
@@ -1777,13 +1820,13 @@ function DashboardContent() {
                   </div>
                 ) : (
                   <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-700 block">PDF File Attachment</label>
+                    <label className="text-xs font-semibold text-slate-700 block">File Attachment (PDF, Image, or HTML)</label>
                     
                     {/* Hidden File Input */}
                     <input
                       type="file"
                       ref={fileInputRef}
-                      accept=".pdf"
+                      accept={ALLOWED_FILE_INPUT_ACCEPT}
                       onChange={handleFileChange}
                       className="hidden"
                     />
@@ -1796,12 +1839,12 @@ function DashboardContent() {
                         <Upload className="w-5 h-5" />
                       </div>
                       <div className="text-xs font-bold text-slate-800">
-                        {selectedFileObj ? selectedFileObj.name : 'Click to Browse PDF File from Computer'}
+                        {selectedFileObj ? selectedFileObj.name : 'Click to Browse File from Computer'}
                       </div>
                       <div className="text-[11px] text-slate-400 font-medium">
                         {selectedFileObj 
                           ? `${(selectedFileObj.size / (1024 * 1024)).toFixed(2)} MB • Ready for Direct Drive Upload (Max 500 MB)` 
-                          : 'Accepts .pdf curriculum files up to 500 MB (uploads directly to Google Drive)'}
+                          : 'Accepts PDF, Image (.png, .jpg, .webp, .gif), or HTML (.html, .htm) up to 500 MB (uploads directly to Google Drive)'}
                       </div>
                     </div>
                   </div>
@@ -1849,6 +1892,14 @@ function DashboardContent() {
                   </div>
                 )}
 
+                {/* Real-Time File Upload Progress Bar */}
+                {isUploading && uploadProgress !== null && uploadType !== 'Lectures' && (
+                  <UploadProgressBar
+                    progress={uploadProgress}
+                    fileName={selectedFileObj?.name || uploadFileName}
+                  />
+                )}
+
                 {/* Big Upload Button */}
                 <div className="pt-2">
                   <button
@@ -1866,7 +1917,7 @@ function DashboardContent() {
                         ? (uploadType === 'Lectures'
                             ? 'Publishing Lecture...'
                             : uploadProgress !== null
-                            ? `Uploading to Google Drive (${uploadProgress}%)...`
+                            ? `Uploading (${uploadProgress.percent}%)...`
                             : 'Saving...')
                         : (uploadType === 'Lectures' ? 'Publish Video Lecture' : uploadType === 'PYQ' ? 'Upload PYQ Paper' : 'Upload Notes')}
                     </span>

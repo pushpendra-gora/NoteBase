@@ -88,12 +88,19 @@ import {
   uploadUnifiedPdf,
   GOOGLE_APPS_SCRIPT_TEMPLATE,
   lastGoogleDriveError,
-  deleteDocumentEverywhere,
-  MAX_PDF_UPLOAD_BYTES
+  deleteDocumentEverywhere
 } from '../../lib/googleDriveService';
+import {
+  ALLOWED_FILE_INPUT_ACCEPT,
+  getFileExtension,
+  isPdfFile,
+  resolveDocumentFilename,
+  validateUploadFileClient,
+} from '../../lib/fileValidation';
 import { extractPdfPageCount, formatFileSize } from '../../lib/pdfMetadata';
 import { openSafeExternalUrl } from '../../lib/urlSafety';
 import PdfPreviewModal from '../../components/PdfPreviewModal';
+import UploadProgressBar, { UploadProgressInfo } from '../../components/UploadProgressBar';
 
 interface AdminMaterial {
   id: string;
@@ -344,7 +351,7 @@ export default function AdminPage() {
         cloudDocs !== null
           ? cloudDocs.map((d: any) => ({
               id: d.id,
-              fileName: d.title?.endsWith('.pdf') ? d.title : `${d.title}.pdf`,
+              fileName: resolveDocumentFilename(d.title || 'document'),
               year: d.year,
               branch: d.branch,
               semester: d.semester,
@@ -599,7 +606,7 @@ export default function AdminPage() {
   const [uploadOwnerName, setUploadOwnerName] = useState<string>('');
   const [selectedUploadFile, setSelectedUploadFile] = useState<File | null>(null);
   const [isUploadingMaterial, setIsUploadingMaterial] = useState<boolean>(false);
-  const [adminUploadProgress, setAdminUploadProgress] = useState<number | null>(null);
+  const [adminUploadProgress, setAdminUploadProgress] = useState<UploadProgressInfo | null>(null);
   const uploadFileInputRef = useRef<HTMLInputElement>(null);
   const recentServerOffsetRef = useRef<number>(0);
 
@@ -1192,7 +1199,7 @@ export default function AdminPage() {
         if (res.ok && data?.success && Array.isArray(data.documents)) {
           const mapped: AdminMaterial[] = data.documents.map((d: any) => ({
             id: d.id,
-            fileName: d.title?.endsWith('.pdf') ? d.title : `${d.title}.pdf`,
+            fileName: resolveDocumentFilename(d.title || 'document'),
             year: d.year,
             branch: d.branch,
             semester: d.semester,
@@ -1511,22 +1518,21 @@ export default function AdminPage() {
     setUploadSubject('');
   };
 
-  const handleUploadFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUploadFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
-      showToast('Please upload a valid .pdf file', 'error');
+    const validation = await validateUploadFileClient(file);
+    if (!validation.valid) {
+      showToast(validation.error || 'Only valid PDF, Image, or HTML files (up to 500 MB) are allowed.', 'error');
       e.target.value = '';
-      return;
-    }
-    if (file.size > MAX_PDF_UPLOAD_BYTES) {
-      showToast('File exceeds the 500 MB Google Drive upload limit.', 'error');
-      e.target.value = '';
+      setSelectedUploadFile(null);
       return;
     }
     setSelectedUploadFile(file);
     if (!uploadDisplayTitle.trim()) {
-      setUploadDisplayTitle(file.name.replace(/\.pdf$/i, ''));
+      setUploadDisplayTitle(
+        isPdfFile(file.name, file.type) ? file.name.replace(/\.pdf$/i, '') : file.name
+      );
     }
   };
 
@@ -1624,27 +1630,56 @@ export default function AdminPage() {
 
     // REGULAR CASE: NOTES OR PYQS
     const finalOwner = uploadOwnerName.trim() || 'Department Faculty';
-    const finalFileName = cleanTitle.toLowerCase().endsWith('.pdf') ? cleanTitle : `${cleanTitle}.pdf`;
+    const selectedExt = selectedUploadFile ? getFileExtension(selectedUploadFile.name) : '';
+    const isNonPdfUpload = Boolean(selectedExt && selectedExt !== 'pdf');
+    const resolvedDocTitle = isNonPdfUpload && selectedUploadFile
+      ? resolveDocumentFilename(cleanTitle, selectedUploadFile.name)
+      : cleanTitle;
+    const finalFileName = resolveDocumentFilename(cleanTitle, selectedUploadFile?.name);
     const finalType: 'Notes' | 'PYQ' = uploadType === 'PYQ' ? 'PYQ' : 'Notes';
     const calculatedSize = selectedUploadFile ? formatFileSize(selectedUploadFile.size) : '';
-    const realPageCount = selectedUploadFile ? await extractPdfPageCount(selectedUploadFile) : 0;
+    const realPageCount =
+      selectedUploadFile && isPdfFile(selectedUploadFile.name, selectedUploadFile.type)
+        ? await extractPdfPageCount(selectedUploadFile)
+        : 0;
 
+    const uploadStartedAt = Date.now();
     setIsUploadingMaterial(true);
-    setAdminUploadProgress(selectedUploadFile ? 1 : null);
+    setAdminUploadProgress(
+      selectedUploadFile
+        ? {
+            percent: 1,
+            loadedBytes: 0,
+            totalBytes: selectedUploadFile.size,
+            stageLabel: 'Starting upload...',
+            startedAt: uploadStartedAt,
+          }
+        : null
+    );
 
     try {
       let uploadedFileUrl: string | undefined = undefined;
       let uploadedFilePath: string | undefined = undefined;
 
-      // 1. Upload PDF directly from browser to Google Drive (up to 500 MB, 0 bytes through Vercel)
+      // 1. Upload validated file directly from browser to Google Drive (up to 500 MB, 0 bytes through Vercel)
       if (selectedUploadFile) {
-        showToast('Uploading PDF directly to Google Drive...', 'info');
+        showToast('Uploading file directly to Google Drive...', 'info');
         const uploadResult = await uploadUnifiedPdf(selectedUploadFile, undefined, {
-          title: cleanTitle,
+          title: resolvedDocTitle,
           year: uploadYear,
           branch: uploadBranch,
           semester: uploadSemester,
-          onProgress: (pct) => setAdminUploadProgress(pct),
+          onProgressDetail: (detail) =>
+            setAdminUploadProgress({
+              percent: detail.percent >= 100 ? 99 : detail.percent,
+              loadedBytes: detail.loadedBytes,
+              totalBytes: detail.totalBytes,
+              stageLabel:
+                detail.percent >= 100
+                  ? 'Saving document record to database...'
+                  : detail.stageLabel,
+              startedAt: uploadStartedAt,
+            }),
         });
         if (uploadResult && uploadResult.publicUrl) {
           uploadedFileUrl = uploadResult.publicUrl;
@@ -1664,7 +1699,7 @@ export default function AdminPage() {
       const docId = `doc-admin-${Date.now()}`;
       const noteDoc: NoteDocument = {
         id: docId,
-        title: cleanTitle,
+        title: resolvedDocTitle,
         subject: finalSubject,
         code: finalSubject.slice(0, 4).toUpperCase().replace(/[^A-Z]/g, '') + '101',
         year: uploadYear,
@@ -1691,6 +1726,16 @@ export default function AdminPage() {
       const docData = await docRes.json();
       if (!docRes.ok || !docData.success) {
         throw new Error(docData?.error || 'Failed to save document metadata to database.');
+      }
+
+      if (selectedUploadFile) {
+        setAdminUploadProgress({
+          percent: 100,
+          loadedBytes: selectedUploadFile.size,
+          totalBytes: selectedUploadFile.size,
+          stageLabel: 'Upload complete!',
+          startedAt: uploadStartedAt,
+        });
       }
 
       saveCustomUploadedDocument(noteDoc);
@@ -3791,11 +3836,11 @@ export default function AdminPage() {
               ) : (
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    PDF File Attachment
+                    File Attachment (PDF, Image, or HTML)
                   </label>
                   <input
                     type="file"
-                    accept=".pdf"
+                    accept={ALLOWED_FILE_INPUT_ACCEPT}
                     ref={uploadFileInputRef}
                     onChange={handleUploadFileChange}
                     className="hidden"
@@ -3820,10 +3865,10 @@ export default function AdminPage() {
                     ) : (
                       <div className="space-y-1">
                         <p className="text-xs sm:text-sm font-bold text-slate-800 group-hover:text-indigo-600 transition-colors">
-                          Click to Browse PDF File from Computer
+                          Click to Browse File from Computer
                         </p>
                         <p className="text-[11px] text-slate-400">
-                          Accepts .pdf files up to 500 MB (uploads directly to Google Drive)
+                          Accepts PDF, Image (.png, .jpg, .webp, .gif), or HTML (.html, .htm) up to 500 MB (uploads directly to Google Drive)
                         </p>
                       </div>
                     )}
@@ -3876,6 +3921,14 @@ export default function AdminPage() {
                 </div>
               )}
 
+              {/* Real-Time File Upload Progress Bar */}
+              {isUploadingMaterial && adminUploadProgress !== null && uploadType !== 'Lectures' && (
+                <UploadProgressBar
+                  progress={adminUploadProgress}
+                  fileName={selectedUploadFile?.name || uploadDisplayTitle}
+                />
+              )}
+
               {/* Big Upload Button */}
               <div className="pt-2 flex flex-col sm:flex-row items-center gap-3">
                 <button
@@ -3893,7 +3946,7 @@ export default function AdminPage() {
                       ? (uploadType === 'Lectures'
                           ? 'Publishing Lecture...'
                           : adminUploadProgress !== null
-                          ? `Uploading directly to Google Drive (${adminUploadProgress}%)...`
+                          ? `Uploading (${adminUploadProgress.percent}%)...`
                           : 'Saving...') 
                       : (uploadType === 'Lectures' ? 'Publish Video Lecture' : uploadType === 'PYQ' ? 'Upload PYQ Paper' : 'Upload Material')}
                   </span>

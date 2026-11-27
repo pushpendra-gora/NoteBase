@@ -3,11 +3,14 @@ import { getSupabaseClient } from '@/lib/supabase';
 import { getAdminSession, getCoordinatorSession, isValidGoogleScriptUrl } from '@/lib/serverAuth';
 import { isBranchMatch } from '@/lib/coordinatorService';
 import { deleteFileFromGoogleDriveServer, extractGoogleDriveFileId, loadMultiDriveState } from '@/lib/serverDrive';
+import {
+  inspectFileSignatureAndContent,
+  MAX_UPLOAD_BYTES,
+  validateFileMetadataOnly,
+} from '@/lib/fileValidation';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
-
-const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
 
 function isGoogleLoginHtml(text: string): boolean {
   return (
@@ -42,7 +45,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { action, scriptUrl, driveId, fileName, mimeType, fileSize, base64, folderId, fileId, origin } = body || {};
+    const { action, scriptUrl, driveId, fileName, mimeType, fileSize, headBase64, base64, folderId, fileId, origin } = body || {};
 
     const client = getSupabaseClient();
     const multiState = await loadMultiDriveState(client);
@@ -91,28 +94,33 @@ export async function POST(req: NextRequest) {
     if (action === 'init') {
       const cleanName = String(fileName || '').trim();
       const sizeBytes = Number(fileSize);
-      const cleanMime = String(mimeType || 'application/pdf').trim() || 'application/pdf';
+      const rawMime = String(mimeType || '').trim();
 
-      if (!cleanName || (!cleanName.toLowerCase().endsWith('.pdf') && cleanMime !== 'application/pdf')) {
+      const metaCheck = validateFileMetadataOnly(cleanName, rawMime, sizeBytes);
+      if (!metaCheck.valid) {
         return NextResponse.json(
-          { success: false, error: 'Only valid PDF (.pdf) files are allowed.' },
+          { success: false, error: metaCheck.error || 'Only PDF, Image, and HTML files up to 500 MB are allowed.' },
+          { status: Number.isFinite(sizeBytes) && sizeBytes > MAX_UPLOAD_BYTES ? 413 : 400 }
+        );
+      }
+
+      if (!headBase64 || typeof headBase64 !== 'string') {
+        return NextResponse.json(
+          { success: false, error: 'File signature verification header (headBase64) is required before upload.' },
           { status: 400 }
         );
       }
 
-      if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
+      const decodedHead = Buffer.from(headBase64.slice(0, 8192), 'base64');
+      const sigCheck = inspectFileSignatureAndContent(cleanName, rawMime, new Uint8Array(decodedHead), sizeBytes);
+      if (!sigCheck.valid) {
         return NextResponse.json(
-          { success: false, error: 'Invalid or empty file size.' },
+          { success: false, error: sigCheck.error || 'Uploaded file content does not match allowed PDF, Image, or HTML formats.' },
           { status: 400 }
         );
       }
 
-      if (sizeBytes > MAX_UPLOAD_BYTES) {
-        return NextResponse.json(
-          { success: false, error: 'File exceeds the maximum 500 MB Google Drive upload limit.' },
-          { status: 413 }
-        );
-      }
+      const cleanMime = sigCheck.canonicalMime || metaCheck.canonicalMime || 'application/pdf';
 
       // Ask Apps Script (server-to-server) for short-lived OAuth token + destination folder ID
       const tokenRes = await fetch(targetScriptUrl, {
@@ -271,14 +279,8 @@ export async function POST(req: NextRequest) {
     }
 
     const cleanLegacyName = String(fileName).trim();
-    if (!cleanLegacyName.toLowerCase().endsWith('.pdf') && mimeType !== 'application/pdf') {
-      return NextResponse.json(
-        { success: false, error: 'Only PDF files are permitted.' },
-        { status: 400 }
-      );
-    }
-
     const rawBase64 = String(base64);
+    const decodedPrefix = Buffer.from(rawBase64.slice(0, 8192), 'base64');
     const approxBytes = Math.floor((rawBase64.length * 3) / 4);
     if (approxBytes > 4.5 * 1024 * 1024) {
       return NextResponse.json(
@@ -287,14 +289,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Verify decoded PDF header starts with %PDF-
-    const headBytes = Buffer.from(rawBase64.slice(0, 16), 'base64').toString('ascii');
-    if (!headBytes.startsWith('%PDF-')) {
+    const legacyCheck = inspectFileSignatureAndContent(
+      cleanLegacyName,
+      typeof mimeType === 'string' ? mimeType : '',
+      new Uint8Array(decodedPrefix),
+      approxBytes
+    );
+    if (!legacyCheck.valid) {
       return NextResponse.json(
-        { success: false, error: 'Invalid PDF file content: missing %PDF- header.' },
+        { success: false, error: legacyCheck.error || 'Only verified PDF, Image, and HTML files are permitted.' },
         { status: 400 }
       );
     }
+    const resolvedLegacyMime = legacyCheck.canonicalMime || 'application/pdf';
 
     const gscriptResponse = await fetch(targetScriptUrl, {
       method: 'POST',
@@ -303,7 +310,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         fileName: cleanLegacyName,
-        mimeType: mimeType || 'application/pdf',
+        mimeType: resolvedLegacyMime,
         base64: rawBase64,
         folderId: targetFolderId,
       }),

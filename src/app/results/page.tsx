@@ -1,10 +1,12 @@
 'use client';
 
-import React, { Suspense, useState, useMemo, useEffect, useRef } from 'react';
+import React, { Suspense, useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { 
   ArrowLeft, 
+  ChevronLeft,
+  ChevronRight,
   Eye, 
   Download, 
   Check, 
@@ -30,6 +32,7 @@ import { getDocumentsFor, getSubjectsFor, saveSubjectsFor, deleteCustomUploadedD
 import { BranchOption, NoteDocument, SemesterOption, YearOption, LectureItem } from '../../types';
 import { isSupabaseConfigured } from '../../lib/supabase';
 import { fetchDocumentsFromSupabase, fetchLecturesFromSupabase, fetchSubjectsFromSupabase } from '../../lib/supabaseService';
+import { resolveDocumentFilename } from '../../lib/fileValidation';
 import { formatFileSize } from '../../lib/pdfMetadata';
 import { normalizeSafeEmbedUrl, normalizeSafeExternalUrl, openSafeExternalUrl } from '../../lib/urlSafety';
 import PdfPreviewModal from '../../components/PdfPreviewModal';
@@ -348,6 +351,41 @@ function ResultsContent() {
         localStorage.setItem(`notebase_active_subj_${year}_${branch}_${semester}`, subjTitle);
       } catch {}
     }
+  };
+
+  // Horizontal scrolling controls for Subjects strip
+  const subjectsScrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollSubjectsLeft, setCanScrollSubjectsLeft] = useState(false);
+  const [canScrollSubjectsRight, setCanScrollSubjectsRight] = useState(false);
+
+  const updateSubjectScrollState = useCallback(() => {
+    const el = subjectsScrollRef.current;
+    if (!el) {
+      setCanScrollSubjectsLeft(false);
+      setCanScrollSubjectsRight(false);
+      return;
+    }
+    setCanScrollSubjectsLeft(el.scrollLeft > 4);
+    setCanScrollSubjectsRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
+  }, []);
+
+  useEffect(() => {
+    const raf = window.requestAnimationFrame(updateSubjectScrollState);
+    window.addEventListener('resize', updateSubjectScrollState);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener('resize', updateSubjectScrollState);
+    };
+  }, [subjectsList, updateSubjectScrollState]);
+
+  const scrollSubjectsBy = (direction: 'left' | 'right') => {
+    const el = subjectsScrollRef.current;
+    if (!el) return;
+    const distance = Math.max(180, Math.round(el.clientWidth * 0.65));
+    el.scrollBy({
+      left: direction === 'left' ? -distance : distance,
+      behavior: 'smooth',
+    });
   };
 
   // Lecture items (from LocalStorage and Supabase Cloud)
@@ -790,7 +828,7 @@ function ResultsContent() {
     // If real PDF URL exists or document is cached locally on Android, initiate direct download
     if (targetUrl || getAndroidBridge()?.isPdfCachedOnDisk?.(doc.id)) {
       const safeTitle = (doc.title || 'document').replace(/[/\\?%*:|"<>]/g, '_');
-      const filename = safeTitle.toLowerCase().endsWith('.pdf') ? safeTitle : `${safeTitle}.pdf`;
+      const filename = resolveDocumentFilename(safeTitle);
 
       let downloadUrl = targetUrl || '';
       const fileIdMatch = downloadUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
@@ -936,39 +974,68 @@ function ResultsContent() {
             </span>
           </div>
 
-          {/* Subject Compact Boxes / Chips (Small & neat boxes side by side) */}
+          {/* Subject Horizontal Scroll Strip */}
           {isLoadingSubjects && subjectsList.length === 0 ? (
             <div className="py-6 px-4 text-center rounded-2xl bg-slate-50/70 border border-slate-100 flex flex-col items-center justify-center space-y-2">
               <Loader2 className="w-5 h-5 text-indigo-600 animate-spin" />
               <p className="text-xs font-semibold text-slate-600">Loading curriculum subjects for {branch}...</p>
             </div>
           ) : subjectsList.length > 0 ? (
-            <div className="flex flex-wrap gap-2 sm:gap-2.5">
-              {/* Individual Compact Subject Box */}
-              {subjectsList.map((subj) => {
-                const isSelected = activeSubject === subj.title;
+            <div className="relative flex items-center gap-1.5 sm:gap-2">
+              {canScrollSubjectsLeft && (
+                <button
+                  type="button"
+                  onClick={() => scrollSubjectsBy('left')}
+                  aria-label="Scroll subjects left"
+                  className="shrink-0 w-8 h-8 rounded-full bg-white border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 text-slate-700 hover:text-indigo-600 flex items-center justify-center shadow-sm transition-all cursor-pointer"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+              )}
 
-                return (
-                  <button
-                    key={`${subj.code}-${subj.title}`}
-                    type="button"
-                    onClick={() => handleSelectSubject(subj.title)}
-                    className={`px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-bold transition-all border inline-flex items-center space-x-2 cursor-pointer shadow-xs ${
-                      isSelected
-                        ? 'bg-[#3b49df] text-white border-[#3b49df] shadow-sm shadow-indigo-100 ring-2 ring-indigo-200 scale-[1.02]'
-                        : 'bg-slate-50 hover:bg-white border-slate-200/80 hover:border-indigo-300 text-slate-800 hover:shadow-xs'
-                    }`}
-                  >
-                    <span className={`text-[10px] sm:text-[11px] px-1.5 py-0.5 rounded-md font-extrabold ${
-                      isSelected ? 'bg-white/20 text-white' : 'bg-slate-200/70 text-slate-600'
-                    }`}>
-                      {subj.code.slice(0, 3)}
-                    </span>
-                    <span className="truncate max-w-[160px] sm:max-w-none">{subj.title}</span>
-                    {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0 ml-0.5" />}
-                  </button>
-                );
-              })}
+              <div
+                ref={subjectsScrollRef}
+                onScroll={updateSubjectScrollState}
+                style={{ touchAction: 'pan-x pan-y', WebkitOverflowScrolling: 'touch' }}
+                className="flex-1 min-w-0 flex flex-nowrap items-center gap-2 sm:gap-2.5 overflow-x-auto py-1.5 px-0.5 scroll-smooth"
+              >
+                {/* Individual Compact Subject Box */}
+                {subjectsList.map((subj) => {
+                  const isSelected = activeSubject === subj.title;
+
+                  return (
+                    <button
+                      key={`${subj.code}-${subj.title}`}
+                      type="button"
+                      onClick={() => handleSelectSubject(subj.title)}
+                      className={`shrink-0 whitespace-nowrap px-3.5 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-bold transition-all border inline-flex items-center space-x-2 cursor-pointer shadow-xs ${
+                        isSelected
+                          ? 'bg-[#3b49df] text-white border-[#3b49df] shadow-sm shadow-indigo-100 ring-2 ring-indigo-200'
+                          : 'bg-slate-50 hover:bg-white border-slate-200/80 hover:border-indigo-300 text-slate-800 hover:shadow-xs'
+                      }`}
+                    >
+                      <span className={`text-[10px] sm:text-[11px] px-1.5 py-0.5 rounded-md font-extrabold shrink-0 ${
+                        isSelected ? 'bg-white/20 text-white' : 'bg-slate-200/70 text-slate-600'
+                      }`}>
+                        {subj.code.slice(0, 3)}
+                      </span>
+                      <span>{subj.title}</span>
+                      {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0 ml-0.5" />}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {canScrollSubjectsRight && (
+                <button
+                  type="button"
+                  onClick={() => scrollSubjectsBy('right')}
+                  aria-label="Scroll subjects right"
+                  className="shrink-0 w-8 h-8 rounded-full bg-white border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 text-slate-700 hover:text-indigo-600 flex items-center justify-center shadow-sm transition-all cursor-pointer"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              )}
             </div>
           ) : (
             <div className="py-10 px-4 text-center rounded-2xl bg-slate-50/70 border border-dashed border-slate-200 space-y-2">

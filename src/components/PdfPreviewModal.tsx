@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
-import { AlertCircle, Download, Loader2, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, Download, Loader2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { normalizeSafeEmbedUrl } from '../lib/urlSafety';
+import { detectPreviewFileCategory } from '../lib/fileValidation';
 
 export interface PdfPreviewDoc {
   id: string;
@@ -40,19 +41,22 @@ function resolveRawPdfSourceUrl(doc: PdfPreviewDoc): string {
   return normalizeSafeEmbedUrl(candidate) || '';
 }
 
+function extractGoogleDriveId(url?: string): string | null {
+  if (!url) return null;
+  const gdriveProtocol = url.match(/^gdrive:\/\/([a-zA-Z0-9_-]+)/);
+  if (gdriveProtocol?.[1]) return gdriveProtocol[1];
+  const driveMatch = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (driveMatch?.[1]) return driveMatch[1];
+  const idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idMatch?.[1] && url.includes('drive.google.com')) return idMatch[1];
+  return null;
+}
+
 function getPdfEmbedUrl(url?: string): string {
   if (!url) return '';
-  const gdriveProtocol = url.match(/^gdrive:\/\/([a-zA-Z0-9_-]+)/);
-  if (gdriveProtocol?.[1]) {
-    return `https://drive.google.com/file/d/${gdriveProtocol[1]}/preview`;
-  }
-  const driveMatch = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if (driveMatch?.[1]) {
-    return `https://drive.google.com/file/d/${driveMatch[1]}/preview`;
-  }
-  const idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-  if (idMatch?.[1] && url.includes('drive.google.com')) {
-    return `https://drive.google.com/file/d/${idMatch[1]}/preview`;
+  const driveId = extractGoogleDriveId(url);
+  if (driveId) {
+    return `https://drive.google.com/file/d/${driveId}/preview`;
   }
   return normalizeSafeEmbedUrl(url) || '';
 }
@@ -70,6 +74,32 @@ export default function PdfPreviewModal({
   const [nativePdfProgress, setNativePdfProgress] = useState(0);
   const [zoomLevel, setZoomLevel] = useState(100);
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
+  const [imageFallbackStep, setImageFallbackStep] = useState(0);
+  const [htmlContent, setHtmlContent] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  const fileCategory = useMemo(
+    () => (doc ? detectPreviewFileCategory(doc.title, doc.file_url, doc.file_path) : 'pdf'),
+    [doc?.title, doc?.file_url, doc?.file_path]
+  );
+
+  const rawSourceUrl = useMemo(() => (doc ? resolveRawPdfSourceUrl(doc) : ''), [doc]);
+  const driveFileId = useMemo(
+    () => extractGoogleDriveId(doc?.file_url || doc?.file_path || rawSourceUrl),
+    [doc?.file_url, doc?.file_path, rawSourceUrl]
+  );
+
+  const imageCandidates = useMemo(() => {
+    if (fileCategory !== 'image') return [];
+    if (driveFileId) {
+      return [
+        `https://drive.google.com/thumbnail?id=${driveFileId}&sz=w2400`,
+        `https://drive.google.com/uc?export=view&id=${driveFileId}`,
+        `/api/preview-file?mode=image&url=${encodeURIComponent(rawSourceUrl || doc?.file_url || doc?.file_path || '')}`,
+      ];
+    }
+    return rawSourceUrl ? [rawSourceUrl] : [];
+  }, [fileCategory, driveFileId, rawSourceUrl, doc?.file_url, doc?.file_path]);
 
   const pdfContainerRef = useRef<HTMLDivElement>(null);
   const isPinchingRef = useRef(false);
@@ -201,9 +231,56 @@ export default function PdfPreviewModal({
     setZoomLevel(100);
     setPanPosition({ x: 0, y: 0 });
     setNativePdfProgress(0);
+    setImageFallbackStep(0);
+    setHtmlContent(null);
+    setPreviewError(null);
 
     const bridge = getAndroidBridge();
     const rawUrl = resolveRawPdfSourceUrl(doc);
+
+    if (fileCategory === 'image') {
+      setUseWebPdfFallback(true);
+      setIsIframeLoading(Boolean(rawUrl));
+      return;
+    }
+
+    if (fileCategory === 'html') {
+      setUseWebPdfFallback(true);
+      if (!rawUrl) {
+        setIsIframeLoading(false);
+        return;
+      }
+
+      if (!driveFileId) {
+        setIsIframeLoading(true);
+        return;
+      }
+
+      const controller = new AbortController();
+      setIsIframeLoading(true);
+      fetch(
+        `/api/preview-file?mode=html&url=${encodeURIComponent(rawUrl)}`,
+        { signal: controller.signal, cache: 'no-store' }
+      )
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data?.success || typeof data?.html !== 'string') {
+            throw new Error(data?.error || 'Could not load HTML preview.');
+          }
+          setHtmlContent(data.html);
+          setIsIframeLoading(false);
+          onWebLoaded?.(doc.id);
+        })
+        .catch((err: any) => {
+          if (err?.name === 'AbortError') return;
+          setPreviewError(err?.message || 'Could not load HTML preview.');
+          setIsIframeLoading(false);
+        });
+
+      return () => {
+        controller.abort();
+      };
+    }
 
     if (!bridge || !bridge.openNativePdf || !rawUrl) {
       setUseWebPdfFallback(true);
@@ -288,20 +365,34 @@ export default function PdfPreviewModal({
         bridge.closeNativePdf?.();
       } catch {}
     };
-  }, [doc?.id, doc?.file_url, doc?.file_path]);
+  }, [doc?.id, doc?.file_url, doc?.file_path, fileCategory, driveFileId]);
 
   if (!doc) return null;
 
   const safeEmbedUrl = getPdfEmbedUrl(doc.file_url || doc.file_path);
-  const hasPdfSource = Boolean(safeEmbedUrl);
+  const hasPdfSource = Boolean(safeEmbedUrl || rawSourceUrl);
   const isPyq = doc.type === 'PYQ' || doc.type === 'PYQs';
+  const currentImageSrc = imageCandidates[imageFallbackStep] || '';
+  const usingDriveIframeFallbackForImage =
+    fileCategory === 'image' && imageFallbackStep >= imageCandidates.length && Boolean(driveFileId && safeEmbedUrl);
+
+  const adjustZoom = (delta: number) => {
+    setZoomLevel((prev) => {
+      const next = Math.min(300, Math.max(100, prev + delta));
+      zoomLevelFloatRef.current = next;
+      if (next === 100) setPanPosition({ x: 0, y: 0 });
+      return next;
+    });
+  };
 
   return (
     <div
-      onTouchStart={handlePdfTouchStart}
-      onTouchMove={handlePdfTouchMove}
-      onTouchEnd={handlePdfTouchEnd}
-      className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center pt-[max(env(safe-area-inset-top),0.75rem)] pb-[max(env(safe-area-inset-bottom),0.75rem)] px-2.5 sm:p-5 md:p-8 animate-in fade-in duration-200 select-none overflow-hidden"
+      onTouchStart={fileCategory === 'html' ? undefined : handlePdfTouchStart}
+      onTouchMove={fileCategory === 'html' ? undefined : handlePdfTouchMove}
+      onTouchEnd={fileCategory === 'html' ? undefined : handlePdfTouchEnd}
+      className={`fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center pt-[max(env(safe-area-inset-top),0.75rem)] pb-[max(env(safe-area-inset-bottom),0.75rem)] px-2.5 sm:p-5 md:p-8 animate-in fade-in duration-200 overflow-hidden ${
+        fileCategory === 'html' ? '' : 'select-none'
+      }`}
     >
       {/* Framed Container: Continuous Solid 4-Sided Neutral Slate Border */}
       <div className="w-full h-full max-h-full max-w-5xl rounded-2xl sm:rounded-3xl border-2 sm:border-[3px] border-slate-700 bg-white shadow-2xl overflow-hidden flex flex-col relative z-10">
@@ -316,6 +407,11 @@ export default function PdfPreviewModal({
               >
                 {doc.type}
               </span>
+              {fileCategory !== 'pdf' && (
+                <span className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 bg-indigo-100 text-indigo-700 uppercase">
+                  {fileCategory}
+                </span>
+              )}
               <span className="text-[10px] sm:text-xs font-medium text-slate-500 truncate">
                 {doc.subtitle}
               </span>
@@ -331,13 +427,47 @@ export default function PdfPreviewModal({
             </h3>
           </div>
 
-          <div className="flex items-center space-x-2 shrink-0">
+          <div className="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
+            {fileCategory === 'image' && hasPdfSource && (
+              <div className="hidden sm:inline-flex items-center bg-slate-200/70 rounded-xl p-0.5 mr-1">
+                <button
+                  type="button"
+                  onClick={() => adjustZoom(-25)}
+                  disabled={zoomLevel <= 100}
+                  className="p-1.5 rounded-lg hover:bg-white disabled:opacity-40 text-slate-700 transition-colors cursor-pointer"
+                  title="Zoom Out"
+                >
+                  <ZoomOut className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    zoomLevelFloatRef.current = 100;
+                    setZoomLevel(100);
+                    setPanPosition({ x: 0, y: 0 });
+                  }}
+                  className="px-2 text-[11px] font-bold text-slate-700 tabular-nums cursor-pointer"
+                  title="Reset Zoom"
+                >
+                  {zoomLevel}%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => adjustZoom(25)}
+                  disabled={zoomLevel >= 300}
+                  className="p-1.5 rounded-lg hover:bg-white disabled:opacity-40 text-slate-700 transition-colors cursor-pointer"
+                  title="Zoom In"
+                >
+                  <ZoomIn className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
             {hasPdfSource && onDownload && (
               <button
                 type="button"
                 onClick={onDownload}
                 className="inline-flex items-center space-x-1.5 px-3 sm:px-4 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-all shadow-sm cursor-pointer"
-                title="Download PDF"
+                title="Download File"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Download</span>
@@ -360,11 +490,13 @@ export default function PdfPreviewModal({
           </div>
         </div>
 
-        {/* REAL PDF EMBEDDED VIEWER (Strictly contained inside the 4-sided border) */}
+        {/* FILE VIEWER BODY (PDF, Image, or Sandboxed HTML strictly inside the 4-sided border) */}
         <div
           ref={pdfContainerRef}
-          className="flex-1 min-h-0 w-full bg-slate-100 relative overflow-hidden flex flex-col select-none"
-          style={{ touchAction: 'none' }}
+          className={`flex-1 min-h-0 w-full bg-slate-100 relative overflow-hidden flex flex-col ${
+            fileCategory === 'html' ? '' : 'select-none'
+          }`}
+          style={{ touchAction: fileCategory === 'html' ? 'auto' : 'none' }}
         >
           {hasPdfSource ? (
             <>
@@ -375,14 +507,18 @@ export default function PdfPreviewModal({
                   </div>
                   <div className="space-y-1 text-center px-4">
                     <p className="text-xs sm:text-sm font-bold text-slate-800">
-                      {isCached
+                      {fileCategory === 'image'
+                        ? 'Loading Image Preview...'
+                        : fileCategory === 'html'
+                        ? 'Loading HTML Preview...'
+                        : isCached
                         ? 'Opening Cached PDF...'
                         : nativePdfProgress > 0
                         ? `Caching Verified PDF (${nativePdfProgress}%)...`
                         : 'Streaming Verified PDF...'}
                     </p>
                     <p className="text-[10px] sm:text-[11px] text-slate-400">
-                      {isCached
+                      {isCached && fileCategory === 'pdf'
                         ? 'Loading instantaneously from local device storage'
                         : 'Loading official document preview'}
                     </p>
@@ -390,7 +526,114 @@ export default function PdfPreviewModal({
                 </div>
               )}
 
-              {useWebPdfFallback && (
+              {previewError ? (
+                <div className="flex-1 p-6 sm:p-14 flex flex-col items-center justify-center text-center space-y-4 bg-slate-50">
+                  <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center shadow-sm">
+                    <AlertCircle className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-1.5 max-w-md">
+                    <h4 className="text-sm sm:text-base font-bold text-slate-900">
+                      Could Not Render Preview Inline
+                    </h4>
+                    <p className="text-xs text-slate-500 leading-relaxed">{previewError}</p>
+                  </div>
+                  {onDownload && (
+                    <button
+                      type="button"
+                      onClick={onDownload}
+                      className="inline-flex items-center space-x-2 px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download File Instead</span>
+                    </button>
+                  )}
+                </div>
+              ) : fileCategory === 'image' ? (
+                <>
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      transform: `scale(${zoomLevel / 100}) translate(${panPosition.x}px, ${panPosition.y}px)`,
+                      transformOrigin: 'center center',
+                      transition: isPinchingRef.current ? 'none' : 'transform 0.08s ease-out',
+                    }}
+                    className="flex-1 w-full h-full flex items-center justify-center p-2 sm:p-6 bg-slate-900/95"
+                  >
+                    {usingDriveIframeFallbackForImage ? (
+                      <iframe
+                        src={safeEmbedUrl}
+                        title={doc.title}
+                        loading="eager"
+                        onLoad={() => {
+                          setIsIframeLoading(false);
+                          onWebLoaded?.(doc.id);
+                        }}
+                        className="w-full h-full flex-1 border-0 bg-white rounded-lg"
+                      />
+                    ) : currentImageSrc ? (
+                      <img
+                        src={currentImageSrc}
+                        alt={doc.title}
+                        draggable={false}
+                        onLoad={() => {
+                          setIsIframeLoading(false);
+                          onWebLoaded?.(doc.id);
+                        }}
+                        onError={() => {
+                          if (imageFallbackStep < imageCandidates.length - 1) {
+                            setImageFallbackStep((s) => s + 1);
+                          } else if (driveFileId && safeEmbedUrl) {
+                            setImageFallbackStep(imageCandidates.length);
+                          } else {
+                            setIsIframeLoading(false);
+                            setPreviewError('Image could not be loaded for inline preview.');
+                          }
+                        }}
+                        className="max-w-full max-h-full object-contain rounded-lg shadow-xl select-none"
+                      />
+                    ) : null}
+                  </div>
+
+                  {!usingDriveIframeFallbackForImage && (
+                    <div
+                      onTouchStart={handlePdfTouchStart}
+                      onTouchMove={handlePdfTouchMove}
+                      onTouchEnd={handlePdfTouchEnd}
+                      className={`absolute inset-0 z-20 cursor-grab active:cursor-grabbing ${
+                        zoomLevel <= 100 ? 'pointer-events-none' : ''
+                      }`}
+                      style={{ touchAction: 'none' }}
+                    />
+                  )}
+                </>
+              ) : fileCategory === 'html' ? (
+                <div className="flex-1 w-full h-full flex flex-col bg-white">
+                  {htmlContent !== null ? (
+                    <iframe
+                      title={doc.title}
+                      srcDoc={htmlContent}
+                      sandbox="allow-scripts"
+                      onLoad={() => {
+                        setIsIframeLoading(false);
+                        onWebLoaded?.(doc.id);
+                      }}
+                      className="w-full h-full flex-1 border-0 bg-white"
+                    />
+                  ) : !driveFileId && rawSourceUrl ? (
+                    <iframe
+                      title={doc.title}
+                      src={rawSourceUrl}
+                      sandbox="allow-scripts"
+                      onLoad={() => {
+                        setIsIframeLoading(false);
+                        onWebLoaded?.(doc.id);
+                      }}
+                      className="w-full h-full flex-1 border-0 bg-white"
+                    />
+                  ) : null}
+                </div>
+              ) : useWebPdfFallback ? (
                 <>
                   <div
                     style={{
@@ -426,7 +669,7 @@ export default function PdfPreviewModal({
                     style={{ touchAction: 'none' }}
                   />
                 </>
-              )}
+              ) : null}
             </>
           ) : (
             <div className="flex-1 p-6 sm:p-16 flex flex-col items-center justify-center text-center space-y-4 bg-slate-50">
@@ -435,11 +678,11 @@ export default function PdfPreviewModal({
               </div>
               <div className="space-y-1.5 max-w-md">
                 <h4 className="text-sm sm:text-lg font-bold text-slate-900">
-                  Actual PDF File Not Uploaded Yet
+                  Actual File Not Uploaded Yet
                 </h4>
                 <p className="text-xs text-slate-500 leading-relaxed">
                   {doc.missingAttachmentMessage ||
-                    `The PDF document for "${doc.title}" has not been attached or uploaded to Google Drive yet.`}
+                    `The document for "${doc.title}" has not been attached or uploaded to Google Drive yet.`}
                 </p>
               </div>
             </div>
