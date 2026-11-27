@@ -1,12 +1,10 @@
 'use client';
 
-import React, { Suspense, useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { Suspense, useState, useMemo, useEffect, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { 
   ArrowLeft, 
-  ChevronLeft,
-  ChevronRight,
   Eye, 
   Download, 
   Check, 
@@ -432,41 +430,6 @@ function ResultsContent() {
     }
   };
 
-  // Horizontal scrolling controls for Subjects strip
-  const subjectsScrollRef = useRef<HTMLDivElement>(null);
-  const [canScrollSubjectsLeft, setCanScrollSubjectsLeft] = useState(false);
-  const [canScrollSubjectsRight, setCanScrollSubjectsRight] = useState(false);
-
-  const updateSubjectScrollState = useCallback(() => {
-    const el = subjectsScrollRef.current;
-    if (!el) {
-      setCanScrollSubjectsLeft(false);
-      setCanScrollSubjectsRight(false);
-      return;
-    }
-    setCanScrollSubjectsLeft(el.scrollLeft > 4);
-    setCanScrollSubjectsRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
-  }, []);
-
-  useEffect(() => {
-    const raf = window.requestAnimationFrame(updateSubjectScrollState);
-    window.addEventListener('resize', updateSubjectScrollState);
-    return () => {
-      window.cancelAnimationFrame(raf);
-      window.removeEventListener('resize', updateSubjectScrollState);
-    };
-  }, [subjectsList, updateSubjectScrollState]);
-
-  const scrollSubjectsBy = (direction: 'left' | 'right') => {
-    const el = subjectsScrollRef.current;
-    if (!el) return;
-    const distance = Math.max(180, Math.round(el.clientWidth * 0.65));
-    el.scrollBy({
-      left: direction === 'left' ? -distance : distance,
-      behavior: 'smooth',
-    });
-  };
-
   // Lecture items (from LocalStorage and Supabase Cloud)
   const [localLectures, setLocalLectures] = useState<LectureItem[]>([]);
   const [cloudLectures, setCloudLectures] = useState<LectureItem[]>([]);
@@ -537,13 +500,37 @@ function ResultsContent() {
     };
   }, [year, branch, semester, type]);
 
-  // Active selected subject (defaults to the first subject in list)
+  // Active selected subject (defaults to 1st subject, or 1st subject with cached files when offline in app)
   const activeSubject = useMemo(() => {
     if (selectedSubject && subjectsList.some((s) => s.title === selectedSubject)) {
       return selectedSubject;
     }
+    if (isOffline && isAndroidApp && type !== 'Lectures') {
+      const targetType = type === 'PYQ' ? 'PYQ' : 'Notes';
+      const firstOfflineSubj = subjectsList.find((s) =>
+        allSavedOfflineDocs.some(
+          (d) =>
+            d.year === year &&
+            d.branch === branch &&
+            d.semester === semester &&
+            d.type === targetType &&
+            d.subject === s.title
+        )
+      );
+      if (firstOfflineSubj) return firstOfflineSubj.title;
+    }
     return subjectsList[0]?.title || '';
-  }, [selectedSubject, subjectsList]);
+  }, [
+    selectedSubject,
+    subjectsList,
+    isOffline,
+    isAndroidApp,
+    type,
+    allSavedOfflineDocs,
+    year,
+    branch,
+    semester,
+  ]);
 
   // Per-subject progressive cache: initializes with localStorage + local verified documents for zero-wait display
   const [subjectDocsCache, setSubjectDocsCache] = useState<Record<string, NoteDocument[]>>(() => {
@@ -1118,61 +1105,35 @@ function ResultsContent() {
               <p className="text-xs font-semibold text-slate-600">Loading curriculum subjects for {branch}...</p>
             </div>
           ) : subjectsList.length > 0 ? (
-            <div className="relative flex items-center gap-1.5 sm:gap-2">
-              {canScrollSubjectsLeft && (
-                <button
-                  type="button"
-                  onClick={() => scrollSubjectsBy('left')}
-                  aria-label="Scroll subjects left"
-                  className="shrink-0 w-8 h-8 rounded-full bg-white border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 text-slate-700 hover:text-indigo-600 flex items-center justify-center shadow-sm transition-all cursor-pointer"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-              )}
+            <div
+              style={{ touchAction: 'pan-x pan-y', WebkitOverflowScrolling: 'touch' }}
+              className="w-full flex flex-nowrap items-center gap-2 sm:gap-2.5 overflow-x-auto py-1.5 px-0.5 scroll-smooth"
+            >
+              {/* Individual Compact Subject Box */}
+              {subjectsList.map((subj) => {
+                const isSelected = activeSubject === subj.title;
 
-              <div
-                ref={subjectsScrollRef}
-                onScroll={updateSubjectScrollState}
-                style={{ touchAction: 'pan-x pan-y', WebkitOverflowScrolling: 'touch' }}
-                className="flex-1 min-w-0 flex flex-nowrap items-center gap-2 sm:gap-2.5 overflow-x-auto py-1.5 px-0.5 scroll-smooth"
-              >
-                {/* Individual Compact Subject Box */}
-                {subjectsList.map((subj) => {
-                  const isSelected = activeSubject === subj.title;
-
-                  return (
-                    <button
-                      key={`${subj.code}-${subj.title}`}
-                      type="button"
-                      onClick={() => handleSelectSubject(subj.title)}
-                      className={`shrink-0 whitespace-nowrap px-3.5 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-bold transition-all border inline-flex items-center space-x-2 cursor-pointer shadow-xs ${
-                        isSelected
-                          ? 'bg-[#3b49df] text-white border-[#3b49df] shadow-sm shadow-indigo-100 ring-2 ring-indigo-200'
-                          : 'bg-slate-50 hover:bg-white border-slate-200/80 hover:border-indigo-300 text-slate-800 hover:shadow-xs'
-                      }`}
-                    >
-                      <span className={`text-[10px] sm:text-[11px] px-1.5 py-0.5 rounded-md font-extrabold shrink-0 ${
-                        isSelected ? 'bg-white/20 text-white' : 'bg-slate-200/70 text-slate-600'
-                      }`}>
-                        {subj.code.slice(0, 3)}
-                      </span>
-                      <span>{subj.title}</span>
-                      {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0 ml-0.5" />}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {canScrollSubjectsRight && (
-                <button
-                  type="button"
-                  onClick={() => scrollSubjectsBy('right')}
-                  aria-label="Scroll subjects right"
-                  className="shrink-0 w-8 h-8 rounded-full bg-white border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 text-slate-700 hover:text-indigo-600 flex items-center justify-center shadow-sm transition-all cursor-pointer"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              )}
+                return (
+                  <button
+                    key={`${subj.code}-${subj.title}`}
+                    type="button"
+                    onClick={() => handleSelectSubject(subj.title)}
+                    className={`shrink-0 whitespace-nowrap px-3.5 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-bold transition-all border inline-flex items-center space-x-2 cursor-pointer shadow-xs ${
+                      isSelected
+                        ? 'bg-[#3b49df] text-white border-[#3b49df] shadow-sm shadow-indigo-100 ring-2 ring-indigo-200'
+                        : 'bg-slate-50 hover:bg-white border-slate-200/80 hover:border-indigo-300 text-slate-800 hover:shadow-xs'
+                    }`}
+                  >
+                    <span className={`text-[10px] sm:text-[11px] px-1.5 py-0.5 rounded-md font-extrabold shrink-0 ${
+                      isSelected ? 'bg-white/20 text-white' : 'bg-slate-200/70 text-slate-600'
+                    }`}>
+                      {subj.code.slice(0, 3)}
+                    </span>
+                    <span>{subj.title}</span>
+                    {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0 ml-0.5" />}
+                  </button>
+                );
+              })}
             </div>
           ) : (
             <div className="py-10 px-4 text-center rounded-2xl bg-slate-50/70 border border-dashed border-slate-200 space-y-2">
@@ -1436,50 +1397,6 @@ function ResultsContent() {
                 </div>
               )}
             </div>
-
-            {/* Extra section ONLY inside Android Student App when Offline: quick access to all locally cached opened files */}
-            {isAndroidApp && isOffline && allSavedOfflineDocs.length > 0 && (
-              <div className="bg-white rounded-3xl border border-emerald-200/80 p-4 sm:p-6 shadow-sm space-y-3">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-900">
-                      All Previously Opened Offline Files ({allSavedOfflineDocs.length})
-                    </h4>
-                    <p className="text-[11px] text-slate-500">
-                      Stored locally on this device — tap any file to view without network
-                    </p>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  {allSavedOfflineDocs.map((savedDoc) => {
-                    const cat = detectPreviewFileCategory(savedDoc.title, savedDoc.file_url, savedDoc.file_path);
-                    const tag = cat === 'image' ? 'IMG' : cat === 'html' ? 'HTML' : 'PDF';
-                    return (
-                      <div
-                        key={`offline-${savedDoc.id}`}
-                        onClick={() => openDocModal(savedDoc)}
-                        className="p-3 rounded-2xl border border-slate-100 hover:border-emerald-300 bg-slate-50/70 hover:bg-white transition-all flex items-center justify-between gap-3 cursor-pointer"
-                      >
-                        <div className="flex items-center space-x-3 min-w-0">
-                          <span className="px-2 py-1 rounded-lg bg-emerald-100 text-emerald-700 text-[10px] font-extrabold shrink-0">
-                            {tag}
-                          </span>
-                          <div className="min-w-0">
-                            <p className="text-xs sm:text-sm font-bold text-slate-900 truncate">
-                              {savedDoc.title}
-                            </p>
-                            <p className="text-[11px] text-slate-500 truncate">
-                              {savedDoc.subject} • {savedDoc.semester} ({savedDoc.year})
-                            </p>
-                          </div>
-                        </div>
-                        <span className="text-xs font-bold text-emerald-700 shrink-0">Open Offline</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
           </div>
         )}

@@ -15,10 +15,7 @@ import {
   Loader2,
   MoreVertical,
   Info,
-  X,
-  Eye,
-  Download,
-  WifiOff
+  X
 } from 'lucide-react';
 import { 
   FIRST_YEAR_GROUPS, 
@@ -26,17 +23,7 @@ import {
   YEAR_SEMESTER_MAP, 
   YEARS 
 } from '../data/notesData';
-import { BranchOption, NoteDocument, SemesterOption, YearOption } from '../types';
-import {
-  getAllOfflineBlobIds,
-  getOfflineFileBlob,
-  getSavedCachedIdSet,
-  getSavedOfflineDocsMap,
-  isAndroidStudentApp,
-  isDeviceOffline,
-} from '../lib/offlineCache';
-import { detectPreviewFileCategory, resolveDocumentFilename } from '../lib/fileValidation';
-import PdfPreviewModal from '../components/PdfPreviewModal';
+import { BranchOption, SemesterOption, YearOption } from '../types';
 
 export default function NoteBaseHome() {
   const router = useRouter();
@@ -114,95 +101,6 @@ export default function NoteBaseHome() {
   const [typeOpen, setTypeOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
-  const [isAndroidApp, setIsAndroidApp] = useState(false);
-  const [isOffline, setIsOffline] = useState(false);
-  const [showOpenedFilesPanel, setShowOpenedFilesPanel] = useState(false);
-  const [savedSearchQuery, setSavedSearchQuery] = useState('');
-  const [offlineSavedDocs, setOfflineSavedDocs] = useState<NoteDocument[]>([]);
-  const [offlineActiveDoc, setOfflineActiveDoc] = useState<NoteDocument | null>(null);
-
-  useEffect(() => {
-    const appMode = isAndroidStudentApp();
-    setIsAndroidApp(appMode);
-    if (!appMode) {
-      setIsOffline(false);
-      setOfflineSavedDocs([]);
-      return;
-    }
-
-    const refreshOfflineDocs = async () => {
-      const offline = isDeviceOffline();
-      setIsOffline(offline);
-
-      const bridge = (window as any).NoteBaseAndroid;
-      const savedMap = getSavedOfflineDocsMap();
-      const cachedIds = getSavedCachedIdSet();
-      const idbIds = await getAllOfflineBlobIds().catch(() => [] as string[]);
-      idbIds.forEach((id) => cachedIds.add(id));
-
-      const verified = Object.values(savedMap).filter((doc) => {
-        if (!doc || !doc.id) return false;
-        if (!doc.file_url && !doc.file_path) return false;
-        return cachedIds.has(doc.id) || Boolean(bridge?.isPdfCachedOnDisk?.(doc.id));
-      });
-      setOfflineSavedDocs(verified);
-    };
-
-    refreshOfflineDocs();
-    const onOnline = () => {
-      setIsOffline(false);
-      refreshOfflineDocs();
-    };
-    const onOffline = () => {
-      refreshOfflineDocs();
-    };
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
-    window.addEventListener('focus', refreshOfflineDocs);
-    return () => {
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
-      window.removeEventListener('focus', refreshOfflineDocs);
-    };
-  }, []);
-
-  const filteredOpenedDocs = useMemo(() => {
-    const q = savedSearchQuery.trim().toLowerCase();
-    if (!q) return offlineSavedDocs;
-    return offlineSavedDocs.filter(
-      (d) =>
-        (d.title || '').toLowerCase().includes(q) ||
-        (d.subject || '').toLowerCase().includes(q) ||
-        (d.semester || '').toLowerCase().includes(q) ||
-        (d.year || '').toLowerCase().includes(q)
-    );
-  }, [offlineSavedDocs, savedSearchQuery]);
-
-  const handleOfflineDownload = async (doc: NoteDocument) => {
-    const safeTitle = (doc.title || 'document').replace(/[/\\?%*:|"<>]/g, '_');
-    const filename = resolveDocumentFilename(safeTitle);
-    const cached = await getOfflineFileBlob(doc.id);
-    if (cached) {
-      const blobUrl = URL.createObjectURL(cached.blob);
-      const link = document.createElement('a');
-      link.href = blobUrl;
-      link.setAttribute('download', filename);
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => {
-        try {
-          document.body.removeChild(link);
-        } catch {}
-        URL.revokeObjectURL(blobUrl);
-      }, 500);
-      return;
-    }
-    const bridge = (window as any).NoteBaseAndroid;
-    const rawUrl = doc.file_url || doc.file_path || '';
-    if (bridge?.downloadPdf && rawUrl) {
-      bridge.downloadPdf(doc.id, rawUrl, filename);
-    }
-  };
 
   const yearRef = useRef<HTMLDivElement>(null);
   const branchRef = useRef<HTMLDivElement>(null);
@@ -381,25 +279,7 @@ export default function NoteBaseHome() {
             </button>
 
             {menuOpen && (
-              <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl border border-slate-100 shadow-[0_12px_30px_rgba(0,0,0,0.12)] p-1.5 z-50 animate-in fade-in zoom-in-95 duration-150 space-y-0.5">
-                {isAndroidApp && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setShowOpenedFilesPanel((v) => !v);
-                    }}
-                    className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span className="flex items-center space-x-2.5">
-                      <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <span>My Opened Files</span>
-                    </span>
-                    <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
-                      {offlineSavedDocs.length}
-                    </span>
-                  </button>
-                )}
+              <div className="absolute right-0 mt-2 w-40 bg-white rounded-2xl border border-slate-100 shadow-[0_12px_30px_rgba(0,0,0,0.12)] p-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
                 <button
                   type="button"
                   onClick={() => {
@@ -723,170 +603,9 @@ export default function NoteBaseHome() {
             )}
           </div>
 
-          {/* Quick Trigger ONLY in Android Student App to view previously opened files anytime (Online or Offline) */}
-          {isAndroidApp && !isOffline && (
-            <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-center">
-              <button
-                type="button"
-                onClick={() => setShowOpenedFilesPanel((v) => !v)}
-                className="w-full py-2.5 px-4 rounded-xl bg-emerald-50/80 hover:bg-emerald-100/80 border border-emerald-200/80 text-emerald-800 text-xs sm:text-sm font-bold flex items-center justify-center space-x-2 transition-colors cursor-pointer"
-              >
-                <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>
-                  {showOpenedFilesPanel ? 'Hide' : 'View'} My Opened Files ({offlineSavedDocs.length})
-                </span>
-              </button>
-            </div>
-          )}
-
         </div>
 
-        {/* APP-ONLY PREVIOUSLY OPENED FILES SECTION (Available Anytime Inside Android App — Never in Browser) */}
-        {isAndroidApp && (isOffline || showOpenedFilesPanel) && (
-          <div
-            className={`w-full mt-4 bg-white rounded-[28px] border shadow-[0_12px_36px_rgba(15,23,42,0.06)] p-5 sm:p-7 space-y-4 animate-in fade-in duration-200 ${
-              isOffline ? 'border-amber-200/90' : 'border-emerald-200/80'
-            }`}
-          >
-            <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3.5">
-              <div className="flex items-center space-x-2.5 min-w-0">
-                <div
-                  className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 ${
-                    isOffline
-                      ? 'bg-amber-50 text-amber-600 border-amber-200'
-                      : 'bg-emerald-50 text-emerald-600 border-emerald-200'
-                  }`}
-                >
-                  {isOffline ? <WifiOff className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
-                </div>
-                <div className="min-w-0">
-                  <h2 className="text-sm sm:text-base font-extrabold text-slate-900 truncate">
-                    {isOffline
-                      ? `Offline Mode • My Opened Files (${offlineSavedDocs.length})`
-                      : `My Opened Files (${offlineSavedDocs.length})`}
-                  </h2>
-                  <p className="text-[11px] text-slate-500 truncate">
-                    Files you previously opened in NoteBase App (available anytime, even offline)
-                  </p>
-                </div>
-              </div>
-              <span className="shrink-0 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold">
-                {isOffline ? 'No Network Needed' : 'Saved in App'}
-              </span>
-            </div>
-
-            {offlineSavedDocs.length > 3 && (
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={savedSearchQuery}
-                  onChange={(e) => setSavedSearchQuery(e.target.value)}
-                  placeholder="Search your saved files..."
-                  className="w-full h-10 pl-9 pr-8 bg-slate-50 border border-slate-200/80 rounded-xl text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                />
-                {savedSearchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setSavedSearchQuery('')}
-                    className="p-1 text-slate-400 hover:text-slate-600 absolute right-2.5 top-1/2 -translate-y-1/2 cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-            )}
-
-            {filteredOpenedDocs.length > 0 ? (
-              <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
-                {filteredOpenedDocs.map((doc) => {
-                  const cat = detectPreviewFileCategory(doc.title, doc.file_url, doc.file_path);
-                  const badgeLabel = cat === 'image' ? 'IMG' : cat === 'html' ? 'HTML' : 'PDF';
-                  const badgeColor =
-                    cat === 'image'
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                      : cat === 'html'
-                      ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                      : 'bg-red-50 text-red-700 border-red-200';
-
-                  return (
-                    <div
-                      key={`home-offline-${doc.id}`}
-                      onClick={() => setOfflineActiveDoc(doc)}
-                      className="p-3.5 rounded-2xl border border-slate-100 hover:border-indigo-200 bg-slate-50/70 hover:bg-white transition-all flex items-center justify-between gap-3 cursor-pointer group"
-                    >
-                      <div className="flex items-center space-x-3 min-w-0 flex-1">
-                        <span className={`px-2 py-1 rounded-lg border text-[10px] font-extrabold shrink-0 ${badgeColor}`}>
-                          {badgeLabel}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs sm:text-sm font-bold text-slate-900 group-hover:text-indigo-600 truncate">
-                            {doc.title}
-                          </p>
-                          <p className="text-[11px] text-slate-500 truncate">
-                            {doc.subject} • {doc.semester} • {doc.year}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center space-x-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOfflineDownload(doc);
-                          }}
-                          title="Save / Download Offline Copy"
-                          className="w-8 h-8 rounded-xl bg-white border border-slate-200 text-slate-600 hover:text-indigo-600 flex items-center justify-center cursor-pointer"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                        </button>
-                        <span className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-xl bg-[#3b49df] text-white text-[11px] font-bold">
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>Open</span>
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : offlineSavedDocs.length > 0 ? (
-              <p className="text-xs text-slate-500 text-center py-4">
-                No saved files match &ldquo;{savedSearchQuery}&rdquo;.
-              </p>
-            ) : (
-              <div className="p-5 rounded-2xl bg-slate-50 border border-dashed border-slate-200 text-center space-y-1">
-                <p className="text-xs font-bold text-slate-700">No Previously Opened Files Saved Yet</p>
-                <p className="text-[11px] text-slate-500">
-                  Open any Notes, PYQ, Image, or HTML file in the app once — it will automatically appear here anytime, even without internet.
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
       </div>
-
-      {/* App-Only Saved File Preview Modal right from Home Page */}
-      {isAndroidApp && (
-        <PdfPreviewModal
-          doc={
-            offlineActiveDoc
-              ? {
-                  id: offlineActiveDoc.id,
-                  title: offlineActiveDoc.title,
-                  type: offlineActiveDoc.type,
-                  subtitle: `${offlineActiveDoc.year} • ${offlineActiveDoc.branch} • ${offlineActiveDoc.semester}`,
-                  file_url: offlineActiveDoc.file_url,
-                  file_path: offlineActiveDoc.file_path,
-                  missingAttachmentMessage: 'This file is not cached locally in app storage yet.',
-                }
-              : null
-          }
-          isCached={true}
-          onClose={() => setOfflineActiveDoc(null)}
-          onDownload={offlineActiveDoc ? () => handleOfflineDownload(offlineActiveDoc) : undefined}
-        />
-      )}
 
       {/* About Modal */}
       {aboutOpen && (
