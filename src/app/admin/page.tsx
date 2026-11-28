@@ -2571,7 +2571,7 @@ export default function AdminPage() {
   };
 
   // =========================================================================
-  // VIEW 1: ADMIN LOGIN SCREEN ("sabse pahle login screen jisme id or password ho")
+  // VIEW 1: ADMIN LOGIN SCREEN
   // =========================================================================
   if (!isLoggedIn) {
     return (
@@ -2685,8 +2685,7 @@ export default function AdminPage() {
   }
 
   // =========================================================================
-  // VIEW 2: ADMIN DASHBOARD (Matches User's Provided Image)
-  // "login ke baas esa dasbhaord ho aabhi esa bna do phir aabhi kuch bhi clcikable na ho"
+  // VIEW 2: ADMIN DASHBOARD (Primary overview after Admin login)
   // =========================================================================
   return (
     <div className="h-[100dvh] max-h-[100dvh] w-full bg-[#f8fafc] text-slate-800 flex flex-col md:flex-row antialiased selection:bg-purple-100 overflow-hidden">
@@ -3382,7 +3381,7 @@ export default function AdminPage() {
                   <div className="flex items-start space-x-2">
                     <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                     <span>
-                      Fast single-column counter (<code>material_counts</code>) abhi Supabase me add nahi hua hai — isse add karne ke baad Dashboard ko sabhi tables count nahi karne padenge.
+                      Fast single-column counter (<code>material_counts</code>) has not been added to Supabase yet — once added, the Dashboard will load counts without scanning all tables.
                     </span>
                   </div>
                   <button
@@ -3421,7 +3420,7 @@ export default function AdminPage() {
         )}
 
         {/* =================================================================
-            VIEW 2: ALL MATERIALS VIEW ("jab side me jo all matrialwala option hai uspe click kare tab aaye esa")
+            VIEW 2: ALL MATERIALS VIEW
            ================================================================= */}
         {activeNav === 'All Materials' && (
           <div className="w-full bg-white rounded-3xl border border-slate-100/90 p-6 sm:p-8 shadow-[0_2px_14px_rgba(0,0,0,0.02)] space-y-6 animate-in fade-in duration-200">
@@ -3802,10 +3801,10 @@ export default function AdminPage() {
                               <Search className="w-6 h-6" />
                             </div>
                             <h4 className="text-sm font-bold text-slate-800">
-                              Charo Filters Select Karein ({[yearFilter, branchFilter, semesterFilter, subjectFilter].filter(v => v !== 'All').length}/4 Selected)
+                              Select All 4 Filters ({[yearFilter, branchFilter, semesterFilter, subjectFilter].filter(v => v !== 'All').length}/4 Selected)
                             </h4>
                             <p className="text-xs text-slate-500 leading-relaxed">
-                              Upar <strong>1. Year → 2. Branch → 3. Semester → 4. Subject</strong> charo select karne ke baad hi database se files fetch hongi (1 ya 2 filter par nahi).
+                              Files will only be fetched from the database after selecting all four filters above: <strong>1. Year → 2. Branch → 3. Semester → 4. Subject</strong>.
                             </p>
                             <div className="pt-1 flex items-center justify-center">
                               <button
@@ -3813,7 +3812,7 @@ export default function AdminPage() {
                                 onClick={() => setShowAllUnfiltered(true)}
                                 className="text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline cursor-pointer"
                               >
-                                Ya latest 5 recently added files dekhein
+                                Or view the latest 5 recently added files
                               </button>
                             </div>
                           </div>
@@ -3825,7 +3824,7 @@ export default function AdminPage() {
                         ) : (
                           <div className="space-y-2">
                             <p className="text-xs font-semibold text-slate-600">
-                              Chune gaye filters ke liye koi uploaded material nahi mila.
+                              No uploaded materials found for the selected filters.
                             </p>
                             <button
                               type="button"
@@ -4525,7 +4524,7 @@ export default function AdminPage() {
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      New uploads sirf selected Active Drive me save honge — purani saari drives se Students aur Coordinators files read, preview, download aur delete kar sakte hain.
+                      New uploads are saved exclusively to the selected Active Drive — Students and Coordinators can still read, preview, download, and delete files from all previous drives.
                     </p>
                   </div>
                 </div>
@@ -6563,7 +6562,7 @@ grant all on public.coordinator_login_logs to anon, authenticated, service_role;
                 <div>
                   <h3 className="text-base font-bold text-slate-900">Add New Google Drive</h3>
                   <p className="text-xs text-slate-500">
-                    Nayi Drive add karne par purani drives ka saara data readable rahega aur sirf selected Active Drive me naya upload jayega.
+                    Adding a new drive keeps all files on previous drives readable; only new uploads will be routed to the selected Active Drive.
                   </p>
                 </div>
               </div>
@@ -6609,7 +6608,7 @@ grant all on public.coordinator_login_logs to anon, authenticated, service_role;
                     Next Available Drive Slot: Drive {nextEnvSlotNumber}
                   </div>
                   <p className="text-indigo-800/80 leading-relaxed">
-                    New Google account me Apps Script deploy karke Vercel Project &rarr; <strong>Settings &rarr; Environment Variables</strong> me ye variables add karein aur <strong>Redeploy</strong> karein:
+                    Deploy the Apps Script under your new Google account, add these variables in Vercel Project &rarr; <strong>Settings &rarr; Environment Variables</strong>, and <strong>Redeploy</strong>:
                   </p>
                 </div>
 
@@ -6654,7 +6653,7 @@ grant all on public.coordinator_login_logs to anon, authenticated, service_role;
                 </div>
 
                 <p className="text-[11px] text-slate-500">
-                  Redeploy hone ke baad ye nayi drive yaha Registered Google Drives list me automatically aa jayegi — phir sirf <strong>Use for New Uploads</strong> button dabana hai.
+                  After redeploying, the new drive will appear automatically in the Registered Google Drives list — then simply click <strong>Use for New Uploads</strong>.
                 </p>
 
                 <div className="flex justify-end pt-2 border-t border-slate-100">
@@ -6692,7 +6691,7 @@ grant all on public.coordinator_login_logs to anon, authenticated, service_role;
                     className="w-full h-11 px-3.5 rounded-xl border border-slate-200 font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                   <p className="text-[11px] text-slate-400">
-                    Server database me save hone ke baad ye URL dubara browser UI ya inspect me nahi dikhegi.
+                    Once saved in the server database, this URL will never be exposed in the browser UI or DevTools.
                   </p>
                 </div>
 
