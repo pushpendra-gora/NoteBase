@@ -46,6 +46,15 @@ export default function CoordinatorLoginPage() {
   const yearRef = useRef<HTMLDivElement>(null);
   const branchRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('timeout') === '1') {
+        setErrorMsg('Session expired after 1 hour of inactivity. Please login again.');
+      }
+    }
+  }, []);
+
   // Close dropdowns on outside click
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -136,6 +145,9 @@ export default function CoordinatorLoginPage() {
             branch: selectedBranch,
             year: selectedYear,
           }));
+          try {
+            localStorage.setItem('notebase_coord_last_activity', String(Date.now()));
+          } catch {}
         }
 
         setLoginSuccess(true);

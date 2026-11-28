@@ -48,6 +48,7 @@ import {
   Menu,
   MessageSquareWarning,
   GraduationCap,
+  History,
   Send
 } from 'lucide-react';
 import { 
@@ -63,7 +64,7 @@ import {
   STANDARD_BRANCHES,
   YEARS
 } from '../../data/notesData';
-import { YearOption, BranchOption, SemesterOption, NoteDocument, SubjectMeta, CoordinatorIssue, StudentIssue } from '../../types';
+import { YearOption, BranchOption, SemesterOption, NoteDocument, SubjectMeta, CoordinatorIssue, StudentIssue, CoordinatorLoginLog } from '../../types';
 import { 
   insertDocumentToSupabase, 
   deleteDocumentFromSupabase,
@@ -155,13 +156,13 @@ export default function AdminPage() {
 
   // Active Navigation Tab State & Mobile Drawer Toggle
   const [activeNav, setActiveNav] = useState<
-    'Dashboard' | 'Coordinators' | 'Issues' | 'Student Issues' | 'All Materials' | 'Upload Material' | 'Add Subject' | 'Manage by Year' | 'Manage by Branch' | 'Statistics' | 'Settings'
+    'Dashboard' | 'Coordinators' | 'Coordinator Login Logs' | 'Issues' | 'Student Issues' | 'All Materials' | 'Upload Material' | 'Add Subject' | 'Manage by Year' | 'Manage by Branch' | 'Statistics' | 'Settings'
   >('Dashboard');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [portalLinksOpen, setPortalLinksOpen] = useState(false);
 
   const selectAdminNav = (
-    nav: 'Dashboard' | 'Coordinators' | 'Issues' | 'Student Issues' | 'All Materials' | 'Upload Material' | 'Add Subject' | 'Manage by Year' | 'Manage by Branch' | 'Statistics' | 'Settings'
+    nav: 'Dashboard' | 'Coordinators' | 'Coordinator Login Logs' | 'Issues' | 'Student Issues' | 'All Materials' | 'Upload Material' | 'Add Subject' | 'Manage by Year' | 'Manage by Branch' | 'Statistics' | 'Settings'
   ) => {
     setActiveNav(nav);
     setIsMobileSidebarOpen(false);
@@ -184,6 +185,15 @@ export default function AdminPage() {
   const [studentIssueStatusFilter, setStudentIssueStatusFilter] = useState<'All' | 'Open' | 'Resolved'>('All');
   const [studentIssueReplyDrafts, setStudentIssueReplyDrafts] = useState<Record<string, string>>({});
   const [studentIssueBusyId, setStudentIssueBusyId] = useState<string | null>(null);
+
+  // Coordinator Login Logs State (Displays latest 10 logs only; older logs remain in DB; supports date-range delete)
+  const [coordinatorLogs, setCoordinatorLogs] = useState<CoordinatorLoginLog[]>([]);
+  const [coordinatorLogsTotalInDb, setCoordinatorLogsTotalInDb] = useState(0);
+  const [isLoadingCoordinatorLogs, setIsLoadingCoordinatorLogs] = useState(false);
+  const [coordinatorLogsTableMissing, setCoordinatorLogsTableMissing] = useState(false);
+  const [coordinatorLogsError, setCoordinatorLogsError] = useState<string | null>(null);
+  const [logDeleteFromDate, setLogDeleteFromDate] = useState('');
+  const [logDeleteToDate, setLogDeleteToDate] = useState('');
 
   // Manage by Year / Manage by Branch View State
   const [selectedManageYear, setSelectedManageYear] = useState<YearOption>('1st Year');
@@ -244,6 +254,7 @@ export default function AdminPage() {
     coordinators: boolean;
     issues: boolean;
     studentIssues: boolean;
+    coordinatorLogs: boolean;
     subjects: boolean;
     drives: boolean;
     status: boolean;
@@ -253,6 +264,7 @@ export default function AdminPage() {
     coordinators: false,
     issues: false,
     studentIssues: false,
+    coordinatorLogs: false,
     subjects: false,
     drives: false,
     status: false,
@@ -468,6 +480,71 @@ export default function AdminPage() {
       setIsLoadingStudentIssues(false);
     }
   }, [isLoggedIn]);
+
+  // 3C. Sync Coordinator Login Logs (fetches strictly latest 10 logs only; older logs remain in DB)
+  const syncCoordinatorLogs = useCallback(async (force = false) => {
+    if (!isLoggedIn) return;
+    if (!force && loadedResourcesRef.current.coordinatorLogs) return;
+    setIsLoadingCoordinatorLogs(true);
+    setCoordinatorLogsError(null);
+    try {
+      const res = await fetch('/api/coordinator-logs', {
+        cache: 'no-store',
+        headers: buildAdminSupabaseHeaders(),
+      });
+      const data = await res.json();
+      if (res.ok && data?.success && Array.isArray(data.logs)) {
+        loadedResourcesRef.current.coordinatorLogs = true;
+        setCoordinatorLogs(data.logs.slice(0, 10));
+        setCoordinatorLogsTotalInDb(
+          typeof data.totalInDatabase === 'number' ? data.totalInDatabase : data.logs.length
+        );
+        setCoordinatorLogsTableMissing(false);
+      } else {
+        setCoordinatorLogsTableMissing(Boolean(data?.tableMissing));
+        setCoordinatorLogsError(data?.error || 'Could not load coordinator login logs.');
+      }
+    } catch {
+      setCoordinatorLogsError('Unable to reach server to fetch coordinator login logs.');
+    } finally {
+      setIsLoadingCoordinatorLogs(false);
+    }
+  }, [isLoggedIn]);
+
+  const handleDeleteCoordinatorLogsRange = () => {
+    if (!logDeleteFromDate || !logDeleteToDate) {
+      showToast('Please select both From Date and To Date.', 'error');
+      return;
+    }
+    if (logDeleteFromDate > logDeleteToDate) {
+      showToast('From Date cannot be after To Date.', 'error');
+      return;
+    }
+    const fromBoundary = new Date(`${logDeleteFromDate}T00:00:00.000`).toISOString();
+    const toBoundary = new Date(`${logDeleteToDate}T23:59:59.999`).toISOString();
+
+    setDeleteConfirm({
+      title: 'Delete Coordinator Login Logs',
+      message: `Permanently delete all coordinator login logs from ${logDeleteFromDate} to ${logDeleteToDate} from the Supabase database?`,
+      onConfirm: async () => {
+        const res = await fetch(
+          `/api/coordinator-logs?from=${encodeURIComponent(fromBoundary)}&to=${encodeURIComponent(toBoundary)}`,
+          {
+            method: 'DELETE',
+            headers: buildAdminSupabaseHeaders(),
+          }
+        );
+        const data = await res.json();
+        if (res.ok && data?.success) {
+          const count = typeof data.deletedCount === 'number' ? data.deletedCount : 0;
+          showToast(`Deleted ${count} coordinator login log(s) from database!`, 'success');
+          await syncCoordinatorLogs(true);
+        } else {
+          showToast(data?.error || 'Failed to delete logs from database.', 'error');
+        }
+      },
+    });
+  };
 
   // 4. Sync All Subjects ONLY when Manage by Year / Manage by Branch is clicked
   const syncAllSubjects = useCallback(async (force = false) => {
@@ -1028,6 +1105,8 @@ export default function AdminPage() {
       syncAdminIssues();
     } else if (activeNav === 'Student Issues') {
       syncAdminStudentIssues();
+    } else if (activeNav === 'Coordinator Login Logs') {
+      syncCoordinatorLogs();
     } else if (activeNav === 'Manage by Year' || activeNav === 'Manage by Branch') {
       syncAllMaterials();
       syncCoordinators();
@@ -1049,6 +1128,7 @@ export default function AdminPage() {
     syncCoordinators,
     syncAdminIssues,
     syncAdminStudentIssues,
+    syncCoordinatorLogs,
     syncAllMaterials,
     syncAllSubjects,
     syncDriveRegistry,
@@ -2409,6 +2489,8 @@ export default function AdminPage() {
     setHasMoreRecent(false);
     setAdminIssues([]);
     setStudentIssues([]);
+    setCoordinatorLogs([]);
+    setCoordinatorLogsTotalInDb(0);
     setCoordinators([]);
     setDriveList([]);
     setDashboardSummary(null);
@@ -2418,6 +2500,7 @@ export default function AdminPage() {
       coordinators: false,
       issues: false,
       studentIssues: false,
+      coordinatorLogs: false,
       subjects: false,
       drives: false,
       status: false,
@@ -2702,6 +2785,20 @@ export default function AdminPage() {
               <span>Coordinators</span>
             </button>
 
+            {/* 2A. Coordinator Login Logs */}
+            <button
+              type="button"
+              onClick={() => selectAdminNav('Coordinator Login Logs')}
+              className={`w-full flex items-center space-x-3.5 px-4 py-3 rounded-2xl transition-all cursor-pointer text-left ${
+                activeNav === 'Coordinator Login Logs'
+                  ? 'bg-[#3b49df] text-white font-bold shadow-md shadow-indigo-100'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              }`}
+            >
+              <History className="w-4 h-4" />
+              <span>Coordinator Login Logs</span>
+            </button>
+
             {/* 2B. Coordinator Issues */}
             <button
               type="button"
@@ -2953,7 +3050,9 @@ export default function AdminPage() {
                 {activeNav === 'Dashboard' && 'Admin Dashboard'}
                 {activeNav === 'All Materials' && 'All Materials'}
                 {activeNav === 'Coordinators' && 'Coordinators Management'}
+                {activeNav === 'Coordinator Login Logs' && 'Coordinator Login Logs'}
                 {activeNav === 'Issues' && 'Coordinator Issues'}
+                {activeNav === 'Student Issues' && 'Students Issues'}
                 {activeNav === 'Upload Material' && 'Upload Material'}
                 {activeNav === 'Statistics' && 'Cloud Storage & Statistics'}
                 {activeNav === 'Manage by Year' && 'Manage by Academic Year'}
@@ -5777,6 +5876,178 @@ grant all on public.student_issues to anon, authenticated, service_role;`}
             }}
           />
         )}
+
+        {/* =================================================================
+            VIEW 11: COORDINATOR LOGIN LOGS VIEW (Latest 10 visible; older logs retained in DB)
+           ================================================================= */}
+        {activeNav === 'Coordinator Login Logs' && (() => {
+          const LOGS_SQL = `create table if not exists public.coordinator_login_logs (
+  id text primary key,
+  coordinator_id text,
+  coordinator_name text not null,
+  year text not null,
+  branch text not null,
+  ip_address text default 'unknown',
+  user_agent text default '',
+  logged_in_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+create index if not exists idx_coordinator_login_logs_time on public.coordinator_login_logs(logged_in_at desc);
+alter table public.coordinator_login_logs enable row level security;
+drop policy if exists "Allow all for coordinator_login_logs" on public.coordinator_login_logs;
+create policy "Allow all for coordinator_login_logs" on public.coordinator_login_logs for all using (true) with check (true);
+grant all on public.coordinator_login_logs to anon, authenticated, service_role;`;
+
+          return (
+            <div className="space-y-6 animate-in fade-in duration-200">
+              <div className="bg-white rounded-3xl border border-slate-100/90 p-5 sm:p-8 shadow-[0_2px_14px_rgba(0,0,0,0.02)] space-y-5">
+                {/* Header & Refresh */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                      <History className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-lg font-bold text-slate-900">
+                        Coordinator Login Logs (Latest {coordinatorLogs.length})
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Showing only the latest 10 coordinator logins here. Total stored in database: {coordinatorLogsTotalInDb} • Auto-logout after 1 hr inactivity.
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => syncCoordinatorLogs(true)}
+                    disabled={isLoadingCoordinatorLogs}
+                    className="self-start sm:self-auto inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isLoadingCoordinatorLogs ? 'animate-spin' : ''}`} />
+                    <span>Refresh</span>
+                  </button>
+                </div>
+
+                {/* Date Range Delete Bar */}
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/70 flex flex-col lg:flex-row lg:items-end gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 flex-1">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-600 block">
+                        From Date
+                      </label>
+                      <input
+                        type="date"
+                        value={logDeleteFromDate}
+                        onChange={(e) => setLogDeleteFromDate(e.target.value)}
+                        className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-600 block">
+                        To Date
+                      </label>
+                      <input
+                        type="date"
+                        value={logDeleteToDate}
+                        onChange={(e) => setLogDeleteToDate(e.target.value)}
+                        className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleDeleteCoordinatorLogsRange}
+                    className="h-10 inline-flex items-center justify-center space-x-1.5 px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm transition-colors cursor-pointer shrink-0"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Logs in Range</span>
+                  </button>
+                </div>
+
+                {/* Missing Table Notice */}
+                {coordinatorLogsTableMissing && (
+                  <div className="p-4 rounded-2xl bg-red-50 border border-red-200 space-y-2.5 text-xs text-red-800">
+                    <div className="font-bold flex items-center space-x-2">
+                      <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                      <span>Supabase Table &quot;coordinator_login_logs&quot; Missing</span>
+                    </div>
+                    <p>
+                      Run the SQL below inside your Supabase Dashboard &rarr; <strong>SQL Editor</strong> so coordinator logins are saved and managed in the database:
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(LOGS_SQL);
+                        showToast('Login logs table SQL copied to clipboard!');
+                      }}
+                      className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Copy Login Logs Table SQL</span>
+                    </button>
+                  </div>
+                )}
+
+                {coordinatorLogsError && !coordinatorLogsTableMissing && (
+                  <div className="p-3.5 rounded-xl bg-red-50 border border-red-100 text-xs text-red-700 flex items-center space-x-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{coordinatorLogsError}</span>
+                  </div>
+                )}
+
+                {/* Logs List (Max 10) */}
+                {isLoadingCoordinatorLogs && coordinatorLogs.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-400 font-medium">
+                    Loading coordinator login logs...
+                  </div>
+                ) : coordinatorLogs.length > 0 ? (
+                  <div className="space-y-3">
+                    {coordinatorLogs.slice(0, 10).map((log, index) => (
+                      <div
+                        key={log.id}
+                        className="p-4 rounded-2xl border border-slate-200/80 bg-slate-50/50 hover:bg-white transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                      >
+                        <div className="space-y-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
+                              #{index + 1}
+                            </span>
+                            <span className="text-sm font-bold text-slate-900">
+                              {log.coordinator_name}
+                            </span>
+                            <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+                              {log.year} • {log.branch}
+                            </span>
+                          </div>
+                          {log.ip_address && log.ip_address !== 'unknown' && (
+                            <p className="text-[11px] text-slate-500">
+                              IP: <span className="font-mono">{log.ip_address}</span>
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="text-left sm:text-right shrink-0">
+                          <div className="text-xs font-bold text-slate-800">
+                            {new Date(log.logged_in_at).toLocaleString()}
+                          </div>
+                          <div className="text-[10px] text-emerald-700 font-semibold">
+                            Logged In
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="py-12 text-center space-y-1.5">
+                    <p className="text-sm font-bold text-slate-700">No coordinator login logs found</p>
+                    <p className="text-xs text-slate-400">
+                      Whenever any coordinator logs in, the latest 10 login entries will appear here.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
       </main>
 

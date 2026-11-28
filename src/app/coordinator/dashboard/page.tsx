@@ -130,6 +130,20 @@ function DashboardContent() {
   } | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
+  const performCoordinatorLogout = useCallback(
+    async (timedOut = false) => {
+      try {
+        await fetch('/api/coordinator/auth', { method: 'DELETE' });
+      } catch {}
+      try {
+        sessionStorage.removeItem('notehub_active_coordinator');
+        localStorage.removeItem('notebase_coord_last_activity');
+      } catch {}
+      router.replace(timedOut ? '/coordinator?timeout=1' : '/coordinator');
+    },
+    [router]
+  );
+
   useEffect(() => {
     let active = true;
     fetch('/api/coordinator/auth', { cache: 'no-store' })
@@ -140,6 +154,17 @@ function DashboardContent() {
           router.replace('/coordinator');
           return;
         }
+
+        // Also check persisted last-activity timestamp across app sleep/reopen (1 hour inactivity limit)
+        try {
+          const savedTs = Number(localStorage.getItem('notebase_coord_last_activity') || '0');
+          if (savedTs > 0 && Date.now() - savedTs >= 60 * 60 * 1000) {
+            performCoordinatorLogout(true);
+            return;
+          }
+          localStorage.setItem('notebase_coord_last_activity', String(Date.now()));
+        } catch {}
+
         const sess = {
           id: String(data.coordinator.id || ''),
           name: String(data.coordinator.name || 'Coordinator'),
@@ -168,7 +193,70 @@ function DashboardContent() {
     return () => {
       active = false;
     };
-  }, [router, searchParams]);
+  }, [router, searchParams, performCoordinatorLogout]);
+
+  // Auto-logout after 1 hour of inactivity + sliding session refresh while active
+  useEffect(() => {
+    if (!authChecked || !verifiedSession) return;
+    const IDLE_LIMIT_MS = 60 * 60 * 1000; // 1 hour
+    const TOUCH_INTERVAL_MS = 5 * 60 * 1000; // refresh server cookie every 5 min when active
+    let lastActivityAt = Date.now();
+    let lastServerTouchAt = Date.now();
+    let lastStorageWriteAt = Date.now();
+
+    const markActive = () => {
+      const now = Date.now();
+      lastActivityAt = now;
+      if (now - lastStorageWriteAt >= 15_000) {
+        lastStorageWriteAt = now;
+        try {
+          localStorage.setItem('notebase_coord_last_activity', String(now));
+        } catch {}
+      }
+    };
+
+    const checkIdleOrTouch = async () => {
+      const now = Date.now();
+      let latest = lastActivityAt;
+      try {
+        const stored = Number(localStorage.getItem('notebase_coord_last_activity') || '0');
+        if (stored > latest) latest = stored;
+      } catch {}
+
+      if (now - latest >= IDLE_LIMIT_MS) {
+        await performCoordinatorLogout(true);
+        return;
+      }
+
+      if (latest > lastServerTouchAt && now - lastServerTouchAt >= TOUCH_INTERVAL_MS) {
+        lastServerTouchAt = now;
+        try {
+          const res = await fetch('/api/coordinator/auth', { method: 'PUT' });
+          if (res.status === 401) {
+            await performCoordinatorLogout(true);
+          }
+        } catch {}
+      }
+    };
+
+    const events: (keyof WindowEventMap)[] = ['pointerdown', 'keydown', 'touchstart', 'scroll', 'mousemove'];
+    events.forEach((ev) => window.addEventListener(ev, markActive, { passive: true }));
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        checkIdleOrTouch();
+      }
+    };
+    window.addEventListener('focus', checkIdleOrTouch);
+    document.addEventListener('visibilitychange', onVisibility);
+    const timer = window.setInterval(checkIdleOrTouch, 30_000);
+
+    return () => {
+      events.forEach((ev) => window.removeEventListener(ev, markActive));
+      window.removeEventListener('focus', checkIdleOrTouch);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(timer);
+    };
+  }, [authChecked, verifiedSession, performCoordinatorLogout]);
 
   // Always derive year, branch, and coordinator name strictly from verified server session
   const yearParam: YearOption = verifiedSession?.year || '2nd Year';
@@ -1584,13 +1672,7 @@ function DashboardContent() {
 
           <button
             type="button"
-            onClick={async () => {
-              try {
-                await fetch('/api/coordinator/auth', { method: 'DELETE' });
-                sessionStorage.removeItem('notehub_active_coordinator');
-              } catch {}
-              router.push('/coordinator');
-            }}
+            onClick={() => performCoordinatorLogout(false)}
             title="Logout / Change Branch"
             className="w-9 h-9 rounded-xl hover:bg-red-50 text-slate-400 hover:text-red-600 flex items-center justify-center transition-colors cursor-pointer shrink-0"
           >
@@ -1654,13 +1736,9 @@ function DashboardContent() {
                     </button>
                     <button
                       type="button"
-                      onClick={async () => {
+                      onClick={() => {
                         setShowUserMenu(false);
-                        try {
-                          await fetch('/api/coordinator/auth', { method: 'DELETE' });
-                          sessionStorage.removeItem('notehub_active_coordinator');
-                        } catch {}
-                        router.push('/coordinator');
+                        performCoordinatorLogout(false);
                       }}
                       className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-red-600 hover:bg-red-50 transition-colors cursor-pointer text-left"
                     >

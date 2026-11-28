@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 
 export const ADMIN_COOKIE_NAME = 'notebase_admin_session';
 export const COORDINATOR_COOKIE_NAME = 'notebase_coordinator_session';
+export const COORDINATOR_IDLE_TIMEOUT_SECONDS = 60 * 60; // 1 hour inactivity limit
 
 export interface SessionPayload {
   role: 'admin' | 'coordinator';

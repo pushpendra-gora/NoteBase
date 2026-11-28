@@ -102,3 +102,14 @@ export interface StudentIssue {
   created_at: string;
   updated_at?: string;
 }
+
+export interface CoordinatorLoginLog {
+  id: string;
+  coordinator_id?: string | null;
+  coordinator_name: string;
+  year: string;
+  branch: string;
+  ip_address?: string | null;
+  user_agent?: string | null;
+  logged_in_at: string;
+}

@@ -209,6 +209,21 @@ alter table public.student_issues add column if not exists updated_at timestamp 
 create index if not exists idx_student_issues_lookup on public.student_issues(year, branch, status);
 
 
+-- 5D. COORDINATOR LOGIN LOGS TABLE (Audit history stored in DB; Admin views latest 10 & can delete by date range)
+create table if not exists public.coordinator_login_logs (
+  id text primary key,
+  coordinator_id text,
+  coordinator_name text not null,
+  year text not null,
+  branch text not null,
+  ip_address text default 'unknown',
+  user_agent text default '',
+  logged_in_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index if not exists idx_coordinator_login_logs_time on public.coordinator_login_logs(logged_in_at desc);
+
+
 -- =====================================================================
 -- 6. PERMISSIONS & ROW LEVEL SECURITY (RLS) POLICIES
 -- Clean, idempotent policies using FOR ALL to ensure SELECT, INSERT,
@@ -225,6 +240,7 @@ alter table public.coordinators enable row level security;
 alter table public.admin_credentials enable row level security;
 alter table public.coordinator_issues enable row level security;
 alter table public.student_issues enable row level security;
+alter table public.coordinator_login_logs enable row level security;
 
 -- Notes Policies (clean drop & recreate)
 drop policy if exists "Allow all for notes" on public.notes;
@@ -290,6 +306,10 @@ create policy "Allow all for coordinator_issues" on public.coordinator_issues fo
 drop policy if exists "Allow all for student_issues" on public.student_issues;
 create policy "Allow all for student_issues" on public.student_issues for all using (true) with check (true);
 
+-- Coordinator Login Logs Policies
+drop policy if exists "Allow all for coordinator_login_logs" on public.coordinator_login_logs;
+create policy "Allow all for coordinator_login_logs" on public.coordinator_login_logs for all using (true) with check (true);
+
 -- Grant public API permissions to Supabase roles
 grant usage on schema public to anon, authenticated, service_role;
 grant all on all tables in schema public to anon, authenticated, service_role;
@@ -311,3 +331,5 @@ grant all on all routines in schema public to anon, authenticated, service_role;
 -- create policy "Deny anon for coordinator_issues" on public.coordinator_issues for all to anon, authenticated using (false) with check (false);
 -- drop policy if exists "Allow all for student_issues" on public.student_issues;
 -- create policy "Deny anon for student_issues" on public.student_issues for all to anon, authenticated using (false) with check (false);
+-- drop policy if exists "Allow all for coordinator_login_logs" on public.coordinator_login_logs;
+-- create policy "Deny anon for coordinator_login_logs" on public.coordinator_login_logs for all to anon, authenticated using (false) with check (false);

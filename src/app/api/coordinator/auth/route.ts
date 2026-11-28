@@ -3,6 +3,7 @@ import { getSupabaseClient } from '@/lib/supabase';
 import { isBranchMatch } from '@/lib/coordinatorService';
 import {
   COORDINATOR_COOKIE_NAME,
+  COORDINATOR_IDLE_TIMEOUT_SECONDS,
   checkLoginRateLimit,
   createSignedSessionToken,
   getClientIp,
@@ -16,6 +17,30 @@ import {
 export const dynamic = 'force-dynamic';
 
 const ALLOWED_YEARS = new Set(['1st Year', '2nd Year', '3rd Year', '4th Year']);
+
+function setCoordinatorCookie(
+  response: NextResponse,
+  claims: { id: string; name?: string; branch?: string; year?: string }
+) {
+  response.cookies.set({
+    name: COORDINATOR_COOKIE_NAME,
+    value: createSignedSessionToken(
+      'coordinator',
+      {
+        id: claims.id,
+        name: claims.name,
+        branch: claims.branch,
+        year: claims.year,
+      },
+      COORDINATOR_IDLE_TIMEOUT_SECONDS
+    ),
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: COORDINATOR_IDLE_TIMEOUT_SECONDS,
+  });
+}
 
 export async function GET(req: NextRequest) {
   const session = getCoordinatorSession(req);
@@ -31,6 +56,24 @@ export async function GET(req: NextRequest) {
       branch: session.branch,
     },
   });
+}
+
+export async function PUT(req: NextRequest) {
+  const session = getCoordinatorSession(req);
+  if (!session) {
+    const response = NextResponse.json({ authenticated: false, expired: true }, { status: 401 });
+    response.cookies.delete(COORDINATOR_COOKIE_NAME);
+    return response;
+  }
+
+  const response = NextResponse.json({ authenticated: true });
+  setCoordinatorCookie(response, {
+    id: session.id,
+    name: session.name,
+    branch: session.branch,
+    year: session.year,
+  });
+  return response;
 }
 
 export async function DELETE() {
@@ -132,7 +175,24 @@ export async function POST(req: NextRequest) {
 
     resetLoginRateLimit(ipKey);
 
-    // Success: Set signed coordinator session cookie & return info WITHOUT password
+    // Record Coordinator login audit event in Supabase (non-blocking if table isn't created yet)
+    try {
+      const logEntry = {
+        id: `coord-log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        coordinator_id: matchingCoord.id,
+        coordinator_name: matchingCoord.name,
+        year: cleanYear,
+        branch: matchingCoord.branch,
+        ip_address: getClientIp(req),
+        user_agent: (req.headers.get('user-agent') || '').slice(0, 240),
+        logged_in_at: new Date().toISOString(),
+      };
+      await client.from('coordinator_login_logs').insert(logEntry);
+    } catch {
+      // Login still succeeds even if coordinator_login_logs table hasn't been initialized yet
+    }
+
+    // Success: Set signed coordinator session cookie (1-hour sliding inactivity limit)
     const response = NextResponse.json({
       success: true,
       coordinator: {
@@ -144,19 +204,11 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    response.cookies.set({
-      name: COORDINATOR_COOKIE_NAME,
-      value: createSignedSessionToken('coordinator', {
-        id: matchingCoord.id,
-        name: matchingCoord.name,
-        branch: matchingCoord.branch,
-        year: matchingCoord.year,
-      }),
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 7,
+    setCoordinatorCookie(response, {
+      id: matchingCoord.id,
+      name: matchingCoord.name,
+      branch: matchingCoord.branch,
+      year: matchingCoord.year,
     });
 
     return response;
