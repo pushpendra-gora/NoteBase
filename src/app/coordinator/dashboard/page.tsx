@@ -275,7 +275,31 @@ function DashboardContent() {
   const [isSubmittingIssue, setIsSubmittingIssue] = useState(false);
   const [issuesError, setIssuesError] = useState<string | null>(null);
 
-  const fetchMyIssues = useCallback(async () => {
+  // Lazy section tracking so Coordinator only fetches data for the specific tab they tap
+  const loadedSectionsRef = useRef({
+    counts: false,
+    notes: false,
+    pyqs: false,
+    lectures: false,
+    subjects: false,
+    issues: false,
+    status: false,
+  });
+  const inFlightSectionsRef = useRef<Set<string>>(new Set());
+  const [loadedFlags, setLoadedFlags] = useState({ notes: false, pyqs: false });
+  const [dashboardCounts, setDashboardCounts] = useState<{ notes: number; pyqs: number }>({
+    notes: 0,
+    pyqs: 0,
+  });
+  const [isLoadingCounts, setIsLoadingCounts] = useState(false);
+  const [isLoadingNotes, setIsLoadingNotes] = useState(false);
+  const [isLoadingPyqs, setIsLoadingPyqs] = useState(false);
+  const [isLoadingLectures, setIsLoadingLectures] = useState(false);
+
+  const fetchMyIssues = useCallback(async (force = false) => {
+    if (!force && loadedSectionsRef.current.issues) return;
+    if (inFlightSectionsRef.current.has('issues')) return;
+    inFlightSectionsRef.current.add('issues');
     setIsLoadingIssues(true);
     setIssuesError(null);
     try {
@@ -288,6 +312,7 @@ function DashboardContent() {
       const res = await fetch('/api/issues', { cache: 'no-store', headers });
       const data = await res.json();
       if (res.ok && data?.success && Array.isArray(data.issues)) {
+        loadedSectionsRef.current.issues = true;
         setMyIssues(data.issues);
       } else {
         setIssuesError(data?.error || 'Could not load issues.');
@@ -295,30 +320,10 @@ function DashboardContent() {
     } catch {
       setIssuesError('Unable to reach server to load issues.');
     } finally {
+      inFlightSectionsRef.current.delete('issues');
       setIsLoadingIssues(false);
     }
   }, []);
-
-  useEffect(() => {
-    if (!authChecked) return;
-    fetchMyIssues();
-  }, [authChecked, fetchMyIssues]);
-
-  useEffect(() => {
-    if (!authChecked) return;
-    if (activeNav === 'Issues') {
-      fetchMyIssues();
-    }
-  }, [activeNav, authChecked, fetchMyIssues]);
-
-  useEffect(() => {
-    if (!authChecked) return;
-    const onFocus = () => {
-      fetchMyIssues();
-    };
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, [authChecked, fetchMyIssues]);
 
   const handleSubmitIssue = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -509,9 +514,12 @@ function DashboardContent() {
     };
   }, []);
 
-  // Initialize Supabase & server Google Drive readiness once authenticated
-  useEffect(() => {
-    if (!authChecked) return;
+  // On-demand Google Drive / Supabase readiness check (loaded ONLY when Upload tab is opened)
+  const syncUploadStatus = useCallback(async (force = false) => {
+    if (!authChecked || !verifiedSession) return;
+    if (!force && loadedSectionsRef.current.status) return;
+    if (inFlightSectionsRef.current.has('status')) return;
+    inFlightSectionsRef.current.add('status');
 
     if (typeof window !== 'undefined') {
       try {
@@ -520,23 +528,25 @@ function DashboardContent() {
         localStorage.removeItem('notehub_gdrive_webhook_url');
         localStorage.removeItem('notehub_gdrive_folder_id');
       } catch {}
-
-      fetch('/api/status', { cache: 'no-store' })
-        .then((res) => res.json())
-        .then((data) => {
-          setSupabaseConnected(Boolean(data?.connected));
-          if (data?.googleDrive?.configured !== undefined) {
-            localStorage.setItem(
-              'notebase_gdrive_server_configured',
-              data.googleDrive.configured ? 'true' : 'false'
-            );
-          }
-        })
-        .catch(() => {
-          setSupabaseConnected(isSupabaseConfigured());
-        });
     }
-  }, [authChecked]);
+
+    try {
+      const res = await fetch('/api/status', { cache: 'no-store' });
+      const data = await res.json();
+      loadedSectionsRef.current.status = true;
+      setSupabaseConnected(Boolean(data?.connected));
+      if (typeof window !== 'undefined' && data?.googleDrive?.configured !== undefined) {
+        localStorage.setItem(
+          'notebase_gdrive_server_configured',
+          data.googleDrive.configured ? 'true' : 'false'
+        );
+      }
+    } catch {
+      setSupabaseConnected(isSupabaseConfigured());
+    } finally {
+      inFlightSectionsRef.current.delete('status');
+    }
+  }, [authChecked, verifiedSession]);
 
   // Lecture Upload Form State
   const [lectureTitle, setLectureTitle] = useState('');
@@ -556,13 +566,220 @@ function DashboardContent() {
   // Lecture List State: only authentic real lectures uploaded for verified coordinator
   const [lecturesList, setLecturesList] = useState<LectureItem[]>([]);
 
-  // Fetch Supabase lectures ONLY after verified session is ready (authoritative sync including empty lists)
-  useEffect(() => {
+  // Initial files generated corresponding to coordinator's year & branch
+  const [files, setFiles] = useState<CoordinatorFile[]>([]);
+
+  // 1. Lightweight Dashboard KPI counts only (0 full document/lecture/issue scans on login)
+  const syncDashboardCounts = useCallback(async (force = false) => {
     if (!authChecked || !verifiedSession) return;
-    let active = true;
-    fetchLecturesFromSupabase(yearParam, branchParam)
-      .then((cloudLecs) => {
-        if (!active || !Array.isArray(cloudLecs)) return;
+    if (!force && loadedSectionsRef.current.counts) return;
+    if (inFlightSectionsRef.current.has('counts')) return;
+    inFlightSectionsRef.current.add('counts');
+    setIsLoadingCounts(true);
+    try {
+      const creds = getSupabaseCredentials();
+      const headers: Record<string, string> = {};
+      if (creds.url && creds.key) {
+        headers['x-supabase-url'] = creds.url;
+        headers['x-supabase-key'] = creds.key;
+      }
+      const query = new URLSearchParams({
+        year: yearParam,
+        branch: branchParam,
+        countsOnly: '1',
+      });
+      const res = await fetch(`/api/documents?${query.toString()}`, {
+        cache: 'no-store',
+        headers,
+      });
+      const data = await res.json();
+      if (res.ok && data?.success) {
+        loadedSectionsRef.current.counts = true;
+        setDashboardCounts({
+          notes: Number(data.notesCount) || 0,
+          pyqs: Number(data.pyqsCount) || 0,
+        });
+      }
+    } catch {
+      // Fallback safely to cached/local counts
+    } finally {
+      inFlightSectionsRef.current.delete('counts');
+      setIsLoadingCounts(false);
+    }
+  }, [authChecked, verifiedSession, yearParam, branchParam]);
+
+  // 2. Sync subjects ONLY when Upload, Lectures, or Add Subject tab is tapped
+  const syncCoordinatorSubjects = useCallback(async (force = false) => {
+    if (!authChecked || !verifiedSession) return;
+    if (!force && loadedSectionsRef.current.subjects) return;
+    if (inFlightSectionsRef.current.has('subjects')) return;
+    inFlightSectionsRef.current.add('subjects');
+    try {
+      await Promise.all(
+        coordinatorSemesters.map((sem) =>
+          fetchSubjectsFromSupabase(yearParam, branchParam, sem)
+            .then((cloudSubjs) => {
+              if (Array.isArray(cloudSubjs)) {
+                saveSubjectsFor(yearParam, branchParam, sem, cloudSubjs);
+              }
+            })
+            .catch(() => {})
+        )
+      );
+      loadedSectionsRef.current.subjects = true;
+      setSubjectsVersion((v) => v + 1);
+    } finally {
+      inFlightSectionsRef.current.delete('subjects');
+    }
+  }, [authChecked, verifiedSession, yearParam, branchParam, coordinatorSemesters]);
+
+  // 3. Sync ONLY Notes OR ONLY PYQs when Coordinator taps Notes or PYQs tab
+  const syncDocumentsByType = useCallback(async (docType: 'Notes' | 'PYQ', force = false) => {
+    if (!authChecked || !verifiedSession) return;
+    const sectionKey = docType === 'PYQ' ? 'pyqs' : 'notes';
+    if (!force && loadedSectionsRef.current[sectionKey]) return;
+    if (inFlightSectionsRef.current.has(sectionKey)) return;
+    inFlightSectionsRef.current.add(sectionKey);
+
+    if (docType === 'PYQ') setIsLoadingPyqs(true);
+    else setIsLoadingNotes(true);
+
+    const sem1 = coordinatorSemesters[0] || 'Semester 1';
+    const sem2 = coordinatorSemesters[1] || 'Semester 2';
+
+    try {
+      let supaDocs: NoteDocument[] | null = null;
+      try {
+        const creds = getSupabaseCredentials();
+        const headers: Record<string, string> = {};
+        if (creds.url && creds.key) {
+          headers['x-supabase-url'] = creds.url;
+          headers['x-supabase-key'] = creds.key;
+        }
+        const query = new URLSearchParams({
+          year: yearParam,
+          branch: branchParam,
+          type: docType,
+        });
+        const res = await fetch(`/api/documents?${query.toString()}`, {
+          cache: 'no-store',
+          headers,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.success && Array.isArray(data.documents)) {
+            supaDocs = data.documents.filter(
+              (d: any) => d.semester === sem1 || d.semester === sem2
+            );
+          }
+        }
+      } catch {}
+
+      if (supaDocs === null && isSupabaseConfigured()) {
+        try {
+          const [supa1, supa2] = await Promise.all([
+            fetchDocumentsFromSupabase(yearParam, branchParam, sem1, docType),
+            fetchDocumentsFromSupabase(yearParam, branchParam, sem2, docType),
+          ]);
+          supaDocs = [...supa1, ...supa2];
+        } catch {
+          supaDocs = null;
+        }
+      }
+
+      if (supaDocs !== null) {
+        loadedSectionsRef.current[sectionKey] = true;
+        setLoadedFlags((prev) => ({ ...prev, [sectionKey]: true }));
+
+        if (typeof window !== 'undefined') {
+          try {
+            const raw = localStorage.getItem('notehub_custom_documents');
+            const existing: NoteDocument[] = raw ? JSON.parse(raw) : [];
+            const otherSlice = existing.filter(
+              (d) =>
+                !(
+                  d.year === yearParam &&
+                  d.branch === branchParam &&
+                  (d.semester === sem1 || d.semester === sem2) &&
+                  (d.type === 'PYQ' ? 'PYQ' : 'Notes') === docType
+                )
+            );
+            const normalizedSupa: NoteDocument[] = supaDocs.map((d: any) => ({
+              id: d.id,
+              title: d.title,
+              subject: d.subject,
+              code: d.code || (docType === 'PYQ' ? 'PYQ101' : 'DOC101'),
+              year: d.year,
+              branch: d.branch,
+              semester: d.semester,
+              type: docType,
+              pages: typeof d.pages === 'number' && d.pages > 0 ? d.pages : 0,
+              size: typeof d.size === 'string' ? d.size : '',
+              owner: d.owner || 'Department Faculty',
+              file_url: d.file_url || undefined,
+              file_path: d.file_path || undefined,
+              preview: d.preview || [],
+            }));
+            localStorage.setItem(
+              'notehub_custom_documents',
+              JSON.stringify([...normalizedSupa, ...otherSlice])
+            );
+          } catch {}
+        }
+
+        const mappedFiles: CoordinatorFile[] = supaDocs.map((d: any) => ({
+          id: d.id,
+          name: d.title,
+          subject: d.subject,
+          semester: d.semester,
+          size: d.size,
+          type: docType,
+          date: d.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
+          owner: d.owner,
+          file_url: d.file_url,
+          file_path: d.file_path,
+        }));
+
+        setFiles((prev) => [...mappedFiles, ...prev.filter((f) => f.type !== docType)]);
+        setDashboardCounts((prev) => ({
+          ...prev,
+          [sectionKey]: mappedFiles.length,
+        }));
+      } else {
+        const localScoped = [...getDocumentsFor(yearParam, branchParam, sem1), ...getDocumentsFor(yearParam, branchParam, sem2)]
+          .filter((d) => (d.type === 'PYQ' ? 'PYQ' : 'Notes') === docType)
+          .map((d, i) => ({
+            id: d.id || `coord-${i + 1}`,
+            name: d.title,
+            subject: d.subject,
+            semester: d.semester,
+            size: d.size,
+            type: docType,
+            date: '2024-11-20',
+            owner: d.owner,
+            file_url: d.file_url,
+            file_path: d.file_path,
+          }));
+        setFiles((prev) => [...localScoped, ...prev.filter((f) => f.type !== docType)]);
+      }
+    } finally {
+      inFlightSectionsRef.current.delete(sectionKey);
+      if (docType === 'PYQ') setIsLoadingPyqs(false);
+      else setIsLoadingNotes(false);
+    }
+  }, [authChecked, verifiedSession, yearParam, branchParam, coordinatorSemesters]);
+
+  // 4. Sync ONLY Lectures when Coordinator taps Lectures tab
+  const syncCoordinatorLectures = useCallback(async (force = false) => {
+    if (!authChecked || !verifiedSession) return;
+    if (!force && loadedSectionsRef.current.lectures) return;
+    if (inFlightSectionsRef.current.has('lectures')) return;
+    inFlightSectionsRef.current.add('lectures');
+    setIsLoadingLectures(true);
+    try {
+      const cloudLecs = await fetchLecturesFromSupabase(yearParam, branchParam);
+      if (Array.isArray(cloudLecs)) {
+        loadedSectionsRef.current.lectures = true;
         const formattedCloud: LectureItem[] = cloudLecs.map((l) => ({
           id: l.id,
           title: l.title,
@@ -583,169 +800,54 @@ function DashboardContent() {
             localStorage.setItem('notehub_custom_lectures', JSON.stringify([...cloudLecs, ...otherBranch]));
           } catch {}
         }
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [authChecked, verifiedSession, yearParam, branchParam, supabaseConnected]);
+      }
+    } catch {
+    } finally {
+      inFlightSectionsRef.current.delete('lectures');
+      setIsLoadingLectures(false);
+    }
+  }, [authChecked, verifiedSession, yearParam, branchParam]);
 
-  // Fetch cloud subjects from Supabase only after coordinator session is verified (authoritative sync even if empty)
+  // Strict per-tab data loader: loads ONLY the data needed by the currently tapped Coordinator section
   useEffect(() => {
     if (!authChecked || !verifiedSession) return;
-    coordinatorSemesters.forEach((sem) => {
-      fetchSubjectsFromSupabase(yearParam, branchParam, sem)
-        .then((cloudSubjs) => {
-          if (Array.isArray(cloudSubjs)) {
-            saveSubjectsFor(yearParam, branchParam, sem, cloudSubjs);
-            setSubjectsVersion((v) => v + 1);
-          }
-        })
-        .catch(() => {});
-    });
-  }, [authChecked, verifiedSession, yearParam, branchParam, coordinatorSemesters, supabaseConnected]);
+    if (activeNav === 'Dashboard') {
+      syncDashboardCounts();
+    } else if (activeNav === 'Upload') {
+      syncCoordinatorSubjects();
+      syncUploadStatus();
+    } else if (activeNav === 'Notes') {
+      syncDocumentsByType('Notes');
+    } else if (activeNav === 'PYQs') {
+      syncDocumentsByType('PYQ');
+    } else if (activeNav === 'Lectures') {
+      syncCoordinatorLectures();
+      syncCoordinatorSubjects();
+    } else if (activeNav === 'Add Subject') {
+      syncCoordinatorSubjects();
+    } else if (activeNav === 'Issues') {
+      fetchMyIssues();
+    }
+  }, [
+    authChecked,
+    verifiedSession,
+    activeNav,
+    syncDashboardCounts,
+    syncCoordinatorSubjects,
+    syncUploadStatus,
+    syncDocumentsByType,
+    syncCoordinatorLectures,
+    fetchMyIssues,
+  ]);
 
-  // Initial files generated corresponding to coordinator's year & branch
-  const [files, setFiles] = useState<CoordinatorFile[]>([]);
-
-  // Synchronize files whenever subjects or verified coordinator session update, Supabase connects, or window refocuses
-  useEffect(() => {
-    if (!authChecked || !verifiedSession) return;
-    let isMounted = true;
-    const sem1 = coordinatorSemesters[0] || 'Semester 1';
-    const sem2 = coordinatorSemesters[1] || 'Semester 2';
-
-    const getLocalFiles = (): CoordinatorFile[] => {
-      const docs1 = getDocumentsFor(yearParam, branchParam, sem1);
-      const docs2 = getDocumentsFor(yearParam, branchParam, sem2);
-      return [...docs1, ...docs2].map((d, i) => ({
-        id: d.id || `coord-${i + 1}`,
-        name: d.title,
-        subject: d.subject,
-        semester: d.semester,
-        size: d.size,
-        type: d.type === 'PYQ' ? 'PYQ' : 'Notes',
-        date: '2024-11-20',
-        owner: d.owner,
-        file_url: d.file_url,
-        file_path: d.file_path,
-      }));
-    };
-
-    const syncCoordinatorFiles = async () => {
-      let supaAll: NoteDocument[] | null = null;
-
-      try {
-        const creds = getSupabaseCredentials();
-        const headers: Record<string, string> = {};
-        if (creds.url && creds.key) {
-          headers['x-supabase-url'] = creds.url;
-          headers['x-supabase-key'] = creds.key;
-        }
-        const query = new URLSearchParams({ year: yearParam, branch: branchParam });
-        const res = await fetch(`/api/documents?${query.toString()}`, {
-          cache: 'no-store',
-          headers,
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.success && Array.isArray(data.documents)) {
-            supaAll = data.documents.filter(
-              (d: any) => d.semester === sem1 || d.semester === sem2
-            );
-          }
-        }
-      } catch {
-        // Fallback to direct Supabase query below
-      }
-
-      if (supaAll === null && isSupabaseConfigured()) {
-        try {
-          const [supa1, supa2] = await Promise.all([
-            fetchDocumentsFromSupabase(yearParam, branchParam, sem1),
-            fetchDocumentsFromSupabase(yearParam, branchParam, sem2),
-          ]);
-          supaAll = [...supa1, ...supa2];
-        } catch {
-          supaAll = null;
-        }
-      }
-
-      if (!isMounted) return;
-
-      if (supaAll !== null) {
-        // Authoritative cloud list (even when empty) — sync localStorage for this coordinator slice so deleted files never resurrect
-        if (typeof window !== 'undefined') {
-          try {
-            const raw = localStorage.getItem('notehub_custom_documents');
-            const existing: NoteDocument[] = raw ? JSON.parse(raw) : [];
-            const otherDocs = existing.filter(
-              (d) =>
-                !(
-                  d.year === yearParam &&
-                  d.branch === branchParam &&
-                  (d.semester === sem1 || d.semester === sem2)
-                )
-            );
-            const normalizedSupa: NoteDocument[] = supaAll.map((d: any) => ({
-              id: d.id,
-              title: d.title,
-              subject: d.subject,
-              code: d.code || (d.type === 'PYQ' ? 'PYQ101' : 'DOC101'),
-              year: d.year,
-              branch: d.branch,
-              semester: d.semester,
-              type: (d.type === 'PYQ' ? 'PYQ' : 'Notes') as 'Notes' | 'PYQ',
-              pages: typeof d.pages === 'number' && d.pages > 0 ? d.pages : 0,
-              size: typeof d.size === 'string' ? d.size : '',
-              owner: d.owner || 'Department Faculty',
-              file_url: d.file_url || undefined,
-              file_path: d.file_path || undefined,
-              preview: d.preview || [],
-            }));
-            localStorage.setItem(
-              'notehub_custom_documents',
-              JSON.stringify([...normalizedSupa, ...otherDocs])
-            );
-          } catch {}
-        }
-
-        const supaFiles: CoordinatorFile[] = supaAll.map((d: any) => ({
-          id: d.id,
-          name: d.title,
-          subject: d.subject,
-          semester: d.semester,
-          size: d.size,
-          type: d.type === 'PYQ' ? 'PYQ' : 'Notes',
-          date: d.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
-          owner: d.owner,
-          file_url: d.file_url,
-          file_path: d.file_path,
-        }));
-        setFiles(supaFiles);
-        return;
-      }
-
-      setFiles(getLocalFiles());
-    };
-
-    syncCoordinatorFiles();
-
-    const handleFocus = () => {
-      syncCoordinatorFiles();
-    };
-    window.addEventListener('focus', handleFocus);
-
-    return () => {
-      isMounted = false;
-      window.removeEventListener('focus', handleFocus);
-    };
-  }, [authChecked, verifiedSession, yearParam, branchParam, coordinatorSemesters, subjectsVersion, supabaseConnected]);
-
-  // Statistics
-  const notesCount = useMemo(() => files.filter((f) => f.type === 'Notes').length, [files]);
-  const pyqsCount = useMemo(() => files.filter((f) => f.type === 'PYQ').length, [files]);
-  const totalFilesCount = files.length;
+  // Statistics (uses lightweight server counts until full tab list is loaded, then stays exact)
+  const notesCount = loadedFlags.notes
+    ? files.filter((f) => f.type === 'Notes').length
+    : dashboardCounts.notes;
+  const pyqsCount = loadedFlags.pyqs
+    ? files.filter((f) => f.type === 'PYQ').length
+    : dashboardCounts.pyqs;
+  const totalFilesCount = notesCount + pyqsCount;
   const storageUsedMB = (totalFilesCount * 6.8).toFixed(0);
 
   // Filtered files in Manage Material card
@@ -992,6 +1094,11 @@ function DashboardContent() {
       saveCustomUploadedDocument(noteDoc);
 
       setFiles((prev) => [newFile, ...prev]);
+      setDashboardCounts((prev) => ({
+        ...prev,
+        [finalType === 'PYQ' ? 'pyqs' : 'notes']:
+          prev[finalType === 'PYQ' ? 'pyqs' : 'notes'] + 1,
+      }));
       setUploadFileName('');
       setUploadOwner('');
       setSelectedFileObj(null);
@@ -1023,6 +1130,13 @@ function DashboardContent() {
       onConfirm: async () => {
         const fileToDelete = files.find((f) => f.id === id);
         setFiles((prev) => prev.filter((f) => f.id !== id));
+        if (fileToDelete) {
+          const countKey = fileToDelete.type === 'PYQ' ? 'pyqs' : 'notes';
+          setDashboardCounts((prev) => ({
+            ...prev,
+            [countKey]: Math.max(0, prev[countKey] - 1),
+          }));
+        }
         deleteCustomUploadedDocument(id);
 
         const result = await deleteDocumentEverywhere({
@@ -1795,7 +1909,9 @@ function DashboardContent() {
                 </div>
                 <div>
                   <span className="text-xs text-slate-500 font-medium block group-hover:text-indigo-600 transition-colors">Notes</span>
-                  <span className="text-2xl sm:text-3xl font-extrabold text-slate-900">{notesCount}</span>
+                  <span className="text-2xl sm:text-3xl font-extrabold text-slate-900">
+                    {isLoadingCounts && !loadedFlags.notes ? '...' : notesCount}
+                  </span>
                 </div>
               </button>
 
@@ -1809,7 +1925,9 @@ function DashboardContent() {
                 </div>
                 <div>
                   <span className="text-xs text-slate-500 font-medium block group-hover:text-blue-600 transition-colors">PYQs</span>
-                  <span className="text-2xl sm:text-3xl font-extrabold text-slate-900">{pyqsCount}</span>
+                  <span className="text-2xl sm:text-3xl font-extrabold text-slate-900">
+                    {isLoadingCounts && !loadedFlags.pyqs ? '...' : pyqsCount}
+                  </span>
                 </div>
               </button>
 
@@ -1823,7 +1941,9 @@ function DashboardContent() {
                 </div>
                 <div>
                   <span className="text-xs text-slate-500 font-medium block group-hover:text-emerald-600 transition-colors">Total Files</span>
-                  <span className="text-2xl sm:text-3xl font-extrabold text-slate-900">{totalFilesCount}</span>
+                  <span className="text-2xl sm:text-3xl font-extrabold text-slate-900">
+                    {isLoadingCounts && !loadedFlags.notes && !loadedFlags.pyqs ? '...' : totalFilesCount}
+                  </span>
                 </div>
               </button>
 
@@ -2131,7 +2251,16 @@ function DashboardContent() {
                   </div>
                 </div>
 
-                <div className="flex items-center space-x-3">
+                <div className="flex items-center space-x-2 sm:space-x-3 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => syncDocumentsByType(activeNav === 'PYQs' ? 'PYQ' : 'Notes', true)}
+                    disabled={activeNav === 'PYQs' ? isLoadingPyqs : isLoadingNotes}
+                    className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${(activeNav === 'PYQs' ? isLoadingPyqs : isLoadingNotes) ? 'animate-spin' : ''}`} />
+                    <span>Refresh</span>
+                  </button>
                   <button
                     onClick={() => navigateToSection('Upload')}
                     className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold transition-colors cursor-pointer"
@@ -2168,7 +2297,12 @@ function DashboardContent() {
 
               {/* Files List */}
               <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1 pb-10">
-                {filteredFiles.length > 0 ? (
+                {(activeNav === 'PYQs' ? isLoadingPyqs : isLoadingNotes) && filteredFiles.length === 0 ? (
+                  <div className="p-10 text-center text-slate-500 text-xs bg-slate-50 rounded-2xl flex flex-col items-center justify-center space-y-2">
+                    <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
+                    <span>Loading {activeNav === 'PYQs' ? 'PYQs' : 'Notes'}...</span>
+                  </div>
+                ) : filteredFiles.length > 0 ? (
                   filteredFiles.map((file, idx) => {
                     const fileCat = detectPreviewFileCategory(file.name, file.file_url, file.file_path);
                     const fileBadgeClass =
@@ -2365,7 +2499,16 @@ function DashboardContent() {
                   </div>
                 </div>
 
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center space-x-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => syncCoordinatorLectures(true)}
+                    disabled={isLoadingLectures}
+                    className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isLoadingLectures ? 'animate-spin' : ''}`} />
+                    <span>Refresh</span>
+                  </button>
                   <span className="text-xs font-semibold px-3 py-1.5 rounded-full bg-indigo-50 text-indigo-700">
                     {filteredLectures.length} of {lecturesList.length} lectures
                   </span>
@@ -2404,7 +2547,12 @@ function DashboardContent() {
 
               {/* Lectures List */}
               <div className="divide-y divide-slate-100">
-                {filteredLectures.length === 0 ? (
+                {isLoadingLectures && filteredLectures.length === 0 ? (
+                  <div className="py-12 text-center text-slate-500 text-xs flex flex-col items-center justify-center space-y-2">
+                    <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
+                    <span>Loading lectures...</span>
+                  </div>
+                ) : filteredLectures.length === 0 ? (
                   <div className="text-center py-12 text-slate-400 text-sm space-y-2">
                     <p>No lectures found matching your search.</p>
                     <button
@@ -2806,7 +2954,7 @@ function DashboardContent() {
                 </div>
                 <button
                   type="button"
-                  onClick={fetchMyIssues}
+                  onClick={() => fetchMyIssues(true)}
                   disabled={isLoadingIssues}
                   className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60"
                 >

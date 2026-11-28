@@ -31,6 +31,7 @@ export async function GET(req: NextRequest) {
     const search = searchParams.get('search')?.trim() || '';
     const limitParam = searchParams.get('limit');
     const offsetParam = searchParams.get('offset');
+    const countsOnly = searchParams.get('countsOnly') === '1';
 
     const limit = limitParam ? Math.min(50, Math.max(1, parseInt(limitParam, 10) || 5)) : null;
     const offset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0;
@@ -42,10 +43,6 @@ export async function GET(req: NextRequest) {
         { status: 503 }
       );
     }
-
-    const METADATA_COLUMNS = 'id, title, year, branch, semester, subject, code, pages, size, owner, file_url, file_path, created_at';
-    const allDocs: any[] = [];
-    const perTableFetchEnd = limit !== null ? offset + limit : null;
 
     const applyFilters = (q: any) => {
       if (year && year !== 'All') q = q.eq('year', year);
@@ -60,6 +57,31 @@ export async function GET(req: NextRequest) {
       }
       return q;
     };
+
+    if (countsOnly) {
+      const [notesRes, pyqsRes] = await Promise.all([
+        applyFilters(client.from('notes').select('id', { count: 'exact', head: true })),
+        applyFilters(client.from('pyqs').select('id', { count: 'exact', head: true })),
+      ]);
+      if (notesRes.error || pyqsRes.error) {
+        return NextResponse.json(
+          { success: false, error: (notesRes.error || pyqsRes.error)?.message || 'Count query failed.' },
+          { status: 500 }
+        );
+      }
+      const notesCount = notesRes.count ?? 0;
+      const pyqsCount = pyqsRes.count ?? 0;
+      return NextResponse.json({
+        success: true,
+        notesCount,
+        pyqsCount,
+        totalFilesCount: notesCount + pyqsCount,
+      });
+    }
+
+    const METADATA_COLUMNS = 'id, title, year, branch, semester, subject, code, pages, size, owner, file_url, file_path, created_at';
+    const allDocs: any[] = [];
+    const perTableFetchEnd = limit !== null ? offset + limit : null;
 
     // Query notes (only lightweight metadata; paginated when limit is supplied)
     if (type !== 'PYQ' && type !== 'PYQs') {
