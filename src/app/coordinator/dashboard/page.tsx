@@ -1,7 +1,7 @@
 'use client';
 
-import React, { Suspense, useState, useMemo, useRef, useEffect, useCallback } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { 
   Home, 
@@ -118,10 +118,9 @@ interface LectureItem {
 }
 
 function DashboardContent() {
-  const searchParams = useSearchParams();
   const router = useRouter();
 
-  // Verified server-side coordinator session (NEVER trust raw URL query params alone)
+  // Verified server-side coordinator session (NEVER stored in or read from URL query params)
   const [verifiedSession, setVerifiedSession] = useState<{
     id: string;
     name: string;
@@ -132,8 +131,10 @@ function DashboardContent() {
 
   const performCoordinatorLogout = useCallback(
     async (timedOut = false) => {
+      setVerifiedSession(null);
+      setAuthChecked(false);
       try {
-        await fetch('/api/coordinator/auth', { method: 'DELETE' });
+        await fetch('/api/coordinator/auth', { method: 'DELETE', cache: 'no-store' });
       } catch {}
       try {
         sessionStorage.removeItem('notehub_active_coordinator');
@@ -144,56 +145,70 @@ function DashboardContent() {
     [router]
   );
 
-  useEffect(() => {
-    let active = true;
-    fetch('/api/coordinator/auth', { cache: 'no-store' })
-      .then((res) => res.json())
-      .then((data) => {
-        if (!active) return;
-        if (!data?.authenticated || !data?.coordinator?.year || !data?.coordinator?.branch) {
-          router.replace('/coordinator');
+  const verifyServerSession = useCallback(async (isMountedCheck?: () => boolean) => {
+    try {
+      const res = await fetch('/api/coordinator/auth', { cache: 'no-store' });
+      const data = await res.json();
+      if (isMountedCheck && !isMountedCheck()) return;
+
+      if (!data?.authenticated || !data?.coordinator?.year || !data?.coordinator?.branch) {
+        setVerifiedSession(null);
+        setAuthChecked(false);
+        try {
+          sessionStorage.removeItem('notehub_active_coordinator');
+          localStorage.removeItem('notebase_coord_last_activity');
+        } catch {}
+        router.replace('/coordinator');
+        return;
+      }
+
+      // Also enforce persisted last-activity timestamp across app sleep/reopen (1 hour inactivity limit)
+      try {
+        const savedTs = Number(localStorage.getItem('notebase_coord_last_activity') || '0');
+        if (savedTs > 0 && Date.now() - savedTs >= 60 * 60 * 1000) {
+          await performCoordinatorLogout(true);
           return;
         }
+        localStorage.setItem('notebase_coord_last_activity', String(Date.now()));
+      } catch {}
 
-        // Also check persisted last-activity timestamp across app sleep/reopen (1 hour inactivity limit)
-        try {
-          const savedTs = Number(localStorage.getItem('notebase_coord_last_activity') || '0');
-          if (savedTs > 0 && Date.now() - savedTs >= 60 * 60 * 1000) {
-            performCoordinatorLogout(true);
-            return;
-          }
-          localStorage.setItem('notebase_coord_last_activity', String(Date.now()));
-        } catch {}
+      const sess = {
+        id: String(data.coordinator.id || ''),
+        name: String(data.coordinator.name || 'Coordinator'),
+        year: data.coordinator.year as YearOption,
+        branch: data.coordinator.branch as BranchOption,
+      };
+      setVerifiedSession(sess);
+      setAuthChecked(true);
 
-        const sess = {
-          id: String(data.coordinator.id || ''),
-          name: String(data.coordinator.name || 'Coordinator'),
-          year: data.coordinator.year as YearOption,
-          branch: data.coordinator.branch as BranchOption,
-        };
-        setVerifiedSession(sess);
-        setAuthChecked(true);
+      // Keep URL strictly clean with zero query parameters
+      if (typeof window !== 'undefined' && window.location.search) {
+        router.replace('/coordinator/dashboard');
+      }
+    } catch {
+      if (!isMountedCheck || isMountedCheck()) {
+        setVerifiedSession(null);
+        setAuthChecked(false);
+        router.replace('/coordinator');
+      }
+    }
+  }, [router, performCoordinatorLogout]);
 
-        // Lock URL parameters strictly to the verified session so editing the URL cannot switch year/branch/identity
-        const urlYear = searchParams.get('year');
-        const urlBranch = searchParams.get('branch');
-        const urlName = searchParams.get('name');
-        if (urlYear !== sess.year || urlBranch !== sess.branch || urlName !== sess.name) {
-          const canonicalQuery = new URLSearchParams({
-            year: sess.year,
-            branch: sess.branch,
-            name: sess.name,
-          }).toString();
-          router.replace(`/coordinator/dashboard?${canonicalQuery}`);
-        }
-      })
-      .catch(() => {
-        if (active) router.replace('/coordinator');
-      });
+  useEffect(() => {
+    let active = true;
+    verifyServerSession(() => active);
+
+    // Re-verify immediately if restored from browser back/forward cache (bfcache) after logout
+    const handlePageShow = () => {
+      verifyServerSession(() => active);
+    };
+    window.addEventListener('pageshow', handlePageShow);
+
     return () => {
       active = false;
+      window.removeEventListener('pageshow', handlePageShow);
     };
-  }, [router, searchParams, performCoordinatorLogout]);
+  }, [verifyServerSession]);
 
   // Auto-logout after 1 hour of inactivity + sliding session refresh while active
   useEffect(() => {
@@ -3389,13 +3404,5 @@ function DashboardContent() {
 }
 
 export default function CoordinatorDashboardPage() {
-  return (
-    <Suspense fallback={
-      <div className="min-h-screen bg-[#f8fafc] flex items-center justify-center p-6 text-slate-600 text-sm font-medium">
-        Loading Coordinator Dashboard...
-      </div>
-    }>
-      <DashboardContent />
-    </Suspense>
-  );
+  return <DashboardContent />;
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
-import { getAdminSession, getCoordinatorSession } from '@/lib/serverAuth';
+import { getAdminSession, verifyActiveCoordinatorSession } from '@/lib/serverAuth';
 import { isBranchMatch } from '@/lib/coordinatorService';
 
 export const dynamic = 'force-dynamic';
@@ -63,7 +63,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const adminSession = getAdminSession(req);
-    const coordSession = getCoordinatorSession(req);
+    const coordSession = adminSession ? null : await verifyActiveCoordinatorSession(req);
     if (!adminSession && !coordSession) {
       return NextResponse.json({ success: false, error: 'Unauthorized.' }, { status: 401 });
     }
@@ -132,7 +132,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const adminSession = getAdminSession(req);
-    const coordSession = getCoordinatorSession(req);
+    const coordSession = adminSession ? null : await verifyActiveCoordinatorSession(req);
     if (!adminSession && !coordSession) {
       return NextResponse.json({ success: false, error: 'Unauthorized.' }, { status: 401 });
     }
@@ -202,7 +202,7 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const adminSession = getAdminSession(req);
-    const coordSession = getCoordinatorSession(req);
+    const coordSession = adminSession ? null : await verifyActiveCoordinatorSession(req);
     if (!adminSession && !coordSession) {
       return NextResponse.json({ success: false, error: 'Unauthorized.' }, { status: 401 });
     }

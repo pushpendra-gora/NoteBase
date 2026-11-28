@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient, getSupabaseCredentials } from '@/lib/supabase';
-import { getAdminSession, getStaffSession } from '@/lib/serverAuth';
+import { getAdminSession, verifyActiveStaffSession } from '@/lib/serverAuth';
 import { loadMultiDriveState } from '@/lib/serverDrive';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   const isAdmin = Boolean(getAdminSession(req));
-  const isStaff = isAdmin || Boolean(getStaffSession(req));
+  const isStaff = isAdmin || Boolean(await verifyActiveStaffSession(req));
   const customUrl = isAdmin ? (req.headers.get('x-supabase-url') || undefined) : undefined;
   const customKey = isAdmin ? (req.headers.get('x-supabase-key') || req.headers.get('x-supabase-anon-key') || undefined) : undefined;
 

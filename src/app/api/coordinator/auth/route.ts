@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
 import { isBranchMatch } from '@/lib/coordinatorService';
@@ -11,6 +12,8 @@ import {
   hashPassword,
   isSafeCredentialInput,
   resetLoginRateLimit,
+  revokeSessionToken,
+  verifyActiveCoordinatorSession,
   verifyPassword,
 } from '@/lib/serverAuth';
 
@@ -20,7 +23,7 @@ const ALLOWED_YEARS = new Set(['1st Year', '2nd Year', '3rd Year', '4th Year']);
 
 function setCoordinatorCookie(
   response: NextResponse,
-  claims: { id: string; name?: string; branch?: string; year?: string }
+  claims: { id: string; name?: string; branch?: string; year?: string; jti: string }
 ) {
   response.cookies.set({
     name: COORDINATOR_COOKIE_NAME,
@@ -31,6 +34,7 @@ function setCoordinatorCookie(
         name: claims.name,
         branch: claims.branch,
         year: claims.year,
+        jti: claims.jti,
       },
       COORDINATOR_IDLE_TIMEOUT_SECONDS
     ),
@@ -43,41 +47,93 @@ function setCoordinatorCookie(
 }
 
 export async function GET(req: NextRequest) {
-  const session = getCoordinatorSession(req);
+  const session = await verifyActiveCoordinatorSession(req);
   if (!session) {
-    return NextResponse.json({ authenticated: false });
+    const response = NextResponse.json(
+      { authenticated: false },
+      { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } }
+    );
+    response.cookies.delete(COORDINATOR_COOKIE_NAME);
+    return response;
   }
-  return NextResponse.json({
-    authenticated: true,
-    coordinator: {
-      id: session.id,
-      name: session.name,
-      year: session.year,
-      branch: session.branch,
+  return NextResponse.json(
+    {
+      authenticated: true,
+      coordinator: {
+        id: session.id,
+        name: session.name,
+        year: session.year,
+        branch: session.branch,
+      },
     },
-  });
+    { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } }
+  );
 }
 
 export async function PUT(req: NextRequest) {
-  const session = getCoordinatorSession(req);
-  if (!session) {
-    const response = NextResponse.json({ authenticated: false, expired: true }, { status: 401 });
+  const session = await verifyActiveCoordinatorSession(req);
+  if (!session || !session.jti) {
+    const response = NextResponse.json(
+      { authenticated: false, expired: true },
+      { status: 401, headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } }
+    );
     response.cookies.delete(COORDINATOR_COOKIE_NAME);
     return response;
   }
 
-  const response = NextResponse.json({ authenticated: true });
+  const client = getSupabaseClient();
+  if (client) {
+    try {
+      await client
+        .from('coordinators')
+        .update({
+          session_expires_at: new Date(
+            Date.now() + COORDINATOR_IDLE_TIMEOUT_SECONDS * 1000
+          ).toISOString(),
+        })
+        .eq('id', session.id)
+        .eq('active_session_id', session.jti);
+    } catch {
+      // Ignore gracefully if DB column migration has not been run yet
+    }
+  }
+
+  const response = NextResponse.json(
+    { authenticated: true },
+    { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } }
+  );
   setCoordinatorCookie(response, {
     id: session.id,
     name: session.name,
     branch: session.branch,
     year: session.year,
+    jti: session.jti,
   });
   return response;
 }
 
-export async function DELETE() {
-  const response = NextResponse.json({ success: true });
+export async function DELETE(req: NextRequest) {
+  const session = getCoordinatorSession(req);
+  if (session?.jti) {
+    revokeSessionToken(session.jti, session.exp);
+  }
+  if (session?.id) {
+    const client = getSupabaseClient();
+    if (client) {
+      try {
+        await client
+          .from('coordinators')
+          .update({ active_session_id: null, session_expires_at: null })
+          .eq('id', session.id);
+      } catch {
+        // Ignore gracefully if DB column migration has not been run yet
+      }
+    }
+  }
+  const response = NextResponse.json(
+    { success: true },
+    { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } }
+  );
   response.cookies.delete(COORDINATOR_COOKIE_NAME);
   return response;
 }
@@ -175,6 +231,24 @@ export async function POST(req: NextRequest) {
 
     resetLoginRateLimit(ipKey);
 
+    // Always issue a brand-new revocable session token ID (`jti`) on every fresh login
+    const newSessionId = crypto.randomBytes(16).toString('hex');
+    const expiresAtIso = new Date(
+      Date.now() + COORDINATOR_IDLE_TIMEOUT_SECONDS * 1000
+    ).toISOString();
+
+    try {
+      await client
+        .from('coordinators')
+        .update({
+          active_session_id: newSessionId,
+          session_expires_at: expiresAtIso,
+        })
+        .eq('id', matchingCoord.id);
+    } catch {
+      // Ignore gracefully if optional session columns haven't been migrated yet
+    }
+
     // Record Coordinator login audit event in Supabase (non-blocking if table isn't created yet)
     try {
       const logEntry = {
@@ -209,6 +283,7 @@ export async function POST(req: NextRequest) {
       name: matchingCoord.name,
       branch: matchingCoord.branch,
       year: matchingCoord.year,
+      jti: newSessionId,
     });
 
     return response;
@@ -223,7 +298,7 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   try {
-    const session = getCoordinatorSession(req);
+    const session = await verifyActiveCoordinatorSession(req);
     if (!session) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Please log in as Coordinator.' },

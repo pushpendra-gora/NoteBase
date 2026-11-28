@@ -151,12 +151,7 @@ export default function CoordinatorLoginPage() {
         }
 
         setLoginSuccess(true);
-        const query = new URLSearchParams({
-          year: selectedYear,
-          branch: selectedBranch,
-          name: data.coordinator.name,
-        }).toString();
-        router.push(`/coordinator/dashboard?${query}`);
+        router.push('/coordinator/dashboard');
         return;
       }
 

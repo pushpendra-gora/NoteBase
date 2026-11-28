@@ -144,6 +144,8 @@ create table if not exists public.coordinators (
 alter table public.coordinators add column if not exists password text not null default '';
 alter table public.coordinators add column if not exists initials text default '';
 alter table public.coordinators add column if not exists status text not null default 'Active';
+alter table public.coordinators add column if not exists active_session_id text;
+alter table public.coordinators add column if not exists session_expires_at timestamp with time zone;
 
 create index if not exists idx_coordinators_lookup on public.coordinators(year, branch);
 

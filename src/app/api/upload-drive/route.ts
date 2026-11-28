@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
-import { getAdminSession, getCoordinatorSession, isValidGoogleScriptUrl } from '@/lib/serverAuth';
+import { getAdminSession, verifyActiveCoordinatorSession, isValidGoogleScriptUrl } from '@/lib/serverAuth';
 import { isBranchMatch } from '@/lib/coordinatorService';
 import { deleteFileFromGoogleDriveServer, extractGoogleDriveFileId, loadMultiDriveState } from '@/lib/serverDrive';
 import {
@@ -36,7 +36,7 @@ function isOldScriptError(text: string): boolean {
 export async function POST(req: NextRequest) {
   try {
     const adminSession = getAdminSession(req);
-    const coordSession = getCoordinatorSession(req);
+    const coordSession = adminSession ? null : await verifyActiveCoordinatorSession(req);
     if (!adminSession && !coordSession) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Please log in as Admin or Coordinator.' },
@@ -399,7 +399,7 @@ export async function GET() {
 export async function DELETE(req: NextRequest) {
   try {
     const adminSession = getAdminSession(req);
-    const coordSession = getCoordinatorSession(req);
+    const coordSession = adminSession ? null : await verifyActiveCoordinatorSession(req);
     if (!adminSession && !coordSession) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Please log in as Admin or Coordinator.' },

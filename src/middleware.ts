@@ -8,6 +8,7 @@ interface EdgeSessionPayload {
   name?: string;
   year?: string;
   branch?: string;
+  jti?: string;
   exp: number;
 }
 
@@ -78,7 +79,14 @@ async function verifyEdgeCoordinatorToken(token: string | undefined): Promise<Ed
 
     const payloadBytes = base64UrlToUint8Array(encoded);
     const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as EdgeSessionPayload;
-    if (!payload || payload.role !== 'coordinator' || !payload.exp || payload.exp < Math.floor(Date.now() / 1000)) {
+    if (
+      !payload ||
+      payload.role !== 'coordinator' ||
+      !payload.id ||
+      !payload.jti ||
+      !payload.exp ||
+      payload.exp < Math.floor(Date.now() / 1000)
+    ) {
       return null;
     }
     return payload;
@@ -87,33 +95,94 @@ async function verifyEdgeCoordinatorToken(token: string | undefined): Promise<Ed
   }
 }
 
+async function isSessionStillActiveInDb(session: EdgeSessionPayload): Promise<boolean> {
+  const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+  const supabaseKey = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    ''
+  ).trim();
+  if (!supabaseUrl || !supabaseKey) return true;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1800);
+    const endpoint = `${supabaseUrl.replace(/\/+$/, '')}/rest/v1/coordinators?id=eq.${encodeURIComponent(
+      session.id
+    )}&select=id,status,active_session_id,session_expires_at&limit=1`;
+
+    const res = await fetch(endpoint, {
+      headers: {
+        apikey: supabaseKey,
+        Authorization: `Bearer ${supabaseKey}`,
+      },
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      // Allow graceful fallback if DB column migration hasn't been applied yet
+      return true;
+    }
+    const rows = (await res.json()) as Array<{
+      id?: string;
+      status?: string;
+      active_session_id?: string | null;
+      session_expires_at?: string | null;
+    }>;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return false;
+    }
+    const row = rows[0];
+    if (row.status === 'Inactive') return false;
+    if (!row.active_session_id || row.active_session_id !== session.jti) return false;
+    if (row.session_expires_at && new Date(row.session_expires_at).getTime() < Date.now()) {
+      return false;
+    }
+    return true;
+  } catch {
+    // Do not hard-fail navigation on brief network timeout; client verify will still validate via /api/coordinator/auth
+    return true;
+  }
+}
+
+function redirectToCoordinatorLogin(req: NextRequest) {
+  const res = NextResponse.redirect(new URL('/coordinator', req.url));
+  res.cookies.delete(COORDINATOR_COOKIE_NAME);
+  res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  return res;
+}
+
 export async function middleware(req: NextRequest) {
-  const { pathname, searchParams } = req.nextUrl;
+  const { pathname, search } = req.nextUrl;
 
   if (pathname.startsWith('/coordinator/dashboard')) {
     const token = req.cookies.get(COORDINATOR_COOKIE_NAME)?.value;
     const session = await verifyEdgeCoordinatorToken(token);
 
     if (!session || !session.year || !session.branch) {
-      return NextResponse.redirect(new URL('/coordinator', req.url));
+      return redirectToCoordinatorLogin(req);
     }
 
-    // Lock URL query parameters strictly to the verified coordinator session so URL tampering cannot view/access another branch or year
-    const urlYear = searchParams.get('year');
-    const urlBranch = searchParams.get('branch');
-    const urlName = searchParams.get('name');
-
-    if (
-      urlYear !== session.year ||
-      urlBranch !== session.branch ||
-      (session.name && urlName !== session.name)
-    ) {
-      const canonical = new URL('/coordinator/dashboard', req.url);
-      canonical.searchParams.set('year', session.year);
-      canonical.searchParams.set('branch', session.branch);
-      if (session.name) canonical.searchParams.set('name', session.name);
-      return NextResponse.redirect(canonical);
+    const active = await isSessionStillActiveInDb(session);
+    if (!active) {
+      return redirectToCoordinatorLogin(req);
     }
+
+    // Never expose or rely on query parameters in the Coordinator dashboard URL
+    if (search && search.length > 0) {
+      const cleanUrl = new URL('/coordinator/dashboard', req.url);
+      const res = NextResponse.redirect(cleanUrl);
+      res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      return res;
+    }
+
+    const response = NextResponse.next();
+    response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    response.headers.set('Pragma', 'no-cache');
+    response.headers.set('Expires', '0');
+    return response;
   }
 
   return NextResponse.next();

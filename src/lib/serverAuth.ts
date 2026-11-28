@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { NextRequest } from 'next/server';
+import { getSupabaseClient } from './supabase';
 
 export const ADMIN_COOKIE_NAME = 'notebase_admin_session';
 export const COORDINATOR_COOKIE_NAME = 'notebase_coordinator_session';
@@ -11,7 +12,34 @@ export interface SessionPayload {
   name?: string;
   year?: string;
   branch?: string;
+  jti?: string;
+  iat?: number;
   exp: number;
+}
+
+// In-memory revoked token store (instant local revocation + backed by DB `coordinators.active_session_id`)
+const revokedSessionTokens = new Map<string, number>();
+
+export function revokeSessionToken(jti?: string | null, expUnix?: number): void {
+  if (!jti) return;
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (revokedSessionTokens.size >= 2000) {
+    for (const [k, exp] of revokedSessionTokens.entries()) {
+      if (exp < nowSec) revokedSessionTokens.delete(k);
+    }
+  }
+  revokedSessionTokens.set(jti, expUnix && expUnix > nowSec ? expUnix : nowSec + 60 * 60 * 24);
+}
+
+export function isSessionTokenRevoked(jti?: string | null): boolean {
+  if (!jti) return false;
+  const exp = revokedSessionTokens.get(jti);
+  if (!exp) return false;
+  if (exp < Math.floor(Date.now() / 1000)) {
+    revokedSessionTokens.delete(jti);
+    return false;
+  }
+  return true;
 }
 
 // In-memory login attempt tracking per IP/action (mitigates brute-force & SQLi fuzzing)
@@ -135,13 +163,16 @@ export function verifyPassword(plain: string, stored: string): boolean {
 
 export function createSignedSessionToken(
   role: 'admin' | 'coordinator',
-  claims: Omit<SessionPayload, 'role' | 'exp'>,
+  claims: Omit<SessionPayload, 'role' | 'exp' | 'iat'>,
   ttlSeconds = 60 * 60 * 24 * 7
 ): string {
+  const nowSec = Math.floor(Date.now() / 1000);
   const payload: SessionPayload = {
     ...claims,
+    jti: claims.jti || crypto.randomBytes(16).toString('hex'),
+    iat: nowSec,
     role,
-    exp: Math.floor(Date.now() / 1000) + ttlSeconds,
+    exp: nowSec + ttlSeconds,
   };
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
   const sig = crypto
@@ -178,6 +209,9 @@ export function verifySignedSessionToken(
     if (!payload || !payload.exp || payload.exp < Math.floor(Date.now() / 1000)) {
       return null;
     }
+    if (isSessionTokenRevoked(payload.jti)) {
+      return null;
+    }
     if (expectedRole && payload.role !== expectedRole) {
       return null;
     }
@@ -185,6 +219,71 @@ export function verifySignedSessionToken(
   } catch {
     return null;
   }
+}
+
+export function isMissingSessionColumnError(error: any): boolean {
+  const msg = String(error?.message || '').toLowerCase();
+  const code = String(error?.code || '');
+  return (
+    code === '42703' ||
+    code === 'PGRST204' ||
+    msg.includes('active_session_id') ||
+    msg.includes('session_expires_at')
+  );
+}
+
+/**
+ * Verifies the signed coordinator cookie AND checks Supabase `coordinators.active_session_id`
+ * so logged-out, expired, or superseded tokens can never be replayed anywhere.
+ */
+export async function verifyActiveCoordinatorSession(req: NextRequest): Promise<SessionPayload | null> {
+  const payload = getCoordinatorSession(req);
+  if (!payload || !payload.id) return null;
+
+  const client = getSupabaseClient();
+  if (!client) return payload;
+
+  try {
+    const { data, error } = await client
+      .from('coordinators')
+      .select('id, status, active_session_id, session_expires_at')
+      .eq('id', payload.id)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      if (isMissingSessionColumnError(error)) {
+        // Fallback check if SQL migration columns haven't been added yet
+        const { data: basicCoord } = await client
+          .from('coordinators')
+          .select('id, status')
+          .eq('id', payload.id)
+          .limit(1)
+          .maybeSingle();
+        if (!basicCoord || basicCoord.status === 'Inactive') return null;
+        return payload;
+      }
+      return payload;
+    }
+
+    if (!data || data.status === 'Inactive') return null;
+    // Token without jti (legacy cookie) or logged-out session (active_session_id === null) or old superseded token
+    if (!payload.jti || !data.active_session_id || data.active_session_id !== payload.jti) {
+      return null;
+    }
+    if (data.session_expires_at && new Date(data.session_expires_at).getTime() < Date.now()) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return payload;
+  }
+}
+
+export async function verifyActiveStaffSession(req: NextRequest): Promise<SessionPayload | null> {
+  const admin = getAdminSession(req);
+  if (admin) return admin;
+  return verifyActiveCoordinatorSession(req);
 }
 
 export function getAdminSession(req: NextRequest): SessionPayload | null {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
-import { getAdminSession, getCoordinatorSession, getStaffSession } from '@/lib/serverAuth';
+import { getAdminSession, verifyActiveCoordinatorSession } from '@/lib/serverAuth';
 import { isBranchMatch } from '@/lib/coordinatorService';
 import { deleteFileFromGoogleDriveServer } from '@/lib/serverDrive';
 import { adjustMaterialCounts } from '@/lib/serverCounters';
@@ -168,7 +168,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const adminSession = getAdminSession(req);
-    const coordSession = getCoordinatorSession(req);
+    const coordSession = adminSession ? null : await verifyActiveCoordinatorSession(req);
     if (!adminSession && !coordSession) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Staff sign-in required.' },
@@ -296,7 +296,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const adminSession = getAdminSession(req);
-    const coordSession = getCoordinatorSession(req);
+    const coordSession = adminSession ? null : await verifyActiveCoordinatorSession(req);
     if (!adminSession && !coordSession) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Staff sign-in required.' },
@@ -373,7 +373,7 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const adminSession = getAdminSession(req);
-    const coordSession = getCoordinatorSession(req);
+    const coordSession = adminSession ? null : await verifyActiveCoordinatorSession(req);
     if (!adminSession && !coordSession) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Staff sign-in required.' },

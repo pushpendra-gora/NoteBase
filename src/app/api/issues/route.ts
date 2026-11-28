@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/supabase';
-import { getAdminSession, getCoordinatorSession, getStaffSession } from '@/lib/serverAuth';
+import { getAdminSession, verifyActiveCoordinatorSession, verifyActiveStaffSession } from '@/lib/serverAuth';
 import { isBranchMatch } from '@/lib/coordinatorService';
 import { adjustMaterialCounts, recomputeAndSaveMaterialCounts } from '@/lib/serverCounters';
 
@@ -32,7 +32,7 @@ function isMissingIssuesTableError(error: any): boolean {
 export async function GET(req: NextRequest) {
   try {
     const adminSession = getAdminSession(req);
-    const coordSession = getCoordinatorSession(req);
+    const coordSession = adminSession ? null : await verifyActiveCoordinatorSession(req);
     if (!adminSession && !coordSession) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Staff sign-in required.' },
@@ -110,7 +110,7 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
-    const staff = getStaffSession(req);
+    const staff = await verifyActiveStaffSession(req);
     if (!staff) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized. Staff sign-in required.' },
@@ -143,7 +143,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const coordSession = getCoordinatorSession(req);
+    const coordSession = staff.role === 'coordinator' ? staff : null;
     const coordinatorName =
       (coordSession?.name && coordSession.name.trim()) ||
       String(body?.coordinator_name || '').trim() ||
